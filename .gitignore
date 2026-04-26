@@ -1,0 +1,14 @@
+# ビルド成果物
+/bin/
+
+# ログファイル（logsフォルダ自体は.gitkeepで管理）
+/logs/*
+!/logs/.gitkeep
+
+# 環境変数ファイル
+.env
+.env.*
+!.env.example
+
+# macOS
+.DS_Store
