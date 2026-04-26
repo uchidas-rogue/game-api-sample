@@ -1,0 +1,33 @@
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: game-api-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: game_db
+      MYSQL_USER: game
+      MYSQL_PASSWORD: game
+      TZ: Asia/Tokyo # タイムゾーンを日本時間に
+    command: --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci # 絵文字対応
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      # 初期構築用のSQLファイルを自動実行させるマウント
+      - ./deployments/mysql/initdb.d:/docker-entrypoint-initdb.d
+
+  redis:
+    image: redis:latest
+    container_name: game-api-redis
+    restart: unless-stopped
+    environment:
+      TZ: Asia/Tokyo # Redisも念のため合わせておく
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+volumes:
+  mysql_data:
+  redis_data:
