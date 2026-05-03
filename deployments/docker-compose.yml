@@ -14,8 +14,8 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
-      # 初期構築用のSQLファイルを自動実行させるマウント
-      - ./deployments/mysql/initdb.d:/docker-entrypoint-initdb.d
+      # スキーマ管理は golang-migrate に一本化したため initdb マウントは廃止。
+      # `make db/migrate/up` で deployments/mysql/migrations を適用すること。
 
   redis:
     image: redis:latest

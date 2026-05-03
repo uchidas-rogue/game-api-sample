@@ -15,6 +15,9 @@ type Usecase interface {
 	Check(ctx context.Context) (healthdomain.HealthStatus, error)
 }
 
+// usecase が Usecase を満たすことをコンパイル時に検証する。
+var _ Usecase = (*usecase)(nil)
+
 // usecase はUsecaseの具象実装。
 type usecase struct{}
 

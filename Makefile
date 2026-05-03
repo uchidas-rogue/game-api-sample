@@ -1,7 +1,15 @@
 PORT      ?= 8080
 LOG_LEVEL ?= info
 
-.PHONY: run run/debug test build lint mock/gen
+MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
+
+.PHONY: help run run/debug test test/v build lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump
+
+.DEFAULT_GOAL := help
+
+## このヘルプを表示
+help:
+	@awk 'BEGIN {FS = ":.*##"; printf "Usage:\n  make <target>\n\nTargets:\n"} /^[a-zA-Z0-9_\/-]+:.*?##/ { printf "  %-20s %s\n", $$1, $$2 } /^## / { sub(/^## /, "", $$0); doc=$$0 } /^[a-zA-Z0-9_\/-]+:/ && doc { printf "  %-20s %s\n", $$1, doc; doc="" }' $(MAKEFILE_LIST)
 
 ## サーバ起動（デフォルト: info レベル）
 run:
@@ -15,6 +23,10 @@ run/debug:
 test:
 	go test ./...
 
+## テスト実行（詳細ログ付き: t.Log と slog 出力を表示）
+test/v:
+	go test -v ./...
+
 ## ビルド（./bin/api に出力）
 build:
 	mkdir -p bin
@@ -27,3 +39,30 @@ lint:
 ## モック再生成（uber-go/mockgen 使用）
 mock/gen:
 	go generate ./...
+
+## sqlc によるDBアクセスコード生成
+db/sqlc/gen:
+	sqlc generate
+
+## マイグレーション適用（golang-migrate）
+db/migrate/up:
+	migrate -database "$(MIGRATE_DSN)" -path deployments/mysql/migrations up
+
+## マイグレーション1段階ロールバック
+db/migrate/down:
+	migrate -database "$(MIGRATE_DSN)" -path deployments/mysql/migrations down 1
+
+## 新規マイグレーションファイル作成（使用例: make db/migrate/new name=create_user_tables）
+db/migrate/new:
+	@if [ -z "$(name)" ]; then echo "Error: name is required. Usage: make db/migrate/new name=xxx"; exit 1; fi
+	migrate create -ext sql -dir deployments/mysql/migrations -seq $(name)
+
+## migrations/*.up.sql を結合して schema.sql を再生成（sqlc 用）
+db/schema/dump:
+	@echo "-- このファイルは make db/schema/dump で自動生成されます。直接編集しないでください" > deployments/mysql/schema.sql
+	@for f in $$(ls deployments/mysql/migrations/*.up.sql | sort); do \
+		echo "" >> deployments/mysql/schema.sql; \
+		echo "-- from $$(basename $$f)" >> deployments/mysql/schema.sql; \
+		cat $$f >> deployments/mysql/schema.sql; \
+	done
+	@echo "schema.sql を再生成しました"

@@ -11,6 +11,7 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/configs"
 	"github.com/uchidas-rogue/game-api-sample/internal/di"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/logger"
+	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/server"
 	"github.com/uchidas-rogue/game-api-sample/internal/interface/router"
 )
@@ -31,10 +32,18 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// MySQL接続を確立（DSN は configs から）
+	db, err := infraMysql.Open(cfg.MySQLDSN)
+	if err != nil {
+		log.Error("failed to open mysql", slog.String("error", err.Error()))
+		os.Exit(1)
+	}
+	defer func() { _ = db.Close() }()
+
 	// Echoインスタンス生成 + DI解決 + ルーティング登録
 	e := server.New(log)
-	handlers := di.BuildHandlers()
-	router.Register(e, handlers)
+	container := di.Build(db, log)
+	router.Register(e, container.Handlers)
 
 	// サーバ起動（ctxキャンセルでグレースフルシャットダウン）
 	if err := server.Run(ctx, e, cfg.Port, log); err != nil {

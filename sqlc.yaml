@@ -1,0 +1,14 @@
+version: "2"
+sql:
+  - engine: "mysql"
+    schema: "deployments/mysql/schema.sql"
+    queries: "deployments/mysql/queries"
+    gen:
+      go:
+        package: "sqlc"
+        out: "internal/infrastructure/mysql/sqlc"
+        sql_package: "database/sql"
+        emit_interface: true
+        emit_json_tags: false
+        emit_db_tags: false
+        emit_prepared_queries: false
