@@ -31,7 +31,11 @@ func New(logger *slog.Logger) *echo.Echo {
 		LogRequestID: true,
 		LogError:     true,
 		HandleError:  true,
-		LogValuesFunc: func(_ echo.Context, v middleware.RequestLoggerValues) error {
+		LogValuesFunc: func(c echo.Context, v middleware.RequestLoggerValues) error {
+			// アクセスログにリクエストctxを渡すことで、slog.Handlerがctx経由のtrace_id等を拾えるようにする（OTel/Datadog連携を見据えた設計）
+			// LogValuesFuncはハンドラ完了後に呼ばれるためctxはcanceled済みの可能性があるが、
+			// 標準slog.Handlerはctxのキャンセル状態を参照しないためログ欠落は発生しない。
+			ctx := c.Request().Context()
 			attrs := []slog.Attr{
 				slog.String("request_id", v.RequestID),
 				slog.String("method", v.Method),
@@ -41,10 +45,10 @@ func New(logger *slog.Logger) *echo.Echo {
 			}
 			if v.Error != nil {
 				attrs = append(attrs, slog.String("error", v.Error.Error()))
-				logger.LogAttrs(context.Background(), slog.LevelError, "request", attrs...)
+				logger.LogAttrs(ctx, slog.LevelError, "request", attrs...)
 				return nil
 			}
-			logger.LogAttrs(context.Background(), slog.LevelInfo, "request", attrs...)
+			logger.LogAttrs(ctx, slog.LevelInfo, "request", attrs...)
 			return nil
 		},
 	}))
