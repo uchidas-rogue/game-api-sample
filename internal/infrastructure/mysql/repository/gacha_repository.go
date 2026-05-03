@@ -10,7 +10,6 @@ import (
 	"fmt"
 
 	gachadomain "github.com/uchidas-rogue/game-api-sample/internal/domain/gacha"
-	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
 	gachausecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
@@ -18,10 +17,6 @@ import (
 
 // GachaRepository が gachausecase.Repository を満たすことをコンパイル時に検証する。
 var _ gachausecase.Repository = (*GachaRepository)(nil)
-
-// querierFactory は shared.Tx から sqlc.Querier を返すファクトリ。
-// 本番では Queries / Queries.WithTx を返し、テストではモック Querier を返すために差し替え可能とする。
-type querierFactory func(tx shared.Tx) (sqlc.Querier, error)
 
 // GachaRepository は gachausecase.Repository の sqlc/MySQL 実装。
 type GachaRepository struct {
@@ -31,18 +26,8 @@ type GachaRepository struct {
 // NewGachaRepository は GachaRepository を生成する。
 // db は通常 *sql.DB を渡す。実際のクエリは tx に応じて WithTx で切り替える。
 func NewGachaRepository(db sqlc.DBTX) *GachaRepository {
-	base := sqlc.New(db)
 	return &GachaRepository{
-		querier: func(tx shared.Tx) (sqlc.Querier, error) {
-			if tx == nil {
-				return base, nil
-			}
-			sqlTx, ok := tx.(*infraMysql.SQLTx)
-			if !ok {
-				return nil, fmt.Errorf("unexpected tx type: %T", tx)
-			}
-			return base.WithTx(sqlTx.Raw()), nil
-		},
+		querier: newQuerierFactory(db),
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"fmt"
 
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
-	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
 	rankingusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
@@ -22,18 +21,8 @@ type RankingRepository struct {
 
 // NewRankingRepository は RankingRepository を生成する。
 func NewRankingRepository(db sqlc.DBTX) *RankingRepository {
-	base := sqlc.New(db)
 	return &RankingRepository{
-		querier: func(tx shared.Tx) (sqlc.Querier, error) {
-			if tx == nil {
-				return base, nil
-			}
-			sqlTx, ok := tx.(*infraMysql.SQLTx)
-			if !ok {
-				return nil, fmt.Errorf("unexpected tx type: %T", tx)
-			}
-			return base.WithTx(sqlTx.Raw()), nil
-		},
+		querier: newQuerierFactory(db),
 	}
 }
 
