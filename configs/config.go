@@ -17,6 +17,9 @@ const (
 	envMySQLDSN  = "MYSQL_DSN"
 	// defaultMySQLDSN は docker-compose 既定値に揃えた接続文字列。
 	defaultMySQLDSN = "game:game@tcp(127.0.0.1:3306)/game_db?parseTime=true&loc=Local"
+	envRedisAddr    = "REDIS_ADDR"
+	// defaultRedisAddr は docker-compose 既定値に揃えた接続先。
+	defaultRedisAddr = "127.0.0.1:6379"
 )
 
 // Config はアプリケーション全体の設定値を保持する。
@@ -24,6 +27,7 @@ type Config struct {
 	Port      int
 	LogLevel  slog.Level
 	MySQLDSN  string
+	RedisAddr string
 }
 
 // Load は環境変数から設定値を読み込む。
@@ -51,5 +55,10 @@ func Load() (*Config, error) {
 		dsn = v
 	}
 
-	return &Config{Port: port, LogLevel: level, MySQLDSN: dsn}, nil
+	redisAddr := defaultRedisAddr
+	if v := os.Getenv(envRedisAddr); v != "" {
+		redisAddr = v
+	}
+
+	return &Config{Port: port, LogLevel: level, MySQLDSN: dsn, RedisAddr: redisAddr}, nil
 }

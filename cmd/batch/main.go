@@ -1,39 +1,43 @@
-// Package main はゲームAPIのエントリポイント。
+// Package main はバッチ処理のエントリポイント。
 package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
 
 	"github.com/uchidas-rogue/game-api-sample/configs"
-	"github.com/uchidas-rogue/game-api-sample/internal/di"
+	"github.com/uchidas-rogue/game-api-sample/internal/batch"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/logger"
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
+	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/repository"
 	infraRedis "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/redis"
-	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/server"
-	"github.com/uchidas-rogue/game-api-sample/internal/interface/router"
 )
 
 func main() {
-	// 設定読み込み（LOG_LEVELもここで解決する）
+	syncRankings := flag.Bool("sync-rankings", false, "sync rankings from DB to Redis")
+	flag.Parse()
+
+	if !*syncRankings {
+		slog.Error("no batch specified. use -sync-rankings")
+		os.Exit(1)
+	}
+
 	cfg, err := configs.Load()
 	if err != nil {
 		slog.Error("failed to load config", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
 
-	// ロガー初期化（cfg.LogLevelを適用）
 	log := logger.New(cfg.LogLevel)
 	slog.SetDefault(log)
 
-	// SIGINT/SIGTERMでシャットダウン用のctxをキャンセル
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	// MySQL接続を確立（DSN は configs から）
 	db, err := infraMysql.Open(cfg.MySQLDSN)
 	if err != nil {
 		log.Error("failed to open mysql", slog.String("error", err.Error()))
@@ -41,7 +45,6 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
-	// Redis接続を確立
 	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
 	if err != nil {
 		log.Error("failed to connect redis", slog.String("error", err.Error()))
@@ -49,15 +52,14 @@ func main() {
 	}
 	defer func() { _ = redisClient.Close() }()
 
-	// Echoインスタンス生成 + DI解決 + ルーティング登録
-	e := server.New(log)
-	container := di.Build(db, redisClient, log)
-	router.Register(e, container.Handlers)
+	rankingRepo := repository.NewRankingRepository(db)
+	rankingStore := infraRedis.NewRankingStore(redisClient.Raw())
+	syncer := batch.NewRankingSyncer(rankingRepo, rankingStore, log)
 
-	// サーバ起動（ctxキャンセルでグレースフルシャットダウン）
-	if err := server.Run(ctx, e, cfg.Port, log); err != nil {
-		log.Error("server terminated with error", slog.String("error", err.Error()))
+	log.Info("starting ranking sync batch")
+	if err := syncer.SyncAll(ctx); err != nil {
+		log.Error("ranking sync failed", slog.String("error", err.Error()))
 		os.Exit(1)
 	}
-	log.Info("server stopped gracefully")
+	log.Info("ranking sync completed successfully")
 }

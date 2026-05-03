@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	gachausecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
+	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
 
 // SQLTx は usecase 層の Tx インターフェースに対する MySQL 実装。
@@ -41,7 +41,7 @@ func NewTransactor(db *sql.DB, logger *slog.Logger) *Transactor {
 
 // DoInTx は与えられた fn をトランザクション内で実行する。
 // fn が error を返した場合や panic した場合は ROLLBACK を保証する。
-func (t *Transactor) DoInTx(ctx context.Context, fn func(tx gachausecase.Tx) error) (err error) {
+func (t *Transactor) DoInTx(ctx context.Context, fn func(tx shared.Tx) error) (err error) {
 	tx, beginErr := t.db.BeginTx(ctx, nil)
 	if beginErr != nil {
 		return fmt.Errorf("failed to begin tx: %w", beginErr)

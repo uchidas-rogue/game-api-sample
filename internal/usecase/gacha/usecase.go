@@ -13,6 +13,7 @@ import (
 	"slices"
 
 	gachadomain "github.com/uchidas-rogue/game-api-sample/internal/domain/gacha"
+	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
 
 // Result はマルチガチャの結果。
@@ -22,13 +23,6 @@ type Result struct {
 	RemainingGems int
 }
 
-// Transactor はトランザクション境界を抽象化する。
-// 実装は内部で BEGIN → fn → COMMIT/ROLLBACK を行う。fn が error を返した場合や
-// panic 発生時は ROLLBACK を保証する責務を持つ。fn に渡される Tx は Repository
-// メソッドへ透過的に引き回す。
-type Transactor interface {
-	DoInTx(ctx context.Context, fn func(tx Tx) error) error
-}
 
 // Randomizer は抽選用乱数の抽象。テストで決定論的に振る舞わせるために注入可能とする。
 type Randomizer interface {
@@ -45,14 +39,14 @@ var _ Usecase = (*usecase)(nil)
 
 // usecase は Usecase の具象実装。
 type usecase struct {
-	tx     Transactor
+	tx     shared.Transactor
 	repo   Repository
 	rand   Randomizer
 	logger *slog.Logger
 }
 
 // NewUsecase は Usecase を生成する。rand に nil を渡した場合は既定実装を使う。logger は必須。
-func NewUsecase(tx Transactor, repo Repository, rnd Randomizer, logger *slog.Logger) Usecase {
+func NewUsecase(tx shared.Transactor, repo Repository, rnd Randomizer, logger *slog.Logger) Usecase {
 	if rnd == nil {
 		rnd = defaultRandomizer{}
 	}
@@ -75,7 +69,7 @@ func (u *usecase) Multi(ctx context.Context, userID int64, pullCount int) (Resul
 
 	gemCost := gachadomain.GemCostFor(pullCount)
 	var result Result
-	err := u.tx.DoInTx(ctx, func(tx Tx) error {
+	err := u.tx.DoInTx(ctx, func(tx shared.Tx) error {
 		user, err := u.repo.GetUserForUpdate(ctx, tx, userID)
 		if err != nil {
 			return err

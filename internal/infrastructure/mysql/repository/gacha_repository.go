@@ -13,14 +13,15 @@ import (
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
 	gachausecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
+	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
 
 // GachaRepository が gachausecase.Repository を満たすことをコンパイル時に検証する。
 var _ gachausecase.Repository = (*GachaRepository)(nil)
 
-// querierFactory は usecase.Tx から sqlc.Querier を返すファクトリ。
+// querierFactory は shared.Tx から sqlc.Querier を返すファクトリ。
 // 本番では Queries / Queries.WithTx を返し、テストではモック Querier を返すために差し替え可能とする。
-type querierFactory func(tx gachausecase.Tx) (sqlc.Querier, error)
+type querierFactory func(tx shared.Tx) (sqlc.Querier, error)
 
 // GachaRepository は gachausecase.Repository の sqlc/MySQL 実装。
 type GachaRepository struct {
@@ -32,7 +33,7 @@ type GachaRepository struct {
 func NewGachaRepository(db sqlc.DBTX) *GachaRepository {
 	base := sqlc.New(db)
 	return &GachaRepository{
-		querier: func(tx gachausecase.Tx) (sqlc.Querier, error) {
+		querier: func(tx shared.Tx) (sqlc.Querier, error) {
 			if tx == nil {
 				return base, nil
 			}
@@ -47,7 +48,7 @@ func NewGachaRepository(db sqlc.DBTX) *GachaRepository {
 
 // GetUserForUpdate はユーザー行を排他ロックで取得する。
 // tx は必須。nil の場合は FOR UPDATE がトランザクション外になるためエラーを返す。
-func (r *GachaRepository) GetUserForUpdate(ctx context.Context, tx gachausecase.Tx, userID int64) (gachadomain.User, error) {
+func (r *GachaRepository) GetUserForUpdate(ctx context.Context, tx shared.Tx, userID int64) (gachadomain.User, error) {
 	if tx == nil {
 		return gachadomain.User{}, fmt.Errorf("GetUserForUpdate: transaction is required")
 	}
@@ -66,7 +67,7 @@ func (r *GachaRepository) GetUserForUpdate(ctx context.Context, tx gachausecase.
 }
 
 // UpdateUserGems は石残高を更新する。
-func (r *GachaRepository) UpdateUserGems(ctx context.Context, tx gachausecase.Tx, userID int64, newGems int) error {
+func (r *GachaRepository) UpdateUserGems(ctx context.Context, tx shared.Tx, userID int64, newGems int) error {
 	q, err := r.querier(tx)
 	if err != nil {
 		return fmt.Errorf("UpdateUserGems: %w", err)
@@ -81,7 +82,7 @@ func (r *GachaRepository) UpdateUserGems(ctx context.Context, tx gachausecase.Tx
 }
 
 // ListItems はアイテムマスタを全件取得する。
-func (r *GachaRepository) ListItems(ctx context.Context, tx gachausecase.Tx) ([]gachadomain.Item, error) {
+func (r *GachaRepository) ListItems(ctx context.Context, tx shared.Tx) ([]gachadomain.Item, error) {
 	q, err := r.querier(tx)
 	if err != nil {
 		return nil, fmt.Errorf("ListItems: %w", err)
@@ -98,7 +99,7 @@ func (r *GachaRepository) ListItems(ctx context.Context, tx gachausecase.Tx) ([]
 }
 
 // UpsertUserItem はユーザー所持アイテムを追加（既存は加算）する。
-func (r *GachaRepository) UpsertUserItem(ctx context.Context, tx gachausecase.Tx, userID int64, itemID int64, num int) error {
+func (r *GachaRepository) UpsertUserItem(ctx context.Context, tx shared.Tx, userID int64, itemID int64, num int) error {
 	q, err := r.querier(tx)
 	if err != nil {
 		return fmt.Errorf("UpsertUserItem: %w", err)
@@ -114,7 +115,7 @@ func (r *GachaRepository) UpsertUserItem(ctx context.Context, tx gachausecase.Tx
 }
 
 // InsertGachaHistory はガチャ履歴を1件追加する。
-func (r *GachaRepository) InsertGachaHistory(ctx context.Context, tx gachausecase.Tx, userID int64, itemID int64) error {
+func (r *GachaRepository) InsertGachaHistory(ctx context.Context, tx shared.Tx, userID int64, itemID int64) error {
 	q, err := r.querier(tx)
 	if err != nil {
 		return fmt.Errorf("InsertGachaHistory: %w", err)
