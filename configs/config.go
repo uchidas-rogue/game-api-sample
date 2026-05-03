@@ -60,5 +60,10 @@ func Load() (*Config, error) {
 		redisAddr = v
 	}
 
-	return &Config{Port: port, LogLevel: level, MySQLDSN: dsn, RedisAddr: redisAddr}, nil
+	return &Config{
+		Port:      port,
+		LogLevel:  level,
+		MySQLDSN:  dsn,
+		RedisAddr: redisAddr,
+	}, nil
 }
