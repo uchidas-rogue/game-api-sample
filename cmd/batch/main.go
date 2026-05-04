@@ -10,7 +10,7 @@ import (
 	"syscall"
 
 	"github.com/uchidas-rogue/game-api-sample/configs"
-	"github.com/uchidas-rogue/game-api-sample/internal/batch"
+	"github.com/uchidas-rogue/game-api-sample/internal/driver/batch"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/logger"
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/repository"

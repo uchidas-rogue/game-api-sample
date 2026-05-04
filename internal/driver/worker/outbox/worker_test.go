@@ -16,7 +16,7 @@ import (
 	mockranking "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking/mock"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 	mockshared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared/mock"
-	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/worker/outbox"
+	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/driver/worker/outbox"
 )
 
 // invokeDoInTx は MockTransactor.DoInTx を fn(nil) で実行するヘルパー。

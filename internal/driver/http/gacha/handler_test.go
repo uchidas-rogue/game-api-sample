@@ -13,7 +13,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	gachadomain "github.com/uchidas-rogue/game-api-sample/internal/domain/gacha"
-	gachahandler "github.com/uchidas-rogue/game-api-sample/internal/interface/handler/gacha"
+	gachahandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/gacha"
 	"github.com/uchidas-rogue/game-api-sample/internal/testutil/slogtest"
 	gachausecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
 	mockuc "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha/mock"

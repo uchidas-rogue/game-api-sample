@@ -14,7 +14,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
-	rankinghandler "github.com/uchidas-rogue/game-api-sample/internal/interface/handler/ranking"
+	rankinghandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/ranking"
 	"github.com/uchidas-rogue/game-api-sample/internal/testutil/slogtest"
 	rankingusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking"
 	mockranking "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking/mock"

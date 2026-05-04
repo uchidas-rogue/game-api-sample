@@ -14,7 +14,7 @@ import (
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	infraRedis "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/redis"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/server"
-	"github.com/uchidas-rogue/game-api-sample/internal/interface/router"
+	"github.com/uchidas-rogue/game-api-sample/internal/driver/http/router"
 )
 
 func main() {
