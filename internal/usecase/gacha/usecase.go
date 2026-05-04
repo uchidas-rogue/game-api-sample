@@ -170,6 +170,8 @@ func sortedKeys(m map[int64]int) []int64 {
 }
 
 // defaultRandomizer は math/rand/v2 を使う既定実装。
+var _ Randomizer = defaultRandomizer{}
+
 type defaultRandomizer struct{}
 
 // IntN は半開区間 [0, n) の整数を返す。

@@ -8,9 +8,12 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
+	rankingusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking"
 )
 
 // RankingStore は Redis Sorted Set を使用したランキングストア。
+var _ rankingusecase.RankingStore = (*RankingStore)(nil)
+
 type RankingStore struct {
 	client *redis.Client
 }

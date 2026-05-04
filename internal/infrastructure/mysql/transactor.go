@@ -13,6 +13,8 @@ import (
 
 // SQLTx は usecase 層の Tx インターフェースに対する MySQL 実装。
 // 内部の *sql.Tx は infrastructure 層の Repository 実装側でのみ取り出して使う。
+var _ shared.Tx = (*SQLTx)(nil)
+
 type SQLTx struct {
 	tx *sql.Tx
 }
@@ -26,6 +28,8 @@ func (s *SQLTx) Raw() *sql.Tx { return s.tx }
 // Transactor は *sql.DB を用いたトランザクション境界制御の実装。
 // usecase 層は内部の DoInTx を介してロジックを与え、本実装が
 // BEGIN/COMMIT/ROLLBACK を保証する。
+var _ shared.Transactor = (*Transactor)(nil)
+
 type Transactor struct {
 	db     *sql.DB
 	logger *slog.Logger

@@ -5,12 +5,16 @@ import (
 	"fmt"
 
 	"github.com/redis/go-redis/v9"
+
+	outboxusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox"
 )
 
 // outboxEventsChannel は outbox イベント追加通知の Redis Pub/Sub チャネル名。
 const outboxEventsChannel = "outbox:events"
 
 // OutboxNotifier は Redis Pub/Sub で worker に通知する Publisher 実装。
+var _ outboxusecase.Notifier = (*OutboxNotifier)(nil)
+
 type OutboxNotifier struct {
 	client *redis.Client
 }
@@ -30,6 +34,8 @@ func (n *OutboxNotifier) Notify(ctx context.Context) error {
 }
 
 // OutboxSubscriber は Redis Pub/Sub で通知を購読する Subscriber 実装。
+var _ outboxusecase.Subscriber = (*OutboxSubscriber)(nil)
+
 type OutboxSubscriber struct {
 	client *redis.Client
 }
