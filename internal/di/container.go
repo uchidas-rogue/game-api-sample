@@ -14,6 +14,7 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/internal/interface/router"
 	gachausecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
 	healthusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/health"
+	outboxusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox"
 	rankingusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
@@ -22,10 +23,13 @@ import (
 // クリーンアーキテクチャの依存方向（infrastructure は usecase を import しない）を守るため、両方を import している本コンポジションルートで検証を行う。
 // コンポジションルートが期待する全インターフェースをここで確認するようにする。
 var (
-	_ shared.Transactor          = (*infraMysql.Transactor)(nil)
-	_ gachausecase.Repository    = (*repository.GachaRepository)(nil)
-	_ rankingusecase.Repository  = (*repository.RankingRepository)(nil)
+	_ shared.Transactor           = (*infraMysql.Transactor)(nil)
+	_ gachausecase.Repository     = (*repository.GachaRepository)(nil)
+	_ rankingusecase.Repository   = (*repository.RankingRepository)(nil)
 	_ rankingusecase.RankingStore = (*infraRedis.RankingStore)(nil)
+	_ outboxusecase.Repository    = (*repository.OutboxRepository)(nil)
+	_ outboxusecase.Notifier      = (*infraRedis.OutboxNotifier)(nil)
+	_ outboxusecase.Subscriber    = (*infraRedis.OutboxSubscriber)(nil)
 )
 
 // Container はアプリケーション全体のコンポーネントを保持する。
@@ -48,10 +52,12 @@ func Build(db *sql.DB, redisClient *infraRedis.Client, logger *slog.Logger) Cont
 	gachaUC := gachausecase.NewUsecase(tx, gachaRepo, nil, logger)
 	gachaH := gachahandler.NewHandler(gachaUC, logger)
 
-	// ランキング
+	// ランキング（outbox 経由で Redis 反映を非同期化）
 	rankingRepo := repository.NewRankingRepository(db)
 	rankingStore := infraRedis.NewRankingStore(redisClient.Raw())
-	rankingUC := rankingusecase.NewUsecase(tx, rankingRepo, rankingStore, logger)
+	outboxRepo := repository.NewOutboxRepository(db)
+	outboxNotifier := infraRedis.NewOutboxNotifier(redisClient.Raw())
+	rankingUC := rankingusecase.NewUsecase(tx, rankingRepo, rankingStore, outboxRepo, outboxNotifier, logger)
 	rankingH := rankinghandler.NewHandler(rankingUC, logger)
 
 	return Container{

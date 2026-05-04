@@ -1,0 +1,95 @@
+package repository
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"fmt"
+
+	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
+	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
+	outboxusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox"
+	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
+)
+
+var _ outboxusecase.Repository = (*OutboxRepository)(nil)
+
+// OutboxRepository は outboxusecase.Repository の sqlc/MySQL 実装。
+type OutboxRepository struct {
+	querier querierFactory
+}
+
+// NewOutboxRepository は OutboxRepository を生成する。
+func NewOutboxRepository(db sqlc.DBTX) *OutboxRepository {
+	return &OutboxRepository{
+		querier: newQuerierFactory(db),
+	}
+}
+
+// InsertEvent は outbox にイベントを登録する。
+func (r *OutboxRepository) InsertEvent(ctx context.Context, tx shared.Tx, eventType outboxdomain.EventType, payload []byte) (uint64, error) {
+	q, err := r.querier(tx)
+	if err != nil {
+		return 0, fmt.Errorf("InsertEvent: %w", err)
+	}
+	id, err := q.InsertOutboxEvent(ctx, sqlc.InsertOutboxEventParams{
+		EventType: string(eventType),
+		Payload:   json.RawMessage(payload),
+	})
+	if err != nil {
+		return 0, fmt.Errorf("insert outbox event: %w", err)
+	}
+	if id < 0 {
+		return 0, fmt.Errorf("unexpected negative last insert id: %d", id)
+	}
+	return uint64(id), nil
+}
+
+// ListPending は未処理イベントを古い順に取得する（FOR UPDATE SKIP LOCKED）。
+func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit int32) ([]outboxdomain.Event, error) {
+	q, err := r.querier(tx)
+	if err != nil {
+		return nil, fmt.Errorf("ListPending: %w", err)
+	}
+	rows, err := q.ListPendingOutboxEvents(ctx, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending outbox events: %w", err)
+	}
+	events := make([]outboxdomain.Event, 0, len(rows))
+	for _, row := range rows {
+		events = append(events, outboxdomain.Event{
+			ID:         row.ID,
+			Type:       outboxdomain.EventType(row.EventType),
+			Payload:    []byte(row.Payload),
+			RetryCount: row.RetryCount,
+		})
+	}
+	return events, nil
+}
+
+// MarkProcessed は処理済みフラグを立てる。
+func (r *OutboxRepository) MarkProcessed(ctx context.Context, tx shared.Tx, id uint64) error {
+	q, err := r.querier(tx)
+	if err != nil {
+		return fmt.Errorf("MarkProcessed: %w", err)
+	}
+	if err := q.MarkOutboxEventProcessed(ctx, id); err != nil {
+		return fmt.Errorf("mark outbox event processed: %w", err)
+	}
+	return nil
+}
+
+// IncrementRetry は retry_count をインクリメントし last_error を記録する。
+func (r *OutboxRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error {
+	q, err := r.querier(tx)
+	if err != nil {
+		return fmt.Errorf("IncrementRetry: %w", err)
+	}
+	if err := q.IncrementOutboxEventRetry(ctx, sqlc.IncrementOutboxEventRetryParams{
+		ID:        id,
+		LastError: sql.NullString{String: lastError, Valid: lastError != ""},
+	}); err != nil {
+		return fmt.Errorf("increment outbox event retry: %w", err)
+	}
+	return nil
+}

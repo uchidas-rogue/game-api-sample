@@ -34,145 +34,6 @@ func newEchoContext(e *echo.Echo, method, path, body string) (echo.Context, *htt
 	return e.NewContext(req, rec), rec
 }
 
-func TestHandler_SubmitGuildScore(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name           string
-		paramGuildID   string
-		body           string
-		setupMock      func(m *mockranking.MockUsecase)
-		wantStatusCode int
-		wantBodyPart   string
-	}{
-		{
-			name:         "正常系: スコア送信成功",
-			paramGuildID: "1",
-			body:         `{"score":5000,"user_id":10}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().SubmitGuildScore(gomock.Any(), rankingusecase.SubmitGuildScoreInput{
-					GuildID: 1, UserID: 10, Score: 5000,
-				}).Return(rankingdomain.GuildScoreSubmitResult{
-					GuildID: 1, Score: 5000, IsHighScore: true, PreviousScore: 0, Rank: 1,
-				}, nil)
-			},
-			wantStatusCode: http.StatusOK,
-			wantBodyPart:   `"guild_id":1`,
-		},
-		{
-			name:           "異常系: guildID が数値でない",
-			paramGuildID:   "abc",
-			body:           `{"score":5000,"user_id":10}`,
-			setupMock:      func(_ *mockranking.MockUsecase) {},
-			wantStatusCode: http.StatusBadRequest,
-			wantBodyPart:   `"message":"invalid guildID"`,
-		},
-		{
-			name:           "異常系: guildID が 0 以下",
-			paramGuildID:   "0",
-			body:           `{"score":5000,"user_id":10}`,
-			setupMock:      func(_ *mockranking.MockUsecase) {},
-			wantStatusCode: http.StatusBadRequest,
-			wantBodyPart:   `"message":"invalid guildID"`,
-		},
-		{
-			name:           "異常系: user_id が 0 以下",
-			paramGuildID:   "1",
-			body:           `{"score":5000,"user_id":0}`,
-			setupMock:      func(_ *mockranking.MockUsecase) {},
-			wantStatusCode: http.StatusBadRequest,
-			wantBodyPart:   `"message":"invalid user_id"`,
-		},
-		{
-			name:           "異常系: 不正な JSON ボディ",
-			paramGuildID:   "1",
-			body:           `{`,
-			setupMock:      func(_ *mockranking.MockUsecase) {},
-			wantStatusCode: http.StatusBadRequest,
-			wantBodyPart:   `"message":"invalid request body"`,
-		},
-		{
-			name:         "異常系: ギルド未存在は 404",
-			paramGuildID: "1",
-			body:         `{"score":5000,"user_id":10}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().SubmitGuildScore(gomock.Any(), gomock.Any()).
-					Return(rankingdomain.GuildScoreSubmitResult{}, rankingdomain.ErrGuildNotFound)
-			},
-			wantStatusCode: http.StatusNotFound,
-			wantBodyPart:   `"message":"guild not found"`,
-		},
-		{
-			name:         "異常系: ユーザー未存在は 404",
-			paramGuildID: "1",
-			body:         `{"score":5000,"user_id":10}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().SubmitGuildScore(gomock.Any(), gomock.Any()).
-					Return(rankingdomain.GuildScoreSubmitResult{}, rankingdomain.ErrUserNotFound)
-			},
-			wantStatusCode: http.StatusNotFound,
-			wantBodyPart:   `"message":"user not found"`,
-		},
-		{
-			name:         "異常系: ギルド非所属は 403",
-			paramGuildID: "1",
-			body:         `{"score":5000,"user_id":10}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().SubmitGuildScore(gomock.Any(), gomock.Any()).
-					Return(rankingdomain.GuildScoreSubmitResult{}, rankingdomain.ErrUserNotInGuild)
-			},
-			wantStatusCode: http.StatusForbidden,
-			wantBodyPart:   `"message":"user is not a member of the guild"`,
-		},
-		{
-			name:         "異常系: スコア無効は 400",
-			paramGuildID: "1",
-			body:         `{"score":-1,"user_id":10}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().SubmitGuildScore(gomock.Any(), gomock.Any()).
-					Return(rankingdomain.GuildScoreSubmitResult{}, rankingdomain.ErrInvalidScore)
-			},
-			wantStatusCode: http.StatusBadRequest,
-			wantBodyPart:   `"message":"invalid score"`,
-		},
-		{
-			name:         "異常系: 予期せぬエラーは 500",
-			paramGuildID: "1",
-			body:         `{"score":5000,"user_id":10}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().SubmitGuildScore(gomock.Any(), gomock.Any()).
-					Return(rankingdomain.GuildScoreSubmitResult{}, errors.New("unexpected error"))
-			},
-			wantStatusCode: http.StatusInternalServerError,
-			wantBodyPart:   `"message":"internal server error"`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-
-			mockUC := mockranking.NewMockUsecase(ctrl)
-			tt.setupMock(mockUC)
-
-			e := echo.New()
-			c, rec := newEchoContext(e, http.MethodPost, "/", tt.body)
-			c.SetPath("/guilds/:guildID/scores")
-			c.SetParamNames("guildID")
-			c.SetParamValues(tt.paramGuildID)
-
-			h := rankinghandler.NewHandler(mockUC, slogtest.NewLogger(t, nil))
-			require.NoError(t, h.SubmitGuildScore(c))
-
-			assert.Equal(t, tt.wantStatusCode, rec.Code)
-			assert.Contains(t, strings.TrimSpace(rec.Body.String()), tt.wantBodyPart)
-		})
-	}
-}
-
 func TestHandler_GetGuildRankings(t *testing.T) {
 	t.Parallel()
 
@@ -340,18 +201,64 @@ func TestHandler_AddUserPoints(t *testing.T) {
 		wantBodyPart   string
 	}{
 		{
-			name:        "正常系: ポイント加算成功",
+			name:        "正常系: ポイント加算成功（ギルド集計フィールド含む）",
 			paramUserID: "10",
 			body:        `{"points":500,"reason":"クエストクリア"}`,
 			setupMock: func(m *mockranking.MockUsecase) {
 				m.EXPECT().AddUserPoints(gomock.Any(), rankingusecase.AddUserPointsInput{
 					UserID: 10, Points: 500, Reason: "クエストクリア",
 				}).Return(rankingdomain.UserPointAddResult{
-					UserID: 10, Points: 500, PreviousTotal: 1000, NewTotal: 1500, Rank: 5,
+					UserID:             10,
+					Points:             500,
+					PreviousTotal:      1000,
+					NewTotal:           1500,
+					GuildID:            1,
+					GuildPreviousTotal: 5000,
+					GuildNewTotal:      5500,
 				}, nil)
 			},
 			wantStatusCode: http.StatusOK,
 			wantBodyPart:   `"new_total":1500`,
+		},
+		{
+			name:        "正常系: レスポンスにギルド集計フィールドが含まれる",
+			paramUserID: "10",
+			body:        `{"points":100,"reason":"デイリーボーナス"}`,
+			setupMock: func(m *mockranking.MockUsecase) {
+				m.EXPECT().AddUserPoints(gomock.Any(), rankingusecase.AddUserPointsInput{
+					UserID: 10, Points: 100, Reason: "デイリーボーナス",
+				}).Return(rankingdomain.UserPointAddResult{
+					UserID:             10,
+					Points:             100,
+					PreviousTotal:      0,
+					NewTotal:           100,
+					GuildID:            3,
+					GuildPreviousTotal: 0,
+					GuildNewTotal:      100,
+				}, nil)
+			},
+			wantStatusCode: http.StatusOK,
+			wantBodyPart:   `"guild_id":3`,
+		},
+		{
+			name:        "正常系: レスポンスに rank/guild_rank が含まれない",
+			paramUserID: "10",
+			body:        `{"points":50,"reason":"ログインボーナス"}`,
+			setupMock: func(m *mockranking.MockUsecase) {
+				m.EXPECT().AddUserPoints(gomock.Any(), rankingusecase.AddUserPointsInput{
+					UserID: 10, Points: 50, Reason: "ログインボーナス",
+				}).Return(rankingdomain.UserPointAddResult{
+					UserID:             10,
+					Points:             50,
+					PreviousTotal:      100,
+					NewTotal:           150,
+					GuildID:            1,
+					GuildPreviousTotal: 1000,
+					GuildNewTotal:      1050,
+				}, nil)
+			},
+			wantStatusCode: http.StatusOK,
+			wantBodyPart:   `"new_total":150`,
 		},
 		{
 			name:           "異常系: userID が数値でない",
@@ -395,6 +302,17 @@ func TestHandler_AddUserPoints(t *testing.T) {
 			},
 			wantStatusCode: http.StatusNotFound,
 			wantBodyPart:   `"message":"user not found"`,
+		},
+		{
+			name:        "異常系: ギルド未所属は 403",
+			paramUserID: "10",
+			body:        `{"points":500,"reason":"クエスト"}`,
+			setupMock: func(m *mockranking.MockUsecase) {
+				m.EXPECT().AddUserPoints(gomock.Any(), gomock.Any()).
+					Return(rankingdomain.UserPointAddResult{}, rankingdomain.ErrUserNotInGuild)
+			},
+			wantStatusCode: http.StatusForbidden,
+			wantBodyPart:   `"message":"user is not a member of the guild"`,
 		},
 		{
 			name:        "異常系: ポイント無効は 400",

@@ -30,6 +30,9 @@ type Repository interface {
 	// IsUserInGuild はユーザーがギルドに所属しているかを確認する。
 	IsUserInGuild(ctx context.Context, tx shared.Tx, userID int64, guildID int64) (bool, error)
 
+	// GetUserGuildID はユーザーが所属するギルドIDを取得する。未所属時は ErrUserNotInGuild を返す。
+	GetUserGuildID(ctx context.Context, tx shared.Tx, userID int64) (int64, error)
+
 	// ListGuildsByIDs は指定 ID のギルド情報を一括取得する。
 	ListGuildsByIDs(ctx context.Context, tx shared.Tx, guildIDs []int64) (map[int64]rankingdomain.Guild, error)
 

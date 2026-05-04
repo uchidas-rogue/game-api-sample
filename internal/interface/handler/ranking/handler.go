@@ -32,54 +32,6 @@ func NewHandler(u rankingusecase.Usecase, logger *slog.Logger) *Handler {
 	return &Handler{usecase: u, logger: logger}
 }
 
-type submitGuildScoreRequest struct {
-	Score  int64 `json:"score"`
-	UserID int64 `json:"user_id"`
-}
-
-type submitGuildScoreResponse struct {
-	GuildID       int64 `json:"guild_id"`
-	Score         int64 `json:"score"`
-	IsHighScore   bool  `json:"is_high_score"`
-	PreviousScore int64 `json:"previous_score"`
-	Rank          int64 `json:"rank"`
-}
-
-// SubmitGuildScore は POST /guilds/:guildID/scores のハンドラ。
-func (h *Handler) SubmitGuildScore(c echo.Context) error {
-	ctx := c.Request().Context()
-
-	guildID, err := strconv.ParseInt(c.Param(paramGuildID), 10, 64)
-	if err != nil || guildID <= 0 {
-		return c.JSON(http.StatusBadRequest, errorResponse{Message: "invalid guildID"})
-	}
-
-	var req submitGuildScoreRequest
-	if err := c.Bind(&req); err != nil {
-		return c.JSON(http.StatusBadRequest, errorResponse{Message: "invalid request body"})
-	}
-	if req.UserID <= 0 {
-		return c.JSON(http.StatusBadRequest, errorResponse{Message: "invalid user_id"})
-	}
-
-	result, err := h.usecase.SubmitGuildScore(ctx, rankingusecase.SubmitGuildScoreInput{
-		GuildID: guildID,
-		UserID:  req.UserID,
-		Score:   req.Score,
-	})
-	if err != nil {
-		return h.handleError(c, ctx, err)
-	}
-
-	return c.JSON(http.StatusOK, submitGuildScoreResponse{
-		GuildID:       result.GuildID,
-		Score:         result.Score,
-		IsHighScore:   result.IsHighScore,
-		PreviousScore: result.PreviousScore,
-		Rank:          result.Rank,
-	})
-}
-
 type rankEntryResponse struct {
 	Rank  int64  `json:"rank"`
 	ID    int64  `json:"id"`
@@ -159,12 +111,18 @@ type addUserPointsRequest struct {
 	Reason string `json:"reason"`
 }
 
+// addUserPointsResponse は AddUserPoints の HTTP レスポンス。
+// 順位 (rank / guild_rank) は worker による Redis 反映後にしか確定しないため、
+// 本エンドポイントでは返さない。クライアントは別途 GET /users/:userID/ranking
+// および GET /guilds/:guildID/ranking を呼び出して取得する。
 type addUserPointsResponse struct {
-	UserID        int64 `json:"user_id"`
-	Points        int64 `json:"points"`
-	PreviousTotal int64 `json:"previous_total"`
-	NewTotal      int64 `json:"new_total"`
-	Rank          int64 `json:"rank"`
+	UserID             int64 `json:"user_id"`
+	Points             int64 `json:"points"`
+	PreviousTotal      int64 `json:"previous_total"`
+	NewTotal           int64 `json:"new_total"`
+	GuildID            int64 `json:"guild_id"`
+	GuildPreviousTotal int64 `json:"guild_previous_total"`
+	GuildNewTotal      int64 `json:"guild_new_total"`
 }
 
 // AddUserPoints は POST /users/:userID/points のハンドラ。
@@ -194,11 +152,13 @@ func (h *Handler) AddUserPoints(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, addUserPointsResponse{
-		UserID:        result.UserID,
-		Points:        result.Points,
-		PreviousTotal: result.PreviousTotal,
-		NewTotal:      result.NewTotal,
-		Rank:          result.Rank,
+		UserID:             result.UserID,
+		Points:             result.Points,
+		PreviousTotal:      result.PreviousTotal,
+		NewTotal:           result.NewTotal,
+		GuildID:            result.GuildID,
+		GuildPreviousTotal: result.GuildPreviousTotal,
+		GuildNewTotal:      result.GuildNewTotal,
 	})
 }
 

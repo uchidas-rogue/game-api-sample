@@ -116,18 +116,3 @@ func (mr *MockUsecaseMockRecorder) GetUserRankings(ctx, input any) *gomock.Call 
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserRankings", reflect.TypeOf((*MockUsecase)(nil).GetUserRankings), ctx, input)
 }
-
-// SubmitGuildScore mocks base method.
-func (m *MockUsecase) SubmitGuildScore(ctx context.Context, input ranking0.SubmitGuildScoreInput) (ranking.GuildScoreSubmitResult, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "SubmitGuildScore", ctx, input)
-	ret0, _ := ret[0].(ranking.GuildScoreSubmitResult)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// SubmitGuildScore indicates an expected call of SubmitGuildScore.
-func (mr *MockUsecaseMockRecorder) SubmitGuildScore(ctx, input any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SubmitGuildScore", reflect.TypeOf((*MockUsecase)(nil).SubmitGuildScore), ctx, input)
-}

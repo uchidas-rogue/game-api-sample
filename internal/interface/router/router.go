@@ -29,12 +29,11 @@ func Register(e *echo.Echo, h Handlers) {
 
 	// ランキング
 	if h.Ranking != nil {
-		// ギルドランキング
-		e.POST("/guilds/:guildID/scores", h.Ranking.SubmitGuildScore)
+		// ギルドランキング（参照系のみ。書き込みは個人スコア送信からの自動合算）
 		e.GET("/rankings/guilds", h.Ranking.GetGuildRankings)
 		e.GET("/guilds/:guildID/ranking", h.Ranking.GetGuildRank)
 
-		// 個人ポイントランキング
+		// 個人ポイントランキング（書き込み起点。所属ギルドにもリアルタイム合算）
 		e.POST("/users/:userID/points", h.Ranking.AddUserPoints)
 		e.GET("/rankings/users", h.Ranking.GetUserRankings)
 		e.GET("/users/:userID/ranking", h.Ranking.GetUserRank)

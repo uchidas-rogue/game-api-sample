@@ -124,6 +124,21 @@ func (r *RankingRepository) IsUserInGuild(ctx context.Context, tx shared.Tx, use
 	return isMember, nil
 }
 
+func (r *RankingRepository) GetUserGuildID(ctx context.Context, tx shared.Tx, userID int64) (int64, error) {
+	q, err := r.querier(tx)
+	if err != nil {
+		return 0, fmt.Errorf("GetUserGuildID: %w", err)
+	}
+	guildID, err := q.GetUserGuildID(ctx, userID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return 0, fmt.Errorf("user %d: %w", userID, rankingdomain.ErrUserNotInGuild)
+		}
+		return 0, fmt.Errorf("get user guild id: %w", err)
+	}
+	return guildID, nil
+}
+
 func (r *RankingRepository) ListGuildsByIDs(ctx context.Context, tx shared.Tx, guildIDs []int64) (map[int64]rankingdomain.Guild, error) {
 	q, err := r.querier(tx)
 	if err != nil {

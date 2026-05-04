@@ -87,6 +87,21 @@ func (mr *MockRepositoryMockRecorder) GetUser(ctx, tx, userID any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUser", reflect.TypeOf((*MockRepository)(nil).GetUser), ctx, tx, userID)
 }
 
+// GetUserGuildID mocks base method.
+func (m *MockRepository) GetUserGuildID(ctx context.Context, tx shared.Tx, userID int64) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetUserGuildID", ctx, tx, userID)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetUserGuildID indicates an expected call of GetUserGuildID.
+func (mr *MockRepositoryMockRecorder) GetUserGuildID(ctx, tx, userID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserGuildID", reflect.TypeOf((*MockRepository)(nil).GetUserGuildID), ctx, tx, userID)
+}
+
 // GetUserPoints mocks base method.
 func (m *MockRepository) GetUserPoints(ctx context.Context, tx shared.Tx, userID int64) (ranking.UserPoint, error) {
 	m.ctrl.T.Helper()

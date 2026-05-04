@@ -38,6 +38,12 @@ SELECT COUNT(*) > 0 AS is_member
 FROM guild_members
 WHERE guild_id = ? AND user_id = ?;
 
+-- name: GetUserGuildID :one
+SELECT guild_id
+FROM guild_members
+WHERE user_id = ?
+LIMIT 1;
+
 -- name: ListGuildsByIDs :many
 SELECT id, name, created_at, updated_at
 FROM guilds

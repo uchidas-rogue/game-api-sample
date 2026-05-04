@@ -7,16 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 
+	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
+	outboxusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
-
-// SubmitGuildScoreInput はギルドスコア送信の入力。
-type SubmitGuildScoreInput struct {
-	GuildID int64
-	UserID  int64
-	Score   int64
-}
 
 // AddUserPointsInput はユーザーポイント加算の入力。
 type AddUserPointsInput struct {
@@ -39,9 +34,6 @@ type RankingsResult struct {
 
 // Usecase はランキング機能のユースケースインターフェース。
 type Usecase interface {
-	// SubmitGuildScore はギルドのスコアを送信する。
-	SubmitGuildScore(ctx context.Context, input SubmitGuildScoreInput) (rankingdomain.GuildScoreSubmitResult, error)
-
 	// GetGuildRankings はギルドランキングを取得する。
 	GetGuildRankings(ctx context.Context, input GetRankingsInput) (RankingsResult, error)
 
@@ -61,95 +53,34 @@ type Usecase interface {
 var _ Usecase = (*usecase)(nil)
 
 type usecase struct {
-	tx           shared.Transactor
-	repo         Repository
-	rankingStore RankingStore
-	logger       *slog.Logger
+	tx             shared.Transactor
+	repo           Repository
+	rankingStore   RankingStore
+	outboxRepo     outboxusecase.Repository
+	outboxNotifier outboxusecase.Notifier
+	logger         *slog.Logger
 }
 
 // NewUsecase は Usecase を生成する。
+// rankingStore はランキング読み取り（順位・上位 N 件）専用。書き込みは
+// AddUserPoints が outboxRepo にイベントを積み、worker が非同期に Redis 反映する。
+// outboxNotifier はトランザクションコミット直後に worker へ通知し、ポーリング待ち時間を短縮する。
 func NewUsecase(
 	tx shared.Transactor,
 	repo Repository,
 	rankingStore RankingStore,
+	outboxRepo outboxusecase.Repository,
+	outboxNotifier outboxusecase.Notifier,
 	logger *slog.Logger,
 ) Usecase {
 	return &usecase{
-		tx:           tx,
-		repo:         repo,
-		rankingStore: rankingStore,
-		logger:       logger,
+		tx:             tx,
+		repo:           repo,
+		rankingStore:   rankingStore,
+		outboxRepo:     outboxRepo,
+		outboxNotifier: outboxNotifier,
+		logger:         logger,
 	}
-}
-
-// SubmitGuildScore はギルドのスコアを送信する。
-func (u *usecase) SubmitGuildScore(ctx context.Context, input SubmitGuildScoreInput) (rankingdomain.GuildScoreSubmitResult, error) {
-	if !rankingdomain.IsValidScore(input.Score) {
-		return rankingdomain.GuildScoreSubmitResult{}, fmt.Errorf(
-			"%w: %d (allowed: %d-%d)",
-			rankingdomain.ErrInvalidScore, input.Score,
-			rankingdomain.MinScore, rankingdomain.MaxScore,
-		)
-	}
-
-	var result rankingdomain.GuildScoreSubmitResult
-	err := u.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		guild, err := u.repo.GetGuild(ctx, tx, input.GuildID)
-		if err != nil {
-			return err
-		}
-
-		isMember, err := u.repo.IsUserInGuild(ctx, tx, input.UserID, input.GuildID)
-		if err != nil {
-			return err
-		}
-		if !isMember {
-			return fmt.Errorf("user %d: %w (guild=%d)", input.UserID, rankingdomain.ErrUserNotInGuild, input.GuildID)
-		}
-
-		currentScore, err := u.repo.GetGuildScore(ctx, tx, input.GuildID)
-		var previousScore int64
-		isHighScore := true
-		if err != nil {
-			if err.Error() != rankingdomain.ErrScoreNotFound.Error() {
-				return err
-			}
-		} else {
-			previousScore = currentScore.Score
-			isHighScore = input.Score > previousScore
-		}
-
-		if err := u.repo.InsertGuildScoreHistory(ctx, tx, input.GuildID, input.UserID, input.Score); err != nil {
-			return err
-		}
-
-		if isHighScore {
-			if err := u.repo.IncrementGuildScore(ctx, tx, input.GuildID, input.Score-previousScore); err != nil {
-				return err
-			}
-			if err := u.rankingStore.IncrementGuildScore(ctx, input.GuildID, input.Score-previousScore); err != nil {
-				return err
-			}
-		}
-
-		rank, err := u.rankingStore.GetGuildRank(ctx, input.GuildID)
-		if err != nil {
-			return err
-		}
-
-		result = rankingdomain.GuildScoreSubmitResult{
-			GuildID:       guild.ID,
-			Score:         input.Score,
-			IsHighScore:   isHighScore,
-			PreviousScore: previousScore,
-			Rank:          rank,
-		}
-		return nil
-	})
-	if err != nil {
-		return rankingdomain.GuildScoreSubmitResult{}, err
-	}
-	return result, nil
 }
 
 // GetGuildRankings はギルドランキングを取得する。
@@ -227,7 +158,10 @@ func (u *usecase) GetGuildRank(ctx context.Context, guildID int64) (rankingdomai
 	}, nil
 }
 
-// AddUserPoints はユーザーのポイントを加算する。
+// AddUserPoints はユーザーのポイントを加算し、所属ギルドのスコアにも累計加算する。
+// MySQL 側の更新（個人ポイント・ギルドスコア・履歴）と Redis 反映用の outbox イベント
+// 登録を同一トランザクション内で原子的に実行する。Redis への反映は outbox-worker が
+// 非同期にポーリングして行うため、本メソッドは順位（Rank/GuildRank）を返さない。
 func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (rankingdomain.UserPointAddResult, error) {
 	if !rankingdomain.IsValidPoints(input.Points) {
 		return rankingdomain.UserPointAddResult{}, fmt.Errorf(
@@ -239,11 +173,17 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 
 	var result rankingdomain.UserPointAddResult
 	err := u.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		_, err := u.repo.GetUser(ctx, tx, input.UserID)
+		if _, err := u.repo.GetUser(ctx, tx, input.UserID); err != nil {
+			return err
+		}
+
+		// 所属ギルドID（未所属は ErrUserNotInGuild）。GvG前提のため必須。
+		guildID, err := u.repo.GetUserGuildID(ctx, tx, input.UserID)
 		if err != nil {
 			return err
 		}
 
+		// 個人ポイント現在値
 		currentPoints, err := u.repo.GetUserPoints(ctx, tx, input.UserID)
 		var previousTotal int64
 		if err != nil {
@@ -254,36 +194,69 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 			previousTotal = currentPoints.Points
 		}
 
+		// ギルドスコア現在値
+		currentGuildScore, err := u.repo.GetGuildScore(ctx, tx, guildID)
+		var guildPreviousTotal int64
+		if err != nil {
+			if err.Error() != rankingdomain.ErrScoreNotFound.Error() {
+				return err
+			}
+		} else {
+			guildPreviousTotal = currentGuildScore.Score
+		}
+
+		// 履歴記録（個人・ギルド双方）
 		if err := u.repo.InsertUserPointHistory(ctx, tx, input.UserID, input.Points, input.Reason); err != nil {
 			return err
 		}
+		if err := u.repo.InsertGuildScoreHistory(ctx, tx, guildID, input.UserID, input.Points); err != nil {
+			return err
+		}
 
+		// MySQL 累計加算（個人・ギルド）
 		if err := u.repo.IncrementUserPoints(ctx, tx, input.UserID, input.Points); err != nil {
 			return err
 		}
-
-		if err := u.rankingStore.IncrementUserPoints(ctx, input.UserID, input.Points); err != nil {
+		if err := u.repo.IncrementGuildScore(ctx, tx, guildID, input.Points); err != nil {
 			return err
 		}
 
-		rank, err := u.rankingStore.GetUserRank(ctx, input.UserID)
+		// Redis 反映用イベントを outbox に積む。worker が非同期に処理する。
+		payload, err := outboxdomain.MarshalRankingScoreAddedPayload(outboxdomain.RankingScoreAddedPayload{
+			UserID:  input.UserID,
+			GuildID: guildID,
+			Points:  input.Points,
+		})
 		if err != nil {
-			return err
+			return fmt.Errorf("marshal outbox payload: %w", err)
+		}
+		if _, err := u.outboxRepo.InsertEvent(ctx, tx, outboxdomain.EventTypeRankingScoreAdded, payload); err != nil {
+			return fmt.Errorf("insert outbox event: %w", err)
 		}
 
-		newTotal := previousTotal + input.Points
 		result = rankingdomain.UserPointAddResult{
-			UserID:        input.UserID,
-			Points:        input.Points,
-			PreviousTotal: previousTotal,
-			NewTotal:      newTotal,
-			Rank:          rank,
+			UserID:             input.UserID,
+			Points:             input.Points,
+			PreviousTotal:      previousTotal,
+			NewTotal:           previousTotal + input.Points,
+			GuildID:            guildID,
+			GuildPreviousTotal: guildPreviousTotal,
+			GuildNewTotal:      guildPreviousTotal + input.Points,
 		}
 		return nil
 	})
 	if err != nil {
 		return rankingdomain.UserPointAddResult{}, err
 	}
+
+	// トランザクションコミット完了後に worker へ通知する（コミット前だと worker が空振りする）。
+	// 通知失敗はリクエストを失敗させない。worker のポーリングがフォールバック。
+	if nerr := u.outboxNotifier.Notify(ctx); nerr != nil {
+		u.logger.WarnContext(ctx, "outbox notify failed (poll fallback will pick up)",
+			slog.String("error", nerr.Error()),
+		)
+	}
+
 	return result, nil
 }
 
