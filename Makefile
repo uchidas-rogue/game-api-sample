@@ -3,7 +3,7 @@ LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
 
-.PHONY: help run run/debug test test/v build lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
+.PHONY: help run run/debug run/outbox-worker test test/v build lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
 
 .DEFAULT_GOAL := help
 
@@ -18,6 +18,10 @@ run:
 ## デバッグレベルでサーバ起動（logs/ にもファイル出力）
 run/debug:
 	PORT=$(PORT) LOG_LEVEL=debug go run ./cmd/api
+
+## outbox-worker 起動（MySQL → Redis へ Outbox イベントを配信）
+run/outbox-worker:
+	LOG_LEVEL=$(LOG_LEVEL) go run ./cmd/outbox-worker
 
 ## テスト実行
 test:
