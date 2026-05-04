@@ -25,3 +25,17 @@ WHERE id = ?;
 DELETE FROM outbox_events
 WHERE processed_at IS NOT NULL
   AND processed_at < ?;
+
+-- name: GetMaxOutboxEventID :one
+-- バッチが「DB を読んだ時点までに COMMIT 済みの outbox イベント」を ID 上限として取得するために使用する。
+-- 空テーブルでも 0 を返すよう COALESCE する。
+SELECT CAST(COALESCE(MAX(id), 0) AS UNSIGNED) AS max_id
+FROM outbox_events;
+
+-- name: MarkOutboxEventsProcessedUpTo :execrows
+-- 指定 ID 以下の pending イベントを一括で処理済みにマークする。
+-- ranking 同期バッチがスナップショット境界 (max_id) までのイベントを processed として確定させるために使用する。
+UPDATE outbox_events
+SET processed_at = NOW(6)
+WHERE processed_at IS NULL
+  AND id <= ?;

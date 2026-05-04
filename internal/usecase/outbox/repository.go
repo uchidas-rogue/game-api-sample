@@ -26,4 +26,13 @@ type Repository interface {
 
 	// IncrementRetry は失敗時のリトライ回数を加算し、エラーメッセージを記録する。
 	IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error
+
+	// GetMaxID は outbox_events テーブルの現在の最大 ID を返す（空テーブル時は 0）。
+	// ranking 同期バッチがスナップショット境界として使用する。
+	GetMaxID(ctx context.Context, tx shared.Tx) (uint64, error)
+
+	// MarkProcessedUpTo は指定 ID 以下の pending イベントを一括で処理済みにマークし、
+	// マークされた件数を返す。バッチが「DB を読んだ時点までに COMMIT 済みのイベント」を
+	// processed として確定させるために使用する。
+	MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64) (int64, error)
 }

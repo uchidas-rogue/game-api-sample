@@ -79,6 +79,35 @@ func (r *OutboxRepository) MarkProcessed(ctx context.Context, tx shared.Tx, id u
 	return nil
 }
 
+// GetMaxID は outbox_events の現在の最大 ID を返す（空テーブル時は 0）。
+func (r *OutboxRepository) GetMaxID(ctx context.Context, tx shared.Tx) (uint64, error) {
+	q, err := r.querier(tx)
+	if err != nil {
+		return 0, fmt.Errorf("GetMaxID: %w", err)
+	}
+	maxID, err := q.GetMaxOutboxEventID(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("get max outbox event id: %w", err)
+	}
+	if maxID < 0 {
+		return 0, fmt.Errorf("unexpected negative max id: %d", maxID)
+	}
+	return uint64(maxID), nil
+}
+
+// MarkProcessedUpTo は指定 ID 以下の pending イベントを一括で処理済みにマークする。
+func (r *OutboxRepository) MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64) (int64, error) {
+	q, err := r.querier(tx)
+	if err != nil {
+		return 0, fmt.Errorf("MarkProcessedUpTo: %w", err)
+	}
+	rows, err := q.MarkOutboxEventsProcessedUpTo(ctx, maxID)
+	if err != nil {
+		return 0, fmt.Errorf("mark outbox events processed up to: %w", err)
+	}
+	return rows, nil
+}
+
 // IncrementRetry は retry_count をインクリメントし last_error を記録する。
 func (r *OutboxRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error {
 	q, err := r.querier(tx)

@@ -53,8 +53,10 @@ func main() {
 	defer func() { _ = redisClient.Close() }()
 
 	rankingRepo := repository.NewRankingRepository(db)
+	outboxRepo := repository.NewOutboxRepository(db)
 	rankingStore := infraRedis.NewRankingStore(redisClient.Raw())
-	syncer := batch.NewRankingSyncer(rankingRepo, rankingStore, log)
+	transactor := infraMysql.NewTransactor(db, log)
+	syncer := batch.NewRankingSyncer(rankingRepo, outboxRepo, rankingStore, transactor, log)
 
 	log.Info("starting ranking sync batch")
 	if err := syncer.SyncAll(ctx); err != nil {

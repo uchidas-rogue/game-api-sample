@@ -42,6 +42,21 @@ func (m *MockRepository) EXPECT() *MockRepositoryMockRecorder {
 	return m.recorder
 }
 
+// GetMaxID mocks base method.
+func (m *MockRepository) GetMaxID(ctx context.Context, tx shared.Tx) (uint64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetMaxID", ctx, tx)
+	ret0, _ := ret[0].(uint64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetMaxID indicates an expected call of GetMaxID.
+func (mr *MockRepositoryMockRecorder) GetMaxID(ctx, tx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMaxID", reflect.TypeOf((*MockRepository)(nil).GetMaxID), ctx, tx)
+}
+
 // IncrementRetry mocks base method.
 func (m *MockRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error {
 	m.ctrl.T.Helper()
@@ -98,4 +113,19 @@ func (m *MockRepository) MarkProcessed(ctx context.Context, tx shared.Tx, id uin
 func (mr *MockRepositoryMockRecorder) MarkProcessed(ctx, tx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessed", reflect.TypeOf((*MockRepository)(nil).MarkProcessed), ctx, tx, id)
+}
+
+// MarkProcessedUpTo mocks base method.
+func (m *MockRepository) MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkProcessedUpTo", ctx, tx, maxID)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// MarkProcessedUpTo indicates an expected call of MarkProcessedUpTo.
+func (mr *MockRepositoryMockRecorder) MarkProcessedUpTo(ctx, tx, maxID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessedUpTo", reflect.TypeOf((*MockRepository)(nil).MarkProcessedUpTo), ctx, tx, maxID)
 }

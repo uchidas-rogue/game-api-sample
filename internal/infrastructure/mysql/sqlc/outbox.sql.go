@@ -22,6 +22,20 @@ func (q *Queries) DeleteProcessedOutboxEventsBefore(ctx context.Context, process
 	return err
 }
 
+const getMaxOutboxEventID = `-- name: GetMaxOutboxEventID :one
+SELECT CAST(COALESCE(MAX(id), 0) AS UNSIGNED) AS max_id
+FROM outbox_events
+`
+
+// バッチが「DB を読んだ時点までに COMMIT 済みの outbox イベント」を ID 上限として取得するために使用する。
+// 空テーブルでも 0 を返すよう COALESCE する。
+func (q *Queries) GetMaxOutboxEventID(ctx context.Context) (int64, error) {
+	row := q.db.QueryRowContext(ctx, getMaxOutboxEventID)
+	var max_id int64
+	err := row.Scan(&max_id)
+	return max_id, err
+}
+
 const incrementOutboxEventRetry = `-- name: IncrementOutboxEventRetry :exec
 UPDATE outbox_events
 SET retry_count = retry_count + 1,
@@ -110,4 +124,21 @@ WHERE id = ?
 func (q *Queries) MarkOutboxEventProcessed(ctx context.Context, id uint64) error {
 	_, err := q.db.ExecContext(ctx, markOutboxEventProcessed, id)
 	return err
+}
+
+const markOutboxEventsProcessedUpTo = `-- name: MarkOutboxEventsProcessedUpTo :execrows
+UPDATE outbox_events
+SET processed_at = NOW(6)
+WHERE processed_at IS NULL
+  AND id <= ?
+`
+
+// 指定 ID 以下の pending イベントを一括で処理済みにマークする。
+// ranking 同期バッチがスナップショット境界 (max_id) までのイベントを processed として確定させるために使用する。
+func (q *Queries) MarkOutboxEventsProcessedUpTo(ctx context.Context, id uint64) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markOutboxEventsProcessedUpTo, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
