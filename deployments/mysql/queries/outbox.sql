@@ -3,6 +3,7 @@ INSERT INTO outbox_events (event_type, payload)
 VALUES (?, ?);
 
 -- name: ListPendingOutboxEvents :many
+-- 複数 worker をスケールアウトしたときの競合回避で skip locked を付与する。
 SELECT id, event_type, payload, retry_count
 FROM outbox_events
 WHERE processed_at IS NULL
