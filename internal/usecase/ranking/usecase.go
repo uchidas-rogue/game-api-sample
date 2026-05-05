@@ -86,10 +86,7 @@ func NewUsecase(
 // GetGuildRankings はギルドランキングを取得する。
 func (u *usecase) GetGuildRankings(ctx context.Context, input GetRankingsInput) (RankingsResult, error) {
 	limit := rankingdomain.NormalizeLimit(input.Limit)
-	offset := input.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := rankingdomain.NormalizeOffset(input.Offset)
 
 	entries, err := u.rankingStore.GetGuildRankings(ctx, offset, limit)
 	if err != nil {
@@ -263,10 +260,7 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 // GetUserRankings はユーザーランキングを取得する。
 func (u *usecase) GetUserRankings(ctx context.Context, input GetRankingsInput) (RankingsResult, error) {
 	limit := rankingdomain.NormalizeLimit(input.Limit)
-	offset := input.Offset
-	if offset < 0 {
-		offset = 0
-	}
+	offset := rankingdomain.NormalizeOffset(input.Offset)
 
 	entries, err := u.rankingStore.GetUserRankings(ctx, offset, limit)
 	if err != nil {

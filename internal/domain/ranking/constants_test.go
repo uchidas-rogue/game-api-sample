@@ -56,6 +56,28 @@ func TestIsValidLimit(t *testing.T) {
 	}
 }
 
+func TestNormalizeOffset(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		offset int
+		want   int
+	}{
+		{name: "0 はそのまま", offset: 0, want: 0},
+		{name: "正の値はそのまま", offset: 100, want: 100},
+		{name: "負数は 0 に正規化", offset: -1, want: 0},
+		{name: "大きな負数は 0 に正規化", offset: -99999, want: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, ranking.NormalizeOffset(tt.offset))
+		})
+	}
+}
+
 func TestNormalizeLimit(t *testing.T) {
 	t.Parallel()
 

@@ -39,3 +39,11 @@ func NormalizeLimit(limit int) int {
 	}
 	return limit
 }
+
+// NormalizeOffset はoffsetを有効範囲に正規化する。負数は0に丸める。
+func NormalizeOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
+}
