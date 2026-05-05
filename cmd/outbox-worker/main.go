@@ -14,7 +14,7 @@ import (
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/repository"
 	infraRedis "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/redis"
-	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/worker/outbox"
+	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/driver/worker/outbox"
 )
 
 func main() {

@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/uchidas-rogue/game-api-sample/internal/batch"
+	"github.com/uchidas-rogue/game-api-sample/internal/driver/batch"
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
 	"github.com/uchidas-rogue/game-api-sample/internal/testutil/slogtest"
 	mockoutbox "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox/mock"

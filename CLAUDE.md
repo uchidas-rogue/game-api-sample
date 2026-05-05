@@ -10,11 +10,12 @@
 - スタイル: 前置きを省き、結論から簡潔に述べる
 
 # 2. Architecture & Design Rules (Clean Architecture)
-- 層構成: `handler`(interface) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止
+- 層構成: `driver`(interface adapters; HTTP handler / batch / worker 等の delivery) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止
+- `driver` 配下は配信形式ごとにサブディレクトリを切る（`internal/driver/http`, `internal/driver/batch`, `internal/driver/worker`）。新規 driver（gRPC, SQS consumer 等）を追加する際もこの配下に配置する
 - `infrastructure` 層は `usecase` が定義する interface を実装する。`usecase`/`domain` から `infrastructure` を直接 import してはならない（DI は `internal/di` で行う）
 - `domain` 層: ビジネスルールとエンティティのみ。Echo・sqlc・MySQL 等の外部技術に依存しない
 - `usecase` 層: ユースケース実装とトランザクション境界制御。リポジトリ等の interface もこの層で定義する
-- `handler` 層: HTTP の request/response DTO を定義し、`domain` 型へ変換してから `usecase` に渡す
+- `driver/http` 層: HTTP の request/response DTO を定義し、`domain` 型へ変換してから `usecase` に渡す。`driver/batch` / `driver/worker` も同様に外部入力（cron 起動・outbox イベント等）を `usecase` 呼び出しに変換する責務を持つ
 
 # 3. Go Coding Standards
 - バージョン: Go 1.25。`slices`/`maps` 等の標準パッケージや range-over-int を優先する
@@ -23,7 +24,7 @@
   - ビジネス上のエラーは `domain` 層で sentinel error または型として定義し、`errors.Is`/`errors.As` で判定する
 - ログ: `log/slog` で構造化ログを出力する。logger は DI 経由を原則とし、`slog.Default()` は main/初期化など DI 不可の箇所に限る
 - マジックナンバー禁止: ビジネス上の状態コードや業務固定値は `domain` 層で `const` 定義する。各層固有の定数はその層で定義してよい
-- Context 伝播: handler で `c.Request().Context()` を取得し、usecase・infrastructure のメソッド第一引数 `ctx context.Context` として引き回す。リクエストスコープ内で `context.Background()`/`context.TODO()` を生成しない（バックグラウンドジョブを除く）
+- Context 伝播: HTTP driver では `c.Request().Context()` を取得し、usecase・infrastructure のメソッド第一引数 `ctx context.Context` として引き回す。リクエストスコープ内で `context.Background()`/`context.TODO()` を生成しない（batch/worker などのバックグラウンドジョブのエントリポイントを除く）
 - インターフェース実装検証: 実装型の定義直前に `var _ Iface = (*Type)(nil)` を記述する（値レシーバのみは `Type{}` 可）
 - panic/recover: ライブラリコードで panic しない。`recover` は HTTP ミドルウェアでのみ使用する
 - goroutine: リクエストスコープで起動する goroutine は `ctx` に連動させ、`errgroup` 等で確実に終了させる

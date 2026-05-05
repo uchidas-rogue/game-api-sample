@@ -4,9 +4,9 @@ package router
 import (
 	"github.com/labstack/echo/v4"
 
-	gachahandler "github.com/uchidas-rogue/game-api-sample/internal/interface/handler/gacha"
-	healthhandler "github.com/uchidas-rogue/game-api-sample/internal/interface/handler/health"
-	rankinghandler "github.com/uchidas-rogue/game-api-sample/internal/interface/handler/ranking"
+	gachahandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/gacha"
+	healthhandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/health"
+	rankinghandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/ranking"
 )
 
 // Handlers はルーティングに必要な全ハンドラを束ねる構造体。

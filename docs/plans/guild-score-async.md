@@ -9,7 +9,7 @@
 
 本プランでは API tx からは個人系の更新のみ残し、ギルド側の MySQL 更新（`guild_scores` 加算と `guild_score_histories` 挿入）を outbox-worker に移して非同期化する。これにより API レスポンスから `guild_scores` 行ロックの保持時間を完全に除去し、同ギルド内の同時加算がギルドスコア行ロックに影響されなくなる。
 
-トレードオフ: MySQL の `guild_scores` は数秒〜数十秒の遅延を伴って反映される。ただしランキング読み取りは Redis 経由のため UX への影響はなし。Redis ZSet が揮発した際の再構築は既存の batch（[internal/batch/ranking_sync.go](../../internal/batch/ranking_sync.go)）が担う。
+トレードオフ: MySQL の `guild_scores` は数秒〜数十秒の遅延を伴って反映される。ただしランキング読み取りは Redis 経由のため UX への影響はなし。Redis ZSet が揮発した際の再構築は既存の batch（[internal/driver/batch/ranking_sync.go](../../internal/driver/batch/ranking_sync.go)）が担う。
 
 ## 設計判断（決定済み）
 
@@ -50,19 +50,19 @@
   - 「`ErrScoreNotFound` を正常系として扱う」ケースは不要なので削除
 
 ### handler
-- [ ] [internal/interface/handler/ranking/handler.go](../../internal/interface/handler/ranking/handler.go)
+- [ ] [internal/driver/http/ranking/handler.go](../../internal/driver/http/ranking/handler.go)
   `AddUserPoints` のレスポンス DTO から guild の previous/new total フィールドを削除
-- [ ] `internal/interface/handler/ranking/handler_test.go`
+- [ ] `internal/driver/http/ranking/handler_test.go`
   該当アサート削除
 
 ### worker
-- [ ] [internal/worker/outbox/worker.go](../../internal/worker/outbox/worker.go)
+- [ ] [internal/driver/worker/outbox/worker.go](../../internal/driver/worker/outbox/worker.go)
   - `Worker` 構造体と `Config` に `rankingRepo rankingusecase.Repository` を追加
   - `runOnce` を改修: ListPending を1 tx で取得 → 即コミット → イベントごとに `DoInTx` でラップした `handleEvent` + `MarkProcessed`/`IncrementRetry` を実行する構造に変更
-  - `handleEvent` シグネチャは既に `tx shared.Tx` を受け取る形（現状未使用、[worker.go:143](../../internal/worker/outbox/worker.go#L143)）。tx を実際に使うように変更
+  - `handleEvent` シグネチャは既に `tx shared.Tx` を受け取る形（現状未使用、[worker.go:143](../../internal/driver/worker/outbox/worker.go#L143)）。tx を実際に使うように変更
   - `EventTypeRankingScoreAdded` ハンドラに上記「処理順序」の通り MySQL 更新を追加
 
-- [ ] `internal/worker/outbox/worker_test.go`
+- [ ] `internal/driver/worker/outbox/worker_test.go`
   - 既存ケースを「rankingRepo の `IncrementGuildScore`/`InsertGuildScoreHistory` も呼ばれる」前提に修正
   - 追加ケース: MySQL 更新失敗 → Redis 呼ばれず、tx ロールバック、IncrementRetry が別 tx で記録される
   - 追加ケース: イベント単位 tx 化により1イベント失敗が他イベント処理に影響しない
@@ -95,8 +95,8 @@
 
 1. **ユニットテスト**: `make test`
    - `internal/usecase/ranking/usecase_test.go` AddUserPoints: ギルド系 mock EXPECT が削除されてもパスすること
-   - `internal/worker/outbox/worker_test.go`: rankingRepo mock 経由で MySQL 更新が呼ばれることを検証
-   - `internal/interface/handler/ranking/handler_test.go`: レスポンス DTO 変更後もパスすること
+   - `internal/driver/worker/outbox/worker_test.go`: rankingRepo mock 経由で MySQL 更新が呼ばれることを検証
+   - `internal/driver/http/ranking/handler_test.go`: レスポンス DTO 変更後もパスすること
 2. **lint**: `make lint`
 3. **ローカル E2E 確認**:
    - `docker compose up -d`（MySQL + Redis）+ `make db/migrate/up`
