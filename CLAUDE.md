@@ -8,6 +8,7 @@
 # 1. Communication
 - 言語: 日本語でやり取りし、コードコメントも日本語で記述する
 - スタイル: 前置きを省き、結論から簡潔に述べる
+- 略語: 初出時のみ正式名称（必要なら和訳）を併記する。例: `YAGNI = "You Aren't Gonna Need It"（それ、たぶん要らないよ）`。同一会話内の2回目以降は略称のみで可
 
 # 2. Architecture & Design Rules (Clean Architecture)
 - 層構成: `driver`(interface adapters; HTTP handler / batch / worker 等の delivery) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止
