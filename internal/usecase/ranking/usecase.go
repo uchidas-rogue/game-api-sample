@@ -163,7 +163,7 @@ func (u *usecase) GetGuildRank(ctx context.Context, guildID int64) (rankingdomai
 // 登録を同一トランザクション内で原子的に実行する。Redis への反映は outbox-worker が
 // 非同期にポーリングして行うため、本メソッドは順位（Rank/GuildRank）を返さない。
 func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (rankingdomain.UserPointAddResult, error) {
-	if !rankingdomain.IsValidPoints(input.Points) {
+	if !rankingdomain.IsValidScore(input.Points) {
 		return rankingdomain.UserPointAddResult{}, fmt.Errorf(
 			"%w: %d (allowed: %d-%d)",
 			rankingdomain.ErrInvalidPoints, input.Points,

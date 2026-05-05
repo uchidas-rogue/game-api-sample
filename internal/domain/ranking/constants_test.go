@@ -32,29 +32,6 @@ func TestIsValidScore(t *testing.T) {
 	}
 }
 
-func TestIsValidPoints(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name   string
-		points int64
-		want   bool
-	}{
-		{name: "有効: 0（最小値）", points: 0, want: true},
-		{name: "有効: MaxScore（最大値）", points: ranking.MaxScore, want: true},
-		{name: "有効: 中間値", points: 100, want: true},
-		{name: "無効: 負数", points: -1, want: false},
-		{name: "無効: MaxScore+1", points: ranking.MaxScore + 1, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, ranking.IsValidPoints(tt.points))
-		})
-	}
-}
-
 func TestIsValidLimit(t *testing.T) {
 	t.Parallel()
 

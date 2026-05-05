@@ -594,7 +594,7 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 			},
 		},
 		{
-			name:  "異常系: ポイントが負数で ErrInvalidPoints（IsValidPoints=false）",
+			name:  "異常系: ポイントが負数で ErrInvalidPoints（IsValidScore=false）",
 			input: ranking.AddUserPointsInput{UserID: userID, Points: -1, Reason: reason},
 			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
 				t.Helper()
@@ -612,7 +612,7 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 			},
 		},
 		{
-			name:  "異常系: ポイントが最大値超過で ErrInvalidPoints（IsValidPoints=false）",
+			name:  "異常系: ポイントが最大値超過で ErrInvalidPoints（IsValidScore=false）",
 			input: ranking.AddUserPointsInput{UserID: userID, Points: int64(rankingdomain.MaxScore) + 1, Reason: reason},
 			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
 				t.Helper()

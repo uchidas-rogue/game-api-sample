@@ -19,14 +19,9 @@ const (
 	UserRankingKey  = "ranking:users"
 )
 
-// IsValidScore はスコアが有効範囲内かを判定する。
+// IsValidScore はスコア・ポイントが有効範囲内かを判定する。
 func IsValidScore(score int64) bool {
 	return score >= MinScore && score <= MaxScore
-}
-
-// IsValidPoints はポイントが有効範囲内かを判定する。
-func IsValidPoints(points int64) bool {
-	return points >= MinScore && points <= MaxScore
 }
 
 // IsValidLimit はlimitパラメータが有効範囲内かを判定する。
