@@ -4,6 +4,7 @@ package ranking
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -48,8 +49,14 @@ type rankingsResponse struct {
 func (h *Handler) GetGuildRankings(c echo.Context) error {
 	ctx := c.Request().Context()
 
-	limit, _ := strconv.Atoi(c.QueryParam(queryLimit))
-	offset, _ := strconv.Atoi(c.QueryParam(queryOffset))
+	limit, err := parseNonNegativeIntQuery(c, queryLimit)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse{Message: "invalid limit"})
+	}
+	offset, err := parseNonNegativeIntQuery(c, queryOffset)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse{Message: "invalid offset"})
+	}
 
 	result, err := h.usecase.GetGuildRankings(ctx, rankingusecase.GetRankingsInput{
 		Limit:  limit,
@@ -166,8 +173,14 @@ func (h *Handler) AddUserPoints(c echo.Context) error {
 func (h *Handler) GetUserRankings(c echo.Context) error {
 	ctx := c.Request().Context()
 
-	limit, _ := strconv.Atoi(c.QueryParam(queryLimit))
-	offset, _ := strconv.Atoi(c.QueryParam(queryOffset))
+	limit, err := parseNonNegativeIntQuery(c, queryLimit)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse{Message: "invalid limit"})
+	}
+	offset, err := parseNonNegativeIntQuery(c, queryOffset)
+	if err != nil {
+		return c.JSON(http.StatusBadRequest, errorResponse{Message: "invalid offset"})
+	}
 
 	result, err := h.usecase.GetUserRankings(ctx, rankingusecase.GetRankingsInput{
 		Limit:  limit,
@@ -248,4 +261,22 @@ func (h *Handler) handleError(c echo.Context, ctx context.Context, err error) er
 
 type errorResponse struct {
 	Message string `json:"message"`
+}
+
+// parseNonNegativeIntQuery は非負整数のクエリパラメータをパースする。
+// 未指定（空文字）の場合は 0 を返し、usecase 側のデフォルト適用に委ねる。
+// 数値変換失敗または負数の場合はエラーを返す。
+func parseNonNegativeIntQuery(c echo.Context, key string) (int, error) {
+	raw := c.QueryParam(key)
+	if raw == "" {
+		return 0, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s: %w", key, err)
+	}
+	if v < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", key)
+	}
+	return v, nil
 }
