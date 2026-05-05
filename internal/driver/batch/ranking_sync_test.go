@@ -72,7 +72,7 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 						Return([]rankingdomain.GuildScore{{GuildID: 1, Score: 9000}}, nil),
 					d.repo.EXPECT().ListAllUserPoints(gomock.Any(), gomock.Any()).
 						Return([]rankingdomain.UserPoint{{UserID: 10, Points: 5000}}, nil),
-					d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(42)).
+					d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(42), gomock.Any()).
 						Return(int64(3), nil),
 				)
 				d.store.EXPECT().SetGuildScore(gomock.Any(), int64(1), int64(9000)).Return(nil)
@@ -92,7 +92,7 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 					Return([]rankingdomain.GuildScore{}, nil)
 				d.repo.EXPECT().ListAllUserPoints(gomock.Any(), gomock.Any()).
 					Return([]rankingdomain.UserPoint{}, nil)
-				d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(0)).
+				d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(0), gomock.Any()).
 					Return(int64(0), nil)
 				return d.build(t)
 			},
@@ -155,7 +155,7 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 						Return([]rankingdomain.GuildScore{{GuildID: 1, Score: 100}}, nil),
 					d.repo.EXPECT().ListAllUserPoints(gomock.Any(), gomock.Any()).
 						Return([]rankingdomain.UserPoint{{UserID: 1, Points: 200}}, nil),
-					d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(10)).
+					d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(10), gomock.Any()).
 						Return(int64(0), errors.New("db error")),
 				)
 				return d.build(t)
@@ -179,7 +179,7 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 						{UserID: 10, Points: 500},
 						{UserID: 20, Points: 600},
 					}, nil)
-				d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(5)).
+				d.outboxRepo.EXPECT().MarkProcessedUpTo(gomock.Any(), gomock.Any(), uint64(5), gomock.Any()).
 					Return(int64(2), nil)
 
 				d.store.EXPECT().SetGuildScore(gomock.Any(), int64(1), int64(100)).

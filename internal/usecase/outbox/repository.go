@@ -31,8 +31,8 @@ type Repository interface {
 	// ranking 同期バッチがスナップショット境界として使用する。
 	GetMaxID(ctx context.Context, tx shared.Tx) (uint64, error)
 
-	// MarkProcessedUpTo は指定 ID 以下の pending イベントを一括で処理済みにマークし、
-	// マークされた件数を返す。バッチが「DB を読んだ時点までに COMMIT 済みのイベント」を
-	// processed として確定させるために使用する。
-	MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64) (int64, error)
+	// MarkProcessedUpTo は指定 ID 以下、かつ eventType が一致する pending イベントを一括で
+	// 処理済みにマークし、マークされた件数を返す。バッチが「DB を読んだ時点までに COMMIT 済みの
+	// 対象イベント」を processed として確定させるために使用する。
+	MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64, eventType outboxdomain.EventType) (int64, error)
 }

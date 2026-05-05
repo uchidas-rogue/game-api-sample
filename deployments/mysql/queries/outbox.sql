@@ -34,9 +34,12 @@ SELECT CAST(COALESCE(MAX(id), 0) AS UNSIGNED) AS max_id
 FROM outbox_events;
 
 -- name: MarkOutboxEventsProcessedUpTo :execrows
--- 指定 ID 以下の pending イベントを一括で処理済みにマークする。
--- ranking 同期バッチがスナップショット境界 (max_id) までのイベントを processed として確定させるために使用する。
+-- 指定 ID 以下、かつ event_type が一致する pending イベントを一括で処理済みにマークする。
+-- ranking 同期バッチがスナップショット境界 (max_id) までの ranking 系イベントを processed として
+-- 確定させるために使用する。ranking 以外のイベント (将来追加されるドメインのイベント) を
+-- 巻き添えで processed 化しないよう event_type で必ず絞り込む。
 UPDATE outbox_events
 SET processed_at = NOW(6)
 WHERE processed_at IS NULL
-  AND id <= ?;
+  AND id <= sqlc.arg(max_id)
+  AND event_type = sqlc.arg(event_type);

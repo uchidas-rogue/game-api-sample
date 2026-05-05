@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
+	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
 	outboxusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox"
 	rankingusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking"
@@ -78,9 +79,10 @@ func (s *RankingSyncer) SyncAll(ctx context.Context) error {
 		}
 		userPoints = up
 
-		// スナップショット境界までの pending イベントを processed にマークする。
-		// maxID == 0 の場合（空テーブル）でもクエリは安全（0 件 UPDATE）。
-		rows, err := s.outboxRepo.MarkProcessedUpTo(ctx, tx, maxID)
+		// スナップショット境界までの ranking 系 pending イベントを processed にマークする。
+		// ranking 以外のイベント (将来追加されるドメインのイベント) を巻き添えにしないよう
+		// event_type を明示的に絞り込む。maxID == 0 の場合（空テーブル）でもクエリは安全（0 件 UPDATE）。
+		rows, err := s.outboxRepo.MarkProcessedUpTo(ctx, tx, maxID, outboxdomain.EventTypeRankingScoreAdded)
 		if err != nil {
 			return fmt.Errorf("mark outbox processed up to %d: %w", maxID, err)
 		}

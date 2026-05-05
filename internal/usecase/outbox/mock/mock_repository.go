@@ -116,16 +116,16 @@ func (mr *MockRepositoryMockRecorder) MarkProcessed(ctx, tx, id any) *gomock.Cal
 }
 
 // MarkProcessedUpTo mocks base method.
-func (m *MockRepository) MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64) (int64, error) {
+func (m *MockRepository) MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64, eventType outbox.EventType) (int64, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MarkProcessedUpTo", ctx, tx, maxID)
+	ret := m.ctrl.Call(m, "MarkProcessedUpTo", ctx, tx, maxID, eventType)
 	ret0, _ := ret[0].(int64)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // MarkProcessedUpTo indicates an expected call of MarkProcessedUpTo.
-func (mr *MockRepositoryMockRecorder) MarkProcessedUpTo(ctx, tx, maxID any) *gomock.Call {
+func (mr *MockRepositoryMockRecorder) MarkProcessedUpTo(ctx, tx, maxID, eventType any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessedUpTo", reflect.TypeOf((*MockRepository)(nil).MarkProcessedUpTo), ctx, tx, maxID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessedUpTo", reflect.TypeOf((*MockRepository)(nil).MarkProcessedUpTo), ctx, tx, maxID, eventType)
 }

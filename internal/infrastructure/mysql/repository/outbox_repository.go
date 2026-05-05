@@ -95,13 +95,22 @@ func (r *OutboxRepository) GetMaxID(ctx context.Context, tx shared.Tx) (uint64, 
 	return uint64(maxID), nil
 }
 
-// MarkProcessedUpTo は指定 ID 以下の pending イベントを一括で処理済みにマークする。
-func (r *OutboxRepository) MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64) (int64, error) {
+// MarkProcessedUpTo は指定 ID 以下、かつ eventType が一致する pending イベントを一括で
+// 処理済みにマークする。
+func (r *OutboxRepository) MarkProcessedUpTo(
+	ctx context.Context,
+	tx shared.Tx,
+	maxID uint64,
+	eventType outboxdomain.EventType,
+) (int64, error) {
 	q, err := r.querier(tx)
 	if err != nil {
 		return 0, fmt.Errorf("MarkProcessedUpTo: %w", err)
 	}
-	rows, err := q.MarkOutboxEventsProcessedUpTo(ctx, maxID)
+	rows, err := q.MarkOutboxEventsProcessedUpTo(ctx, sqlc.MarkOutboxEventsProcessedUpToParams{
+		MaxID:     maxID,
+		EventType: string(eventType),
+	})
 	if err != nil {
 		return 0, fmt.Errorf("mark outbox events processed up to: %w", err)
 	}

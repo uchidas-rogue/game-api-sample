@@ -87,6 +87,7 @@ type ListPendingOutboxEventsRow struct {
 	RetryCount uint32
 }
 
+// 複数 worker をスケールアウトしたときの競合回避で skip locked を付与する。
 func (q *Queries) ListPendingOutboxEvents(ctx context.Context, limit int32) ([]ListPendingOutboxEventsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listPendingOutboxEvents, limit)
 	if err != nil {
@@ -131,12 +132,20 @@ UPDATE outbox_events
 SET processed_at = NOW(6)
 WHERE processed_at IS NULL
   AND id <= ?
+  AND event_type = ?
 `
 
-// 指定 ID 以下の pending イベントを一括で処理済みにマークする。
-// ranking 同期バッチがスナップショット境界 (max_id) までのイベントを processed として確定させるために使用する。
-func (q *Queries) MarkOutboxEventsProcessedUpTo(ctx context.Context, id uint64) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markOutboxEventsProcessedUpTo, id)
+type MarkOutboxEventsProcessedUpToParams struct {
+	MaxID     uint64
+	EventType string
+}
+
+// 指定 ID 以下、かつ event_type が一致する pending イベントを一括で処理済みにマークする。
+// ranking 同期バッチがスナップショット境界 (max_id) までの ranking 系イベントを processed として
+// 確定させるために使用する。ranking 以外のイベント (将来追加されるドメインのイベント) を
+// 巻き添えで processed 化しないよう event_type で必ず絞り込む。
+func (q *Queries) MarkOutboxEventsProcessedUpTo(ctx context.Context, arg MarkOutboxEventsProcessedUpToParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, markOutboxEventsProcessedUpTo, arg.MaxID, arg.EventType)
 	if err != nil {
 		return 0, err
 	}

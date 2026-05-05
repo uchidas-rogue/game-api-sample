@@ -38,12 +38,15 @@ type Querier interface {
 	ListGuildsByIDs(ctx context.Context, ids []int64) ([]Guild, error)
 	// アイテムマスタ全件を取得する（排出抽選用）。
 	ListItems(ctx context.Context) ([]Item, error)
+	// 複数 worker をスケールアウトしたときの競合回避で skip locked を付与する。
 	ListPendingOutboxEvents(ctx context.Context, limit int32) ([]ListPendingOutboxEventsRow, error)
 	ListUsersByIDs(ctx context.Context, ids []int64) ([]User, error)
 	MarkOutboxEventProcessed(ctx context.Context, id uint64) error
-	// 指定 ID 以下の pending イベントを一括で処理済みにマークする。
-	// ranking 同期バッチがスナップショット境界 (max_id) までのイベントを processed として確定させるために使用する。
-	MarkOutboxEventsProcessedUpTo(ctx context.Context, id uint64) (int64, error)
+	// 指定 ID 以下、かつ event_type が一致する pending イベントを一括で処理済みにマークする。
+	// ranking 同期バッチがスナップショット境界 (max_id) までの ranking 系イベントを processed として
+	// 確定させるために使用する。ranking 以外のイベント (将来追加されるドメインのイベント) を
+	// 巻き添えで processed 化しないよう event_type で必ず絞り込む。
+	MarkOutboxEventsProcessedUpTo(ctx context.Context, arg MarkOutboxEventsProcessedUpToParams) (int64, error)
 	// 指定ユーザーの石残高を更新する。トランザクション内から呼び出す前提。
 	UpdateUserGems(ctx context.Context, arg UpdateUserGemsParams) error
 	UpsertGuildScore(ctx context.Context, arg UpsertGuildScoreParams) error
