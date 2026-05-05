@@ -118,6 +118,51 @@ func TestWorker_runOnce_dispatch(t *testing.T) {
 			},
 		},
 		{
+			name: "異常系: IncrementUserPoints 成功 + IncrementGuildScore 失敗で IncrementRetry",
+			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
+				t.Helper()
+				repo := mockoutbox.NewMockRepository(ctrl)
+				store := mockranking.NewMockRankingStore(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
+				invokeDoInTx(tx, 1)
+
+				payload := mustMarshalRankingScoreAdded(t, outboxdomain.RankingScoreAddedPayload{
+					UserID: 11, GuildID: 2, Points: 300,
+				})
+				repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
+					Return([]outboxdomain.Event{
+						{ID: 8, Type: outboxdomain.EventTypeRankingScoreAdded, Payload: payload},
+					}, nil)
+				store.EXPECT().IncrementUserPoints(gomock.Any(), int64(11), int64(300)).Return(nil)
+				store.EXPECT().IncrementGuildScore(gomock.Any(), int64(2), int64(300)).
+					Return(errors.New("redis guild down"))
+				repo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(8), gomock.Any()).Return(nil)
+
+				return workeroutbox.New(workeroutbox.Config{
+					Repo: repo, RankingStore: store, Tx: tx,
+					Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
+				})
+			},
+		},
+		{
+			name: "異常系: ListPending エラーは IncrementRetry/MarkProcessed を呼ばずに戻る",
+			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
+				t.Helper()
+				repo := mockoutbox.NewMockRepository(ctrl)
+				store := mockranking.NewMockRankingStore(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
+				invokeDoInTx(tx, 1)
+
+				repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
+					Return(nil, errors.New("db down"))
+
+				return workeroutbox.New(workeroutbox.Config{
+					Repo: repo, RankingStore: store, Tx: tx,
+					Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
+				})
+			},
+		},
+		{
 			name: "正常系: ListPending が空なら何も呼ばない",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()

@@ -163,6 +163,18 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "異常系: DoInTx 自体が失敗（BEGIN 失敗）時は内部処理が呼ばれずエラー",
+			setup: func(t *testing.T, ctrl *gomock.Controller) *batch.RankingSyncer {
+				d := newSyncerDeps(ctrl)
+				d.tx.EXPECT().
+					DoInTx(gomock.Any(), gomock.Any()).
+					Return(errors.New("begin failed"))
+				// repo / outboxRepo / store の EXPECT は仕込まない（呼ばれないことを strict マッチで担保）
+				return d.build(t)
+			},
+			wantErr: true,
+		},
+		{
 			name: "エッジケース: SetGuildScore / SetUserPoints の一部失敗はログのみで処理を継続しエラーを返さない",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *batch.RankingSyncer {
 				d := newSyncerDeps(ctrl)

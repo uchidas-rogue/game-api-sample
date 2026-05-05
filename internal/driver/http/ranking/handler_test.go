@@ -70,6 +70,20 @@ func TestHandler_GetGuildRankings(t *testing.T) {
 			wantBodyPart:   `"total_count":0`,
 		},
 		{
+			name:           "異常系: limit が負値は 400",
+			queryParams:    "?limit=-1&offset=0",
+			setupMock:      func(_ *mockranking.MockUsecase) {},
+			wantStatusCode: http.StatusBadRequest,
+			wantBodyPart:   `"message":"invalid limit"`,
+		},
+		{
+			name:           "異常系: offset が負値は 400",
+			queryParams:    "?limit=10&offset=-5",
+			setupMock:      func(_ *mockranking.MockUsecase) {},
+			wantStatusCode: http.StatusBadRequest,
+			wantBodyPart:   `"message":"invalid offset"`,
+		},
+		{
 			name:        "異常系: usecase がエラーを返す場合は 500",
 			queryParams: "?limit=10&offset=0",
 			setupMock: func(m *mockranking.MockUsecase) {
@@ -193,15 +207,17 @@ func TestHandler_AddUserPoints(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		paramUserID    string
-		body           string
-		setupMock      func(m *mockranking.MockUsecase)
-		wantStatusCode int
-		wantBodyPart   string
+		name             string
+		paramUserID      string
+		body             string
+		setupMock        func(m *mockranking.MockUsecase)
+		wantStatusCode   int
+		wantBodyPart     string
+		wantBodyContains []string
+		wantBodyAbsent   []string
 	}{
 		{
-			name:        "正常系: ポイント加算成功（ギルド集計フィールド含む）",
+			name:        "正常系: ポイント加算成功（個人・ギルド集計フィールド含む / rank系は未含有）",
 			paramUserID: "10",
 			body:        `{"points":500,"reason":"クエストクリア"}`,
 			setupMock: func(m *mockranking.MockUsecase) {
@@ -218,47 +234,16 @@ func TestHandler_AddUserPoints(t *testing.T) {
 				}, nil)
 			},
 			wantStatusCode: http.StatusOK,
-			wantBodyPart:   `"new_total":1500`,
-		},
-		{
-			name:        "正常系: レスポンスにギルド集計フィールドが含まれる",
-			paramUserID: "10",
-			body:        `{"points":100,"reason":"デイリーボーナス"}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().AddUserPoints(gomock.Any(), rankingusecase.AddUserPointsInput{
-					UserID: 10, Points: 100, Reason: "デイリーボーナス",
-				}).Return(rankingdomain.UserPointAddResult{
-					UserID:             10,
-					Points:             100,
-					PreviousTotal:      0,
-					NewTotal:           100,
-					GuildID:            3,
-					GuildPreviousTotal: 0,
-					GuildNewTotal:      100,
-				}, nil)
+			wantBodyContains: []string{
+				`"user_id":10`,
+				`"points":500`,
+				`"previous_total":1000`,
+				`"new_total":1500`,
+				`"guild_id":1`,
+				`"guild_previous_total":5000`,
+				`"guild_new_total":5500`,
 			},
-			wantStatusCode: http.StatusOK,
-			wantBodyPart:   `"guild_id":3`,
-		},
-		{
-			name:        "正常系: レスポンスに rank/guild_rank が含まれない",
-			paramUserID: "10",
-			body:        `{"points":50,"reason":"ログインボーナス"}`,
-			setupMock: func(m *mockranking.MockUsecase) {
-				m.EXPECT().AddUserPoints(gomock.Any(), rankingusecase.AddUserPointsInput{
-					UserID: 10, Points: 50, Reason: "ログインボーナス",
-				}).Return(rankingdomain.UserPointAddResult{
-					UserID:             10,
-					Points:             50,
-					PreviousTotal:      100,
-					NewTotal:           150,
-					GuildID:            1,
-					GuildPreviousTotal: 1000,
-					GuildNewTotal:      1050,
-				}, nil)
-			},
-			wantStatusCode: http.StatusOK,
-			wantBodyPart:   `"new_total":150`,
+			wantBodyAbsent: []string{`"rank"`, `"guild_rank"`},
 		},
 		{
 			name:           "異常系: userID が数値でない",
@@ -358,7 +343,16 @@ func TestHandler_AddUserPoints(t *testing.T) {
 			require.NoError(t, h.AddUserPoints(c))
 
 			assert.Equal(t, tt.wantStatusCode, rec.Code)
-			assert.Contains(t, strings.TrimSpace(rec.Body.String()), tt.wantBodyPart)
+			body := strings.TrimSpace(rec.Body.String())
+			if tt.wantBodyPart != "" {
+				assert.Contains(t, body, tt.wantBodyPart)
+			}
+			for _, s := range tt.wantBodyContains {
+				assert.Contains(t, body, s)
+			}
+			for _, s := range tt.wantBodyAbsent {
+				assert.NotContains(t, body, s)
+			}
 		})
 	}
 }
@@ -385,6 +379,20 @@ func TestHandler_GetUserRankings(t *testing.T) {
 			},
 			wantStatusCode: http.StatusOK,
 			wantBodyPart:   `"total_count":1`,
+		},
+		{
+			name:           "異常系: limit が負値は 400",
+			queryParams:    "?limit=-1&offset=0",
+			setupMock:      func(_ *mockranking.MockUsecase) {},
+			wantStatusCode: http.StatusBadRequest,
+			wantBodyPart:   `"message":"invalid limit"`,
+		},
+		{
+			name:           "異常系: offset が負値は 400",
+			queryParams:    "?limit=10&offset=-5",
+			setupMock:      func(_ *mockranking.MockUsecase) {},
+			wantStatusCode: http.StatusBadRequest,
+			wantBodyPart:   `"message":"invalid offset"`,
 		},
 		{
 			name:        "異常系: usecase がエラーを返す場合は 500",

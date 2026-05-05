@@ -4,6 +4,7 @@ package ranking
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -184,7 +185,7 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 		currentPoints, err := u.repo.GetUserPoints(ctx, tx, input.UserID)
 		var previousTotal int64
 		if err != nil {
-			if err.Error() != rankingdomain.ErrPointsNotFound.Error() {
+			if !errors.Is(err, rankingdomain.ErrPointsNotFound) {
 				return err
 			}
 		} else {
@@ -195,7 +196,7 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 		currentGuildScore, err := u.repo.GetGuildScore(ctx, tx, guildID)
 		var guildPreviousTotal int64
 		if err != nil {
-			if err.Error() != rankingdomain.ErrScoreNotFound.Error() {
+			if !errors.Is(err, rankingdomain.ErrScoreNotFound) {
 				return err
 			}
 		} else {

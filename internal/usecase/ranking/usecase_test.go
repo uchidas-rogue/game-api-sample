@@ -558,6 +558,43 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 			},
 		},
 		{
+			name:  "境界値: Points=MaxScore でも加算成功",
+			input: ranking.AddUserPointsInput{UserID: userID, Points: rankingdomain.MaxScore, Reason: reason},
+			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
+				t.Helper()
+				repo := mockranking.NewMockRepository(ctrl)
+				store := mockranking.NewMockRankingStore(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
+				outboxRepo := mockoutbox.NewMockRepository(ctrl)
+				notifier := mockoutbox.NewMockNotifier(ctrl)
+				newDoInTxCaller(tx)
+
+				maxPts := int64(rankingdomain.MaxScore)
+				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
+					Return("テストユーザー", nil)
+				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
+					Return(guildID, nil)
+				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
+					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
+				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
+					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
+				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, maxPts, reason).Return(nil)
+				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, maxPts).Return(nil)
+				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, maxPts).Return(nil)
+				repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, maxPts).Return(nil)
+				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, maxPts)
+				notifier.EXPECT().Notify(gomock.Any()).Return(nil)
+
+				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
+			},
+			wantErr: false,
+			checkResult: func(t *testing.T, r rankingdomain.UserPointAddResult) {
+				t.Helper()
+				assert.Equal(t, int64(rankingdomain.MaxScore), r.Points)
+				assert.Equal(t, int64(rankingdomain.MaxScore), r.NewTotal)
+			},
+		},
+		{
 			name:  "正常系: outbox 通知が失敗してもリクエストは成功する（ポーリングがフォールバック）",
 			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
 			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
