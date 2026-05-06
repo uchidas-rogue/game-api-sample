@@ -3,7 +3,11 @@ LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
 
-.PHONY: help run run/debug run/outbox-worker test test/v build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
+IMAGE_NAME ?= game-api
+IMAGE_TAG  ?= latest
+BIN        ?= api
+
+.PHONY: help run run/debug run/outbox-worker test test/v build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/run
 
 .DEFAULT_GOAL := help
 
@@ -79,6 +83,23 @@ db/cli:
 	docker compose -f deployments/docker-compose.yml exec -it \
 		-e MYSQL_PWD=game -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
 		mysql mysql --default-character-set=utf8mb4 -ugame game_db
+
+## 本番イメージをビルド（BIN=api|batch|outbox-worker, 既定: api）
+docker/build:
+	docker build --platform=linux/arm64 --build-arg BIN=$(BIN) -t $(IMAGE_NAME)-$(BIN):$(IMAGE_TAG) .
+
+## 3バイナリ全部のイメージをビルド
+docker/build/all:
+	$(MAKE) docker/build BIN=api
+	$(MAKE) docker/build BIN=batch
+	$(MAKE) docker/build BIN=outbox-worker
+
+## ローカルで本番イメージを起動（BIN=api 既定, .env.docker を読み込み）
+docker/run:
+	docker run --rm -p $(PORT):8080 \
+		--env-file .env.docker \
+		--name $(IMAGE_NAME)-$(BIN) \
+		$(IMAGE_NAME)-$(BIN):$(IMAGE_TAG)
 
 ## migrations/*.up.sql を結合して schema.sql を再生成（sqlc 用）
 db/schema/dump:
