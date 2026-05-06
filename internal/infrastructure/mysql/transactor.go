@@ -35,11 +35,8 @@ type Transactor struct {
 	logger *slog.Logger
 }
 
-// NewTransactor は Transactor を生成する。logger に nil を渡した場合はデフォルトを使う。
+// NewTransactor は Transactor を生成する。logger は呼び出し側で必ず初期化済みのものを渡す。
 func NewTransactor(db *sql.DB, logger *slog.Logger) *Transactor {
-	if logger == nil {
-		logger = slog.Default()
-	}
 	return &Transactor{db: db, logger: logger}
 }
 

@@ -104,14 +104,14 @@ func (s *RankingSyncer) SyncAll(ctx context.Context) error {
 		if err := s.rankingStore.SetGuildScore(ctx, gs.GuildID, gs.Score); err != nil {
 			s.logger.ErrorContext(ctx, "failed to set guild score",
 				slog.Int64("guild_id", gs.GuildID),
-				slog.String("error", err.Error()))
+				slog.Any("error", err))
 		}
 	}
 	for _, up := range userPoints {
 		if err := s.rankingStore.SetUserPoints(ctx, up.UserID, up.Points); err != nil {
 			s.logger.ErrorContext(ctx, "failed to set user points",
 				slog.Int64("user_id", up.UserID),
-				slog.String("error", err.Error()))
+				slog.Any("error", err))
 		}
 	}
 

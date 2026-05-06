@@ -36,13 +36,16 @@ func buildWriter(level slog.Level) (io.Writer, func() error) {
 		return os.Stdout, func() error { return nil }
 	}
 
+	// プロセス起動時に1回だけ実行されるログファイル名生成のため、
+	// CLAUDE.md §3 の Clock DI ルールの例外として time.Now() を直接使用する。
+	// テスト容易性が問題になる場合は Clock 注入に切り替える。
 	path := fmt.Sprintf("%s/%s.log", logsDir, time.Now().Format(time.DateOnly))
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 	if err != nil {
 		// ファイルが開けなくても標準出力だけで継続する（起動を止めない）
 		slog.Warn("failed to open log file, falling back to stdout only",
 			slog.String("path", path),
-			slog.String("error", err.Error()),
+			slog.Any("error", err),
 		)
 		return os.Stdout, func() error { return nil }
 	}

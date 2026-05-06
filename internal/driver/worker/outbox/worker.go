@@ -43,18 +43,14 @@ type Config struct {
 	BatchSize    int
 }
 
-// New は Worker を生成する。
+// New は Worker を生成する。Config.Logger は呼び出し側で必ず初期化済みのものを渡す。
 func New(cfg Config) *Worker {
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
 	return &Worker{
 		repo:         cfg.Repo,
 		rankingStore: cfg.RankingStore,
 		tx:           cfg.Tx,
 		subscriber:   cfg.Subscriber,
-		logger:       logger,
+		logger:       cfg.Logger,
 		pollInterval: cfg.PollInterval,
 		batchSize:    int32(cfg.BatchSize),
 	}
@@ -77,7 +73,7 @@ func (w *Worker) Run(ctx context.Context) error {
 		ch, err := w.subscriber.Subscribe(ctx)
 		if err != nil {
 			w.logger.WarnContext(ctx, "outbox subscribe failed (poll only)",
-				slog.String("error", err.Error()))
+				slog.Any("error", err))
 		} else {
 			notifyCh = ch
 		}
@@ -85,7 +81,7 @@ func (w *Worker) Run(ctx context.Context) error {
 
 	// 初回はティックを待たずに即実行
 	if err := w.runOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		w.logger.ErrorContext(ctx, "outbox tick failed", slog.String("error", err.Error()))
+		w.logger.ErrorContext(ctx, "outbox tick failed", slog.Any("error", err))
 	}
 
 	for {
@@ -95,7 +91,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			if err := w.runOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				w.logger.ErrorContext(ctx, "outbox tick failed", slog.String("error", err.Error()))
+				w.logger.ErrorContext(ctx, "outbox tick failed", slog.Any("error", err))
 			}
 		case _, ok := <-notifyCh:
 			if !ok {
@@ -104,7 +100,7 @@ func (w *Worker) Run(ctx context.Context) error {
 				continue
 			}
 			if err := w.runOnce(ctx); err != nil && !errors.Is(err, context.Canceled) {
-				w.logger.ErrorContext(ctx, "outbox notify-triggered run failed", slog.String("error", err.Error()))
+				w.logger.ErrorContext(ctx, "outbox notify-triggered run failed", slog.Any("error", err))
 			}
 		}
 	}
@@ -123,7 +119,7 @@ func (w *Worker) runOnce(ctx context.Context) error {
 					slog.Uint64("event_id", ev.ID),
 					slog.String("event_type", string(ev.Type)),
 					slog.Uint64("retry_count", uint64(ev.RetryCount)),
-					slog.String("error", err.Error()),
+					slog.Any("error", err),
 				)
 				if rerr := w.repo.IncrementRetry(ctx, tx, ev.ID, err.Error()); rerr != nil {
 					return fmt.Errorf("increment retry id=%d: %w", ev.ID, rerr)

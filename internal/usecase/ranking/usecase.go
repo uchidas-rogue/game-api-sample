@@ -251,7 +251,7 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 	// 通知失敗はリクエストを失敗させない。worker のポーリングがフォールバック。
 	if nerr := u.outboxNotifier.Notify(ctx); nerr != nil {
 		u.logger.WarnContext(ctx, "outbox notify failed (poll fallback will pick up)",
-			slog.String("error", nerr.Error()),
+			slog.Any("error", nerr),
 		)
 	}
 

@@ -28,7 +28,7 @@ func main() {
 
 	cfg, err := configs.Load()
 	if err != nil {
-		slog.Error("failed to load config", slog.String("error", err.Error()))
+		slog.Error("failed to load config", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -40,14 +40,14 @@ func main() {
 
 	db, err := infraMysql.Open(cfg.MySQLDSN)
 	if err != nil {
-		log.Error("failed to open mysql", slog.String("error", err.Error()))
+		log.Error("failed to open mysql", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer func() { _ = db.Close() }()
 
 	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
 	if err != nil {
-		log.Error("failed to connect redis", slog.String("error", err.Error()))
+		log.Error("failed to connect redis", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer func() { _ = redisClient.Close() }()
@@ -60,7 +60,7 @@ func main() {
 
 	log.Info("starting ranking sync batch")
 	if err := syncer.SyncAll(ctx); err != nil {
-		log.Error("ranking sync failed", slog.String("error", err.Error()))
+		log.Error("ranking sync failed", slog.Any("error", err))
 		os.Exit(1)
 	}
 	log.Info("ranking sync completed successfully")

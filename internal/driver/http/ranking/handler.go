@@ -254,7 +254,7 @@ func (h *Handler) handleError(c echo.Context, ctx context.Context, err error) er
 	case errors.Is(err, rankingdomain.ErrPointsNotFound):
 		return c.JSON(http.StatusNotFound, errorResponse{Message: "points not found"})
 	default:
-		h.logger.ErrorContext(ctx, "ranking operation failed", slog.String("error", err.Error()))
+		h.logger.ErrorContext(ctx, "ranking operation failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse{Message: "internal server error"})
 	}
 }

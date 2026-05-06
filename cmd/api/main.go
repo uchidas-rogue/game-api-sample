@@ -21,7 +21,7 @@ func main() {
 	// 設定読み込み（LOG_LEVELもここで解決する）
 	cfg, err := configs.Load()
 	if err != nil {
-		slog.Error("failed to load config", slog.String("error", err.Error()))
+		slog.Error("failed to load config", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -36,7 +36,7 @@ func main() {
 	// MySQL接続を確立（DSN は configs から）
 	db, err := infraMysql.Open(cfg.MySQLDSN)
 	if err != nil {
-		log.Error("failed to open mysql", slog.String("error", err.Error()))
+		log.Error("failed to open mysql", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer func() { _ = db.Close() }()
@@ -44,7 +44,7 @@ func main() {
 	// Redis接続を確立
 	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
 	if err != nil {
-		log.Error("failed to connect redis", slog.String("error", err.Error()))
+		log.Error("failed to connect redis", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer func() { _ = redisClient.Close() }()
@@ -56,7 +56,7 @@ func main() {
 
 	// サーバ起動（ctxキャンセルでグレースフルシャットダウン）
 	if err := server.Run(ctx, e, cfg.Port, log); err != nil {
-		log.Error("server terminated with error", slog.String("error", err.Error()))
+		log.Error("server terminated with error", slog.Any("error", err))
 		os.Exit(1)
 	}
 	log.Info("server stopped gracefully")

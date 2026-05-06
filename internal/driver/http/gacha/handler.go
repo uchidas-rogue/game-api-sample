@@ -97,7 +97,7 @@ func (h *Handler) Multi(c echo.Context) error {
 			// 予期せぬエラーは詳細を返さず500を返す（情報漏えい防止）。
 			h.logger.ErrorContext(ctx, "multi pull failed",
 				slog.Int64("user_id", userID),
-				slog.String("error", err.Error()),
+				slog.Any("error", err),
 			)
 			return c.JSON(http.StatusInternalServerError, errorResponse{Message: "internal server error"})
 		}
