@@ -3,7 +3,7 @@ LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
 
-.PHONY: help run run/debug run/outbox-worker test test/v build lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
+.PHONY: help run run/debug run/outbox-worker test test/v build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
 
 .DEFAULT_GOAL := help
 
@@ -35,6 +35,19 @@ test/v:
 build:
 	mkdir -p bin
 	go build -o bin/api ./cmd/api
+
+## batch ビルド（./bin/batch に出力）
+build/batch:
+	mkdir -p bin
+	go build -o bin/batch ./cmd/batch
+
+## outbox-worker ビルド（./bin/outbox-worker に出力）
+build/outbox-worker:
+	mkdir -p bin
+	go build -o bin/outbox-worker ./cmd/outbox-worker
+
+## 全バイナリをビルド（api / batch / outbox-worker）
+build/all: build build/batch build/outbox-worker
 
 ## 静的解析
 lint:
