@@ -6,12 +6,41 @@ package sqlc
 
 import (
 	"database/sql"
+	"encoding/json"
+	"time"
 )
 
 type GachaHistory struct {
 	ID        int64
 	UserID    int64
 	ItemID    int64
+	CreatedAt sql.NullTime
+}
+
+type Guild struct {
+	ID        int64
+	Name      string
+	CreatedAt sql.NullTime
+	UpdatedAt sql.NullTime
+}
+
+type GuildMember struct {
+	GuildID  int64
+	UserID   int64
+	JoinedAt sql.NullTime
+}
+
+type GuildScore struct {
+	GuildID   int64
+	Score     int64
+	UpdatedAt sql.NullTime
+}
+
+type GuildScoreHistory struct {
+	ID        int64
+	GuildID   int64
+	UserID    int64
+	Score     int64
 	CreatedAt sql.NullTime
 }
 
@@ -23,6 +52,16 @@ type Item struct {
 	// 排出確率計算用の重み
 	Weight    int32
 	CreatedAt sql.NullTime
+}
+
+type OutboxEvent struct {
+	ID          uint64
+	EventType   string
+	Payload     json.RawMessage
+	CreatedAt   time.Time
+	ProcessedAt sql.NullTime
+	RetryCount  uint32
+	LastError   sql.NullString
 }
 
 type User struct {
@@ -41,4 +80,18 @@ type UserItem struct {
 	Num       int32
 	CreatedAt sql.NullTime
 	UpdatedAt sql.NullTime
+}
+
+type UserPoint struct {
+	UserID    int64
+	Points    int64
+	UpdatedAt sql.NullTime
+}
+
+type UserPointHistory struct {
+	ID        int64
+	UserID    int64
+	Points    int64
+	Reason    string
+	CreatedAt sql.NullTime
 }

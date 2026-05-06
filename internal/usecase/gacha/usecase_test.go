@@ -16,6 +16,8 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/internal/testutil/slogtest"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
 	mockuc "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha/mock"
+	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
+	mockshared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared/mock"
 )
 
 // testItems はテスト用のアイテムリスト。
@@ -27,10 +29,10 @@ var testItems = []gachadomain.Item{
 }
 
 // newDoInTxCaller は MockTransactor.DoInTx を実際に fn(nil) を呼び出す DoAndReturn として設定するヘルパー。
-func newDoInTxCaller(tx *mockuc.MockTransactor) {
+func newDoInTxCaller(tx *mockshared.MockTransactor) {
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(gacha.Tx) error) error {
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error) error {
 			return fn(nil)
 		})
 }
@@ -64,7 +66,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "正常系: 10件抽選成功・石が消費・upsert と history が正しく呼ばれる",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				// IntN(100)=0 のとき acc=60>0 で item1 が当選
 				rnd := newFixedRandomizer(ctrl, 0)
 
@@ -100,7 +102,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "正常系: item2 が当選するケース（IntN=60）",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				// IntN(100)=60 のとき acc=60 はまだ item1 の範囲外、acc=100>60 で item2 が当選
 				rnd := newFixedRandomizer(ctrl, 60)
 
@@ -131,7 +133,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: GetUserForUpdate がエラー",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := mockuc.NewMockRandomizer(ctrl)
 
 				newDoInTxCaller(tx)
@@ -150,7 +152,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: ユーザー不在（ErrUserNotFound）— 後続処理は呼ばれない",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := mockuc.NewMockRandomizer(ctrl)
 
 				newDoInTxCaller(tx)
@@ -172,7 +174,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: 石不足（ErrInsufficientGems）",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := mockuc.NewMockRandomizer(ctrl)
 
 				newDoInTxCaller(tx)
@@ -193,7 +195,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: ListItems がエラー",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := mockuc.NewMockRandomizer(ctrl)
 
 				newDoInTxCaller(tx)
@@ -214,7 +216,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: items が空（ErrNoItemsAvailable）",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := mockuc.NewMockRandomizer(ctrl)
 
 				newDoInTxCaller(tx)
@@ -235,7 +237,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: 全アイテムの Weight が 0（ErrInvalidItemWeights）",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := mockuc.NewMockRandomizer(ctrl)
 
 				newDoInTxCaller(tx)
@@ -261,7 +263,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: UpdateUserGems がエラー",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := newFixedRandomizer(ctrl, 0)
 
 				newDoInTxCaller(tx)
@@ -284,7 +286,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: UpsertUserItem がエラー",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := newFixedRandomizer(ctrl, 0)
 
 				newDoInTxCaller(tx)
@@ -308,7 +310,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: InsertGachaHistory がエラー",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := newFixedRandomizer(ctrl, 0)
 
 				newDoInTxCaller(tx)
@@ -334,7 +336,7 @@ func TestUsecase_Multi(t *testing.T) {
 			name: "異常系: Transactor.DoInTx 自体がエラー（fn が呼ばれない）",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
-				tx := mockuc.NewMockTransactor(ctrl)
+				tx := mockshared.NewMockTransactor(ctrl)
 				rnd := mockuc.NewMockRandomizer(ctrl)
 
 				// fn を呼ばずにエラーを返す（begin 失敗などを想定）

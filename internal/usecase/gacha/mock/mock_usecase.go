@@ -17,44 +17,6 @@ import (
 	gomock "go.uber.org/mock/gomock"
 )
 
-// MockTransactor is a mock of Transactor interface.
-type MockTransactor struct {
-	ctrl     *gomock.Controller
-	recorder *MockTransactorMockRecorder
-	isgomock struct{}
-}
-
-// MockTransactorMockRecorder is the mock recorder for MockTransactor.
-type MockTransactorMockRecorder struct {
-	mock *MockTransactor
-}
-
-// NewMockTransactor creates a new mock instance.
-func NewMockTransactor(ctrl *gomock.Controller) *MockTransactor {
-	mock := &MockTransactor{ctrl: ctrl}
-	mock.recorder = &MockTransactorMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockTransactor) EXPECT() *MockTransactorMockRecorder {
-	return m.recorder
-}
-
-// DoInTx mocks base method.
-func (m *MockTransactor) DoInTx(ctx context.Context, fn func(gacha.Tx) error) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DoInTx", ctx, fn)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// DoInTx indicates an expected call of DoInTx.
-func (mr *MockTransactorMockRecorder) DoInTx(ctx, fn any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DoInTx", reflect.TypeOf((*MockTransactor)(nil).DoInTx), ctx, fn)
-}
-
 // MockRandomizer is a mock of Randomizer interface.
 type MockRandomizer struct {
 	ctrl     *gomock.Controller

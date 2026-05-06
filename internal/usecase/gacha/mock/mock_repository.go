@@ -14,45 +14,9 @@ import (
 	reflect "reflect"
 
 	gacha "github.com/uchidas-rogue/game-api-sample/internal/domain/gacha"
-	gacha0 "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
+	shared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 	gomock "go.uber.org/mock/gomock"
 )
-
-// MockTx is a mock of Tx interface.
-type MockTx struct {
-	ctrl     *gomock.Controller
-	recorder *MockTxMockRecorder
-	isgomock struct{}
-}
-
-// MockTxMockRecorder is the mock recorder for MockTx.
-type MockTxMockRecorder struct {
-	mock *MockTx
-}
-
-// NewMockTx creates a new mock instance.
-func NewMockTx(ctrl *gomock.Controller) *MockTx {
-	mock := &MockTx{ctrl: ctrl}
-	mock.recorder = &MockTxMockRecorder{mock}
-	return mock
-}
-
-// EXPECT returns an object that allows the caller to indicate expected use.
-func (m *MockTx) EXPECT() *MockTxMockRecorder {
-	return m.recorder
-}
-
-// IsTx mocks base method.
-func (m *MockTx) IsTx() {
-	m.ctrl.T.Helper()
-	m.ctrl.Call(m, "IsTx")
-}
-
-// IsTx indicates an expected call of IsTx.
-func (mr *MockTxMockRecorder) IsTx() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsTx", reflect.TypeOf((*MockTx)(nil).IsTx))
-}
 
 // MockRepository is a mock of Repository interface.
 type MockRepository struct {
@@ -79,7 +43,7 @@ func (m *MockRepository) EXPECT() *MockRepositoryMockRecorder {
 }
 
 // GetUserForUpdate mocks base method.
-func (m *MockRepository) GetUserForUpdate(ctx context.Context, tx gacha0.Tx, userID int64) (gacha.User, error) {
+func (m *MockRepository) GetUserForUpdate(ctx context.Context, tx shared.Tx, userID int64) (gacha.User, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetUserForUpdate", ctx, tx, userID)
 	ret0, _ := ret[0].(gacha.User)
@@ -94,7 +58,7 @@ func (mr *MockRepositoryMockRecorder) GetUserForUpdate(ctx, tx, userID any) *gom
 }
 
 // InsertGachaHistory mocks base method.
-func (m *MockRepository) InsertGachaHistory(ctx context.Context, tx gacha0.Tx, userID, itemID int64) error {
+func (m *MockRepository) InsertGachaHistory(ctx context.Context, tx shared.Tx, userID, itemID int64) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "InsertGachaHistory", ctx, tx, userID, itemID)
 	ret0, _ := ret[0].(error)
@@ -108,7 +72,7 @@ func (mr *MockRepositoryMockRecorder) InsertGachaHistory(ctx, tx, userID, itemID
 }
 
 // ListItems mocks base method.
-func (m *MockRepository) ListItems(ctx context.Context, tx gacha0.Tx) ([]gacha.Item, error) {
+func (m *MockRepository) ListItems(ctx context.Context, tx shared.Tx) ([]gacha.Item, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ListItems", ctx, tx)
 	ret0, _ := ret[0].([]gacha.Item)
@@ -123,7 +87,7 @@ func (mr *MockRepositoryMockRecorder) ListItems(ctx, tx any) *gomock.Call {
 }
 
 // UpdateUserGems mocks base method.
-func (m *MockRepository) UpdateUserGems(ctx context.Context, tx gacha0.Tx, userID int64, newGems int) error {
+func (m *MockRepository) UpdateUserGems(ctx context.Context, tx shared.Tx, userID int64, newGems int) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UpdateUserGems", ctx, tx, userID, newGems)
 	ret0, _ := ret[0].(error)
@@ -137,7 +101,7 @@ func (mr *MockRepositoryMockRecorder) UpdateUserGems(ctx, tx, userID, newGems an
 }
 
 // UpsertUserItem mocks base method.
-func (m *MockRepository) UpsertUserItem(ctx context.Context, tx gacha0.Tx, userID, itemID int64, num int) error {
+func (m *MockRepository) UpsertUserItem(ctx context.Context, tx shared.Tx, userID, itemID int64, num int) error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "UpsertUserItem", ctx, tx, userID, itemID, num)
 	ret0, _ := ret[0].(error)

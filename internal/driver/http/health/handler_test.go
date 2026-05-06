@@ -11,7 +11,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	healthdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/health"
-	healthhandler "github.com/uchidas-rogue/game-api-sample/internal/interface/handler/health"
+	healthhandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/health"
 	mock_health "github.com/uchidas-rogue/game-api-sample/internal/usecase/health/mock"
 )
 

@@ -12,15 +12,16 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/internal/di"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/logger"
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
+	infraRedis "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/redis"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/server"
-	"github.com/uchidas-rogue/game-api-sample/internal/interface/router"
+	"github.com/uchidas-rogue/game-api-sample/internal/driver/http/router"
 )
 
 func main() {
 	// 設定読み込み（LOG_LEVELもここで解決する）
 	cfg, err := configs.Load()
 	if err != nil {
-		slog.Error("failed to load config", slog.String("error", err.Error()))
+		slog.Error("failed to load config", slog.Any("error", err))
 		os.Exit(1)
 	}
 
@@ -35,19 +36,27 @@ func main() {
 	// MySQL接続を確立（DSN は configs から）
 	db, err := infraMysql.Open(cfg.MySQLDSN)
 	if err != nil {
-		log.Error("failed to open mysql", slog.String("error", err.Error()))
+		log.Error("failed to open mysql", slog.Any("error", err))
 		os.Exit(1)
 	}
 	defer func() { _ = db.Close() }()
 
+	// Redis接続を確立
+	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
+	if err != nil {
+		log.Error("failed to connect redis", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer func() { _ = redisClient.Close() }()
+
 	// Echoインスタンス生成 + DI解決 + ルーティング登録
 	e := server.New(log)
-	container := di.Build(db, log)
+	container := di.Build(db, redisClient, log)
 	router.Register(e, container.Handlers)
 
 	// サーバ起動（ctxキャンセルでグレースフルシャットダウン）
 	if err := server.Run(ctx, e, cfg.Port, log); err != nil {
-		log.Error("server terminated with error", slog.String("error", err.Error()))
+		log.Error("server terminated with error", slog.Any("error", err))
 		os.Exit(1)
 	}
 	log.Info("server stopped gracefully")

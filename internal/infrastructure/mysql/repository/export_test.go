@@ -2,7 +2,7 @@ package repository
 
 import (
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
-	gachausecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
+	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
 
 // NewGachaRepositoryWithQuerier はテスト専用のコンストラクタ。
@@ -10,7 +10,7 @@ import (
 // tx パラメータが渡されても、ファクトリ側でモック Querier を返すため tx の中身は参照されない。
 func NewGachaRepositoryWithQuerier(q sqlc.Querier) *GachaRepository {
 	return &GachaRepository{
-		querier: func(_ gachausecase.Tx) (sqlc.Querier, error) {
+		querier: func(_ shared.Tx) (sqlc.Querier, error) {
 			return q, nil
 		},
 	}

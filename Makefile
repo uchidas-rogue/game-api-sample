@@ -3,7 +3,7 @@ LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
 
-.PHONY: help run run/debug test test/v build lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump
+.PHONY: help run run/debug run/outbox-worker test test/v build lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
 
 .DEFAULT_GOAL := help
 
@@ -18,6 +18,10 @@ run:
 ## デバッグレベルでサーバ起動（logs/ にもファイル出力）
 run/debug:
 	PORT=$(PORT) LOG_LEVEL=debug go run ./cmd/api
+
+## outbox-worker 起動（MySQL → Redis へ Outbox イベントを配信）
+run/outbox-worker:
+	LOG_LEVEL=$(LOG_LEVEL) go run ./cmd/outbox-worker
 
 ## テスト実行
 test:
@@ -56,6 +60,12 @@ db/migrate/down:
 db/migrate/new:
 	@if [ -z "$(name)" ]; then echo "Error: name is required. Usage: make db/migrate/new name=xxx"; exit 1; fi
 	migrate create -ext sql -dir deployments/mysql/migrations -seq $(name)
+
+## MySQL コンテナに接続（utf8mb4 + LANG 明示で日本語入力対応）
+db/cli:
+	docker compose -f deployments/docker-compose.yml exec -it \
+		-e MYSQL_PWD=game -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
+		mysql mysql --default-character-set=utf8mb4 -ugame game_db
 
 ## migrations/*.up.sql を結合して schema.sql を再生成（sqlc 用）
 db/schema/dump:

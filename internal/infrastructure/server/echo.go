@@ -44,7 +44,7 @@ func New(logger *slog.Logger) *echo.Echo {
 				slog.Duration("latency", v.Latency),
 			}
 			if v.Error != nil {
-				attrs = append(attrs, slog.String("error", v.Error.Error()))
+				attrs = append(attrs, slog.Any("error", v.Error))
 				logger.LogAttrs(ctx, slog.LevelError, "request", attrs...)
 				return nil
 			}

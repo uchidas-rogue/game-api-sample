@@ -6,20 +6,53 @@ package sqlc
 
 import (
 	"context"
+	"database/sql"
 )
 
 type Querier interface {
+	DeleteProcessedOutboxEventsBefore(ctx context.Context, processedAt sql.NullTime) error
+	GetGuild(ctx context.Context, id int64) (Guild, error)
+	GetGuildScore(ctx context.Context, guildID int64) (GuildScore, error)
+	GetGuildScoreForUpdate(ctx context.Context, guildID int64) (GuildScore, error)
+	// バッチが「DB を読んだ時点までに COMMIT 済みの outbox イベント」を ID 上限として取得するために使用する。
+	// 空テーブルでも 0 を返すよう COALESCE する。
+	GetMaxOutboxEventID(ctx context.Context) (int64, error)
+	GetUser(ctx context.Context, id int64) (User, error)
 	// ユーザー行を排他ロックで取得する。10連ガチャの整合性確保用。
 	// 必ずトランザクション内から呼び出すこと。デッドロック誘発検証のため意図的に FOR UPDATE。
 	GetUserForUpdate(ctx context.Context, id int64) (User, error)
+	GetUserGuildID(ctx context.Context, userID int64) (int64, error)
+	GetUserPoints(ctx context.Context, userID int64) (UserPoint, error)
+	GetUserPointsForUpdate(ctx context.Context, userID int64) (UserPoint, error)
+	IncrementGuildScore(ctx context.Context, arg IncrementGuildScoreParams) error
+	IncrementOutboxEventRetry(ctx context.Context, arg IncrementOutboxEventRetryParams) error
+	IncrementUserPoints(ctx context.Context, arg IncrementUserPointsParams) error
 	// ガチャ履歴を1件追加する。
 	InsertGachaHistory(ctx context.Context, arg InsertGachaHistoryParams) error
+	InsertGuildScoreHistory(ctx context.Context, arg InsertGuildScoreHistoryParams) error
+	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) (int64, error)
+	InsertUserPointHistory(ctx context.Context, arg InsertUserPointHistoryParams) error
+	IsUserInGuild(ctx context.Context, arg IsUserInGuildParams) (bool, error)
+	ListAllGuildScores(ctx context.Context) ([]GuildScore, error)
+	ListAllUserPoints(ctx context.Context) ([]UserPoint, error)
+	ListGuildsByIDs(ctx context.Context, ids []int64) ([]Guild, error)
 	// アイテムマスタ全件を取得する（排出抽選用）。
 	ListItems(ctx context.Context) ([]Item, error)
+	// 複数 worker をスケールアウトしたときの競合回避で skip locked を付与する。
+	ListPendingOutboxEvents(ctx context.Context, limit int32) ([]ListPendingOutboxEventsRow, error)
+	ListUsersByIDs(ctx context.Context, ids []int64) ([]User, error)
+	MarkOutboxEventProcessed(ctx context.Context, id uint64) error
+	// 指定 ID 以下、かつ event_type が一致する pending イベントを一括で処理済みにマークする。
+	// ranking 同期バッチがスナップショット境界 (max_id) までの ranking 系イベントを processed として
+	// 確定させるために使用する。ranking 以外のイベント (将来追加されるドメインのイベント) を
+	// 巻き添えで processed 化しないよう event_type で必ず絞り込む。
+	MarkOutboxEventsProcessedUpTo(ctx context.Context, arg MarkOutboxEventsProcessedUpToParams) (int64, error)
 	// 指定ユーザーの石残高を更新する。トランザクション内から呼び出す前提。
 	UpdateUserGems(ctx context.Context, arg UpdateUserGemsParams) error
+	UpsertGuildScore(ctx context.Context, arg UpsertGuildScoreParams) error
 	// ユーザー所持アイテムを追加。既に存在する場合は所持数を加算する。
 	UpsertUserItem(ctx context.Context, arg UpsertUserItemParams) error
+	UpsertUserPoints(ctx context.Context, arg UpsertUserPointsParams) error
 }
 
 var _ Querier = (*Queries)(nil)
