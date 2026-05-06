@@ -1,40 +1,34 @@
 # Project Overview
 - プロジェクト: Go言語とEchoを用いたゲームバックエンドAPI
 - アーキテクチャ: Clean Architecture
-- インフラ構成: AWS (ECS Fargate, Aurora MySQL, ElastiCache Redis)
-- ローカル開発: `deployments/docker-compose.yml` で MySQL を起動し、API は `make run` で動作させる
-- 負荷試験: k6
 
 # 1. Communication
-- 言語: 日本語でやり取りし、コードコメントも日本語で記述する
+- 言語: 日本語でやり取りする
 - スタイル: 前置きを省き、結論から簡潔に述べる
 - 略語: 初出時のみ正式名称（必要なら和訳）を併記する。例: `YAGNI = "You Aren't Gonna Need It"（それ、たぶん要らないよ）`。同一会話内の2回目以降は略称のみで可
+- 専門用語: 初出時のみ簡単な解説（1行程度）を併記する。例: `冪等性（同じ操作を複数回実行しても結果が同じになる性質）`。同一会話内の2回目以降は用語のみで可
 
 # 2. Architecture & Design Rules (Clean Architecture)
 - 層構成: `driver`(interface adapters; HTTP handler / batch / worker 等の delivery) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止
 - `driver` 配下は配信形式ごとにサブディレクトリを切る（`internal/driver/http`, `internal/driver/batch`, `internal/driver/worker`）。新規 driver（gRPC, SQS consumer 等）を追加する際もこの配下に配置する
 - `infrastructure` 層は `usecase` が定義する interface を実装する。`usecase`/`domain` から `infrastructure` を直接 import してはならない（DI は `internal/di` で行う）
-- `domain` 層: ビジネスルールとエンティティのみ。Echo・sqlc・MySQL 等の外部技術に依存しない
+- `domain` 層: ビジネスルールとエンティティのみ。Echo・sqlc・MySQL 等の外部技術および sqlc 生成型に依存しない
 - `usecase` 層: ユースケース実装とトランザクション境界制御。リポジトリ等の interface もこの層で定義する
 - `driver/http` 層: HTTP の request/response DTO を定義し、`domain` 型へ変換してから `usecase` に渡す。`driver/batch` / `driver/worker` も同様に外部入力（cron 起動・outbox イベント等）を `usecase` 呼び出しに変換する責務を持つ
 
 # 3. Go Coding Standards
-- バージョン: Go 1.25。`slices`/`maps` 等の標準パッケージや range-over-int を優先する
-- エラーハンドリング:
-  - 握りつぶし禁止。コンテキストを付与し `%w` でラップする（例: `fmt.Errorf("get user: %w", err)`）
-  - ビジネス上のエラーは `domain` 層で sentinel error または型として定義し、`errors.Is`/`errors.As` で判定する
+- エラーハンドリング: ビジネス上のエラーは `domain` 層で sentinel error または型として定義し、`errors.Is`/`errors.As` で判定する
 - ログ: `log/slog` で構造化ログを出力する。logger は DI 経由を原則とし、`slog.Default()` は main/初期化など DI 不可の箇所に限る
+  - DI 対象のコンストラクタ（`NewXxx`）は logger を必須引数とし、nil チェック・`slog.Default()` フォールバックを実装しない
+  - エラーをログに含める際は `slog.Any("error", err)` を使用する（`slog.String("error", err.Error())` は使わない）
 - マジックナンバー禁止: ビジネス上の状態コードや業務固定値は `domain` 層で `const` 定義する。各層固有の定数はその層で定義してよい
-- Context 伝播: HTTP driver では `c.Request().Context()` を取得し、usecase・infrastructure のメソッド第一引数 `ctx context.Context` として引き回す。リクエストスコープ内で `context.Background()`/`context.TODO()` を生成しない（batch/worker などのバックグラウンドジョブのエントリポイントを除く）
+- Context 伝播: batch/worker などバックグラウンドジョブのエントリポイントを除き、リクエストスコープ内で `context.Background()`/`context.TODO()` を生成しない
 - インターフェース実装検証: 実装型の定義直前に `var _ Iface = (*Type)(nil)` を記述する（値レシーバのみは `Type{}` 可）
-- panic/recover: ライブラリコードで panic しない。`recover` は HTTP ミドルウェアでのみ使用する
-- goroutine: リクエストスコープで起動する goroutine は `ctx` に連動させ、`errgroup` 等で確実に終了させる
 - 時刻: `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
 - 設定管理: 環境変数のパースは `configs/config.go` の `Config` に集約する。環境変数のキー名と既定値は同パッケージで `const` 定義し、各層には `*Config` を DI して渡す。新規の設定値追加時は `Config` 構造体・既定値・`Load()` の3箇所を更新する
 
 # 4. Testing Rules (規約)
-- 手法: 標準 `testing` + Table-Driven。アサーションは `testify/assert`/`require`（致命的失敗は `require`）
-- パッケージ: 原則 `package xxx_test`（外部テスト）。内部実装の検証が必要な場合のみ `package xxx` を併用可
+- アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する
 - カバレッジ: `usecase` 層は正常系・異常系・エッジケースを網羅し **85% 以上** を維持
 - テスト作業の委譲ルールは §7 を参照（手順は `.claude/agents/test-engineer.md`）
@@ -47,19 +41,11 @@
   - 境界は `usecase` 層で開始・コミット・ロールバックする。`internal/infrastructure/mysql/transactor.go` の Transactor 経由で制御する
   - repository メソッドは sqlc の `DBTX` を介してクエリを実行し、トランザクション内外の双方で動作する
   - `context.Context` への tx の暗黙的埋め込みは禁止（テスト容易性のため）
-  - 行ロック (`SELECT ... FOR UPDATE`) はトランザクション内に限定する
   - 分離レベルは MySQL デフォルト。変更が必要な場合はトランザクション開始時に明示する
-- 型変換: `domain` 層は sqlc 生成型に依存しない。`infrastructure` 層で sqlc 型 ⇄ domain 型を変換する
+- 型変換: `infrastructure` 層で sqlc 型 ⇄ domain 型を変換する
 - エラー変換: `sql.ErrNoRows` 等の DB 固有エラーは `infrastructure` 層で domain 層のエラー (例: `ErrNotFound`) に変換する
-- コネクション・タイムアウト:
-  - プール設定 (`SetMaxOpenConns` 等) は `configs` で設定可能にする
-  - クエリには `context.Context` のタイムアウトを設定する（`usecase` 層で付与）
-- 新規スキーマ追加手順:
-  1. `make db/migrate/new name=xxx` でマイグレーションファイルを作成し、`up`/`down` を記述
-  2. `make db/schema/dump` で `schema.sql` を再生成
-  3. `deployments/mysql/queries/` にクエリを追加し、`make db/sqlc/gen` で生成コードを更新
-  4. `make db/migrate/up` でローカル DB に適用
-  5. `internal/infrastructure/mysql/repository/` にリポジトリ実装、`internal/di/container.go` で DI を登録
+- プール設定 (`SetMaxOpenConns` 等) は `configs` で設定可能にする
+- 新規スキーマ追加手順: `make db/migrate/new` → `up`/`down` 記述 → `make db/schema/dump` → `deployments/mysql/queries/` にクエリ追加 → `make db/sqlc/gen` → `make db/migrate/up` → `internal/infrastructure/mysql/repository/` に実装、`internal/di/container.go` で DI 登録
 
 # 6. Makefile Rules (開発コマンドの統一)
 - 日常的な開発操作は `make` 経由で実行する。デバッグ目的のピンポイント実行（`go test -run` 等）は許容
