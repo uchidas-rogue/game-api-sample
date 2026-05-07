@@ -7,7 +7,7 @@ IMAGE_NAME ?= game-api
 IMAGE_TAG  ?= latest
 BIN        ?= api
 
-.PHONY: help run run/debug run/outbox-worker test test/v build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/run
+.PHONY: help run run/debug run/outbox-worker test test/v build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/run docker/run/worker docker/run/batch
 
 .DEFAULT_GOAL := help
 
@@ -94,12 +94,26 @@ docker/build/all:
 	$(MAKE) docker/build BIN=batch
 	$(MAKE) docker/build BIN=outbox-worker
 
-## ローカルで本番イメージを起動（BIN=api 既定, .env.docker を読み込み）
+## ローカルで本番APIイメージを起動（ポート8080公開, .env.docker を読み込み）
 docker/run:
 	docker run --rm -p $(PORT):8080 \
 		--env-file .env.docker \
-		--name $(IMAGE_NAME)-$(BIN) \
-		$(IMAGE_NAME)-$(BIN):$(IMAGE_TAG)
+		--name $(IMAGE_NAME)-api \
+		$(IMAGE_NAME)-api:$(IMAGE_TAG)
+
+## ローカルで outbox-worker を起動（ポート公開なし, api と同時起動可）
+docker/run/worker:
+	docker run --rm \
+		--env-file .env.docker \
+		--name $(IMAGE_NAME)-outbox-worker \
+		$(IMAGE_NAME)-outbox-worker:$(IMAGE_TAG)
+
+## ローカルで batch を起動（ポート公開なし, ワンショット想定）
+docker/run/batch:
+	docker run --rm \
+		--env-file .env.docker \
+		--name $(IMAGE_NAME)-batch \
+		$(IMAGE_NAME)-batch:$(IMAGE_TAG)
 
 ## migrations/*.up.sql を結合して schema.sql を再生成（sqlc 用）
 db/schema/dump:
