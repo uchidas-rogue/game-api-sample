@@ -15,3 +15,21 @@ func NewGachaRepositoryWithQuerier(q sqlc.Querier) *GachaRepository {
 		},
 	}
 }
+
+// NewRankingRepositoryWithQuerier はテスト専用のコンストラクタ。
+func NewRankingRepositoryWithQuerier(q sqlc.Querier) *RankingRepository {
+	return &RankingRepository{
+		querier: func(_ shared.Tx) (sqlc.Querier, error) {
+			return q, nil
+		},
+	}
+}
+
+// NewOutboxRepositoryWithQuerier はテスト専用のコンストラクタ。
+func NewOutboxRepositoryWithQuerier(q sqlc.Querier) *OutboxRepository {
+	return &OutboxRepository{
+		querier: func(_ shared.Tx) (sqlc.Querier, error) {
+			return q, nil
+		},
+	}
+}
