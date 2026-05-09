@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
@@ -31,9 +30,7 @@ func invokeDoInTx(tx *mockshared.MockTransactor, times int) {
 
 func mustMarshalRankingScoreAdded(t *testing.T, p outboxdomain.RankingScoreAddedPayload) []byte {
 	t.Helper()
-	b, err := outboxdomain.MarshalRankingScoreAddedPayload(p)
-	require.NoError(t, err)
-	return b
+	return outboxdomain.MarshalRankingScoreAddedPayload(p)
 }
 
 // TestWorker_runOnce_dispatch は1回のティック内でイベントが正しく dispatch されることを確認する。

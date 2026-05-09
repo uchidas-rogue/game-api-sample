@@ -157,8 +157,7 @@ func TestOutboxRepository_ListPending_PayloadRoundtrip(t *testing.T) {
 	t.Parallel()
 
 	orig := outboxdomain.RankingScoreAddedPayload{UserID: 10, GuildID: 20, Points: 300}
-	b, err := outboxdomain.MarshalRankingScoreAddedPayload(orig)
-	require.NoError(t, err)
+	b := outboxdomain.MarshalRankingScoreAddedPayload(orig)
 
 	ctrl := gomock.NewController(t)
 	mockQ := mocksqlc.NewMockQuerier(ctrl)

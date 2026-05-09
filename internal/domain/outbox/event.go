@@ -35,12 +35,10 @@ type RankingScoreAddedPayload struct {
 }
 
 // MarshalRankingScoreAddedPayload は payload を JSON バイト列に変換する。
-func MarshalRankingScoreAddedPayload(p RankingScoreAddedPayload) ([]byte, error) {
-	b, err := json.Marshal(p)
-	if err != nil {
-		return nil, fmt.Errorf("marshal ranking score added payload: %w", err)
-	}
-	return b, nil
+// RankingScoreAddedPayload は固定 struct のため json.Marshal はエラーを返さない。
+func MarshalRankingScoreAddedPayload(p RankingScoreAddedPayload) []byte {
+	b, _ := json.Marshal(p)
+	return b
 }
 
 // UnmarshalRankingScoreAddedPayload は JSON バイト列を payload に復元する。
