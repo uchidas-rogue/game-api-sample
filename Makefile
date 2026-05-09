@@ -3,6 +3,9 @@ LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
 
+# 自動生成パッケージ（mock / sqlc）はテスト対象から除外する
+TEST_PKGS := $(shell go list ./... | grep -vE '/(mock|sqlc)(/|$$)')
+
 .PHONY: help run run/debug run/outbox-worker test test/v test/race build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
 
 .DEFAULT_GOAL := help
@@ -25,15 +28,15 @@ run/outbox-worker:
 
 ## テスト実行
 test:
-	go test ./...
+	@go test $(TEST_PKGS)
 
 ## テスト実行（詳細ログ付き: t.Log と slog 出力を表示）
 test/v:
-	go test -v ./...
+	@go test -v $(TEST_PKGS)
 
 ## テスト実行（race 検出 + カバレッジ計測、CI 用 / ローカル任意）
 test/race:
-	go test -race -coverprofile=coverage.out ./...
+	@go test -race -coverprofile=coverage.out $(TEST_PKGS)
 
 ## ビルド（./bin/api に出力）
 build:
