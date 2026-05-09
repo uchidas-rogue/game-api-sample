@@ -10,5 +10,8 @@
 .env.*
 !.env.example
 
+# カバレッジ出力（make test/race の生成物）
+/coverage.out
+
 # macOS
 .DS_Store

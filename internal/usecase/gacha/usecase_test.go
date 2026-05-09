@@ -78,10 +78,10 @@ func TestUsecase_Multi(t *testing.T) {
 				// 石消費後の残高
 				newGems := enoughGem - gachadomain.GemCostFor(gachadomain.MaxPullCount)
 				repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), userID, newGems).Return(nil)
-				// 全10回 item1 当選 → aggregate: {1:10}、upsert は item1 のみ
-				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, int64(1), 10).Return(nil)
-				// history は10件
-				repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), userID, int64(1)).Return(nil).Times(10)
+				// 全 MaxPullCount 回 item1 当選 → upsert は item1 のみ
+				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, testItems[0].ID, gachadomain.MaxPullCount).Return(nil)
+				// history は MaxPullCount 件
+				repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), userID, testItems[0].ID).Return(nil).Times(gachadomain.MaxPullCount)
 
 				uc := gacha.NewUsecase(tx, repo, rnd, slogtest.NewLogger(t, nil))
 				return uc, context.Background()
@@ -94,17 +94,18 @@ func TestUsecase_Multi(t *testing.T) {
 				assert.Equal(t, enoughGem-gachadomain.GemCostFor(gachadomain.MaxPullCount), r.RemainingGems)
 				// 全アイテムが item1 であることを確認
 				for _, it := range r.DrawnItems {
-					assert.Equal(t, int64(1), it.ID)
+					assert.Equal(t, testItems[0].ID, it.ID)
 				}
 			},
 		},
 		{
-			name: "正常系: item2 が当選するケース（IntN=60）",
+			name: fmt.Sprintf("正常系: item2 が当選するケース（IntN=%d）", testItems[0].Weight),
 			setup: func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context) {
 				repo := mockuc.NewMockRepository(ctrl)
 				tx := mockshared.NewMockTransactor(ctrl)
-				// IntN(100)=60 のとき acc=60 はまだ item1 の範囲外、acc=100>60 で item2 が当選
-				rnd := newFixedRandomizer(ctrl, 60)
+				// IntN=item1.Weight のとき acc=item1.Weight はまだ item1 の範囲外、
+				// acc=item1.Weight+item2.Weight で item2 が当選
+				rnd := newFixedRandomizer(ctrl, testItems[0].Weight)
 
 				newDoInTxCaller(tx)
 
@@ -113,9 +114,9 @@ func TestUsecase_Multi(t *testing.T) {
 				repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(testItems, nil)
 				newGems := enoughGem - gachadomain.GemCostFor(gachadomain.MaxPullCount)
 				repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), userID, newGems).Return(nil)
-				// 全10回 item2 当選 → aggregate: {2:10}
-				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, int64(2), 10).Return(nil)
-				repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), userID, int64(2)).Return(nil).Times(10)
+				// 全 MaxPullCount 回 item2 当選
+				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, testItems[1].ID, gachadomain.MaxPullCount).Return(nil)
+				repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), userID, testItems[1].ID).Return(nil).Times(gachadomain.MaxPullCount)
 
 				uc := gacha.NewUsecase(tx, repo, rnd, slogtest.NewLogger(t, nil))
 				return uc, context.Background()
@@ -125,7 +126,7 @@ func TestUsecase_Multi(t *testing.T) {
 				t.Helper()
 				assert.Len(t, r.DrawnItems, gachadomain.MaxPullCount)
 				for _, it := range r.DrawnItems {
-					assert.Equal(t, int64(2), it.ID)
+					assert.Equal(t, testItems[1].ID, it.ID)
 				}
 			},
 		},
@@ -295,7 +296,7 @@ func TestUsecase_Multi(t *testing.T) {
 				repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(testItems, nil)
 				newGems := enoughGem - gachadomain.GemCostFor(gachadomain.MaxPullCount)
 				repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), userID, newGems).Return(nil)
-				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, int64(1), 10).Return(errDB)
+				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, testItems[0].ID, gachadomain.MaxPullCount).Return(errDB)
 
 				uc := gacha.NewUsecase(tx, repo, rnd, slogtest.NewLogger(t, nil))
 				return uc, context.Background()
@@ -319,9 +320,9 @@ func TestUsecase_Multi(t *testing.T) {
 				repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(testItems, nil)
 				newGems := enoughGem - gachadomain.GemCostFor(gachadomain.MaxPullCount)
 				repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), userID, newGems).Return(nil)
-				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, int64(1), 10).Return(nil)
+				repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), userID, testItems[0].ID, gachadomain.MaxPullCount).Return(nil)
 				// 最初の1回目でエラー、以降は呼ばれないので MinTimes(1) で受け取る
-				repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), userID, int64(1)).Return(errDB)
+				repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), userID, testItems[0].ID).Return(errDB)
 
 				uc := gacha.NewUsecase(tx, repo, rnd, slogtest.NewLogger(t, nil))
 				return uc, context.Background()

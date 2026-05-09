@@ -24,7 +24,11 @@
      - **設計方針:** 書き込み（個人スコア・ギルド集計）と読み取り（ランキング参照）の責務を分離し、参照負荷が書き込みDBを圧迫しない構成とする
 * **テスト戦略 (TDDの徹底):**
   - 標準 `testing` パッケージによる Table-Driven Tests
-  - `uber-go/mock` を使用した `usecase` 層の網羅的なテスト
+  - 層別方針（詳細は CLAUDE.md §4）:
+    - `domain`: 純粋関数・ビジネスルールの単体テスト（外部依存なし、カバレッジ 90% 以上）
+    - `usecase`: `uber-go/mock` による網羅的テスト（カバレッジ 85% 以上）
+    - `infrastructure`: `testcontainers-go` を用いた MySQL/Redis 実体テスト（カバレッジ 80% 以上）
+  - 競合状態（Race Condition）: 更新系には `t.Parallel()` + goroutine 並行ケースを最低1件含め、`make test/race` で検出する
   - Claudeは必ずローカルでテストを実行し、パスするまで実装を修正すること
 
 ---
@@ -32,6 +36,7 @@
 ## フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）
 **目標:** 商用サービスを想定したモダンなインフラ構成を、IaCを用いて構築する。
 
+* **前提作業:** ECS デプロイ前に CI 品質ゲートを整備する（GitHub Actions で `make lint` / `make test/race` / カバレッジ計測 を PR・main push 時に必須化）
 * **IaC化:** Terraformを使用し、AWSリソースをコードで定義
 * **主要コンポーネント:**
   - コンテナオーケストレーション: Amazon ECS (Fargate)
@@ -52,3 +57,27 @@
   - Redisを用いたキャッシュ戦略の拡張
   - GoのGoroutine/Channelを用いた並行処理のチューニング
 * **成果のアウトプット:** ビフォーアフターの数値と設計判断をまとめ、技術記事（Qiita等）として発信する
+
+---
+
+## フェーズ4：Kubernetes (EKS) への移植と比較検証（発展課題）
+**目標:** フェーズ2で構築した ECS Fargate 構成と同一の API を EKS 上で動作させ、運用性・拡張性・コスト面の差分を実測・記事化する。
+
+* **インフラ構築 (IaC):**
+  - Terraform で EKS クラスタ（コントロールプレーン）と Fargate Profile / マネージドノードグループを構築
+  - 主要アドオン: AWS Load Balancer Controller, ExternalDNS, Cluster Autoscaler（または Karpenter）, IRSA (IAM Roles for Service Accounts)
+  - Aurora MySQL / ElastiCache Redis はフェーズ2の資産を流用（VPC共有 or ピアリング）
+* **アプリケーションのマニフェスト化:**
+  - api / batch / outbox-worker をそれぞれ `Deployment` / `CronJob` / `Deployment` として定義
+  - Helm または Kustomize でテンプレート管理。環境差分は overlay で吸収
+  - Secrets は AWS Secrets Manager + External Secrets Operator で同期
+* **オートスケーリング戦略:**
+  - api: HPA (CPU/メモリ + ALB リクエスト数)
+  - outbox-worker: KEDA でキュー長（未処理 outbox 件数）ベースのスケール
+* **GitOps / デプロイ:**
+  - Argo CD でマニフェストの宣言的デプロイ。ECR への push を契機に同期
+* **比較・検証項目:**
+  - 同一 k6 シナリオでの ECS Fargate vs EKS のスループット・p99 レイテンシ・コスト比較
+  - スケーリング応答性（スパイク時のスケールアウト時間）
+  - 運用工数（マニフェスト量、デプロイ手順、障害対応）
+* **成果のアウトプット:** ECS Fargate と EKS のリアルな差分（コスト・運用性・拡張性）を技術記事として発信
