@@ -38,6 +38,10 @@
   - 更新系の repository / usecase は `t.Parallel()` + 複数 goroutine による同時アクセスケースを最低1件持つ
   - race 検出は `make test/race` で実行し CI で必須化（ローカル `make test` は race 無しで高速実行を維持）
   - 単体テストは race 検出と最小同時実行に責務を絞り、規模負荷は k6 側に寄せる
+- Flaky 防止:
+  - 時刻: SUT と test で `time.Now()` を二重呼出しない (Clock DI または SUT 記録値を export_test.go 経由参照)。日付/月境界を assertion に含めない
+  - 同期: `time.Sleep` ポーリングは最終手段。channel/sync・ライブラリ getter (内部ロック付き) 優先。`time.After(N)` は CI 高負荷時の余裕を考慮し N = ローカル想定 x 2~3
+  - 並行: `t.Parallel()` 配下で pkg-global 書換禁止 (serial 分離)
 - テスト作業の委譲ルールは §7 を参照（手順は `.claude/agents/test-engineer.md`）
 
 # 5. Database Rules (sqlc + golang-migrate)
