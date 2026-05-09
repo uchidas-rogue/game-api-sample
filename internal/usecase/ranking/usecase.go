@@ -220,14 +220,11 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 		}
 
 		// Redis 反映用イベントを outbox に積む。worker が非同期に処理する。
-		payload, err := outboxdomain.MarshalRankingScoreAddedPayload(outboxdomain.RankingScoreAddedPayload{
+		payload := outboxdomain.MarshalRankingScoreAddedPayload(outboxdomain.RankingScoreAddedPayload{
 			UserID:  input.UserID,
 			GuildID: guildID,
 			Points:  input.Points,
 		})
-		if err != nil {
-			return fmt.Errorf("marshal outbox payload: %w", err)
-		}
 		if _, err := u.outboxRepo.InsertEvent(ctx, tx, outboxdomain.EventTypeRankingScoreAdded, payload); err != nil {
 			return fmt.Errorf("insert outbox event: %w", err)
 		}

@@ -7,7 +7,15 @@ IMAGE_NAME ?= game-api
 IMAGE_TAG  ?= latest
 BIN        ?= api
 
-.PHONY: help run run/debug run/outbox-worker test test/v build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/run docker/run/worker docker/run/batch
+# テスト対象外パッケージは .testignore で宣言する（除外理由もファイル内に併記）。
+# - コメント行（#）と空行を除いた各行を | で連結して 1 本の正規表現にする
+# - ファイルが空 / 欠損のときに `grep -vE ''` が全行除外する footgun を踏まないよう、
+#   先頭に必ずマッチしない sentinel を挟む
+TEST_IGNORE_FILE := .testignore
+TEST_EXCLUDE_RE  := $(shell { echo '^__never_match__$$'; grep -vE '^[[:space:]]*(\#|$$)' $(TEST_IGNORE_FILE) 2>/dev/null; } | tr '\n' '|' | sed 's/|$$//')
+TEST_PKGS        := $(shell go list ./... | grep -vE '$(TEST_EXCLUDE_RE)')
+
+.PHONY: help run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/run docker/run/worker docker/run/batch
 
 .DEFAULT_GOAL := help
 
@@ -19,9 +27,10 @@ help:
 run:
 	PORT=$(PORT) LOG_LEVEL=$(LOG_LEVEL) go run ./cmd/api
 
-## デバッグレベルでサーバ起動（logs/ にもファイル出力）
+## デバッグレベルでサーバ起動（stdout を logs/<日付>.log にも保存）
 run/debug:
-	PORT=$(PORT) LOG_LEVEL=debug go run ./cmd/api
+	@mkdir -p logs
+	PORT=$(PORT) LOG_LEVEL=debug go run ./cmd/api 2>&1 | tee logs/$$(date +%F).log
 
 ## outbox-worker 起動（MySQL → Redis へ Outbox イベントを配信）
 run/outbox-worker:
@@ -29,11 +38,18 @@ run/outbox-worker:
 
 ## テスト実行
 test:
-	go test ./...
+	@go test $(TEST_PKGS)
 
 ## テスト実行（詳細ログ付き: t.Log と slog 出力を表示）
 test/v:
-	go test -v ./...
+	@go test -v $(TEST_PKGS)
+
+## テスト実行（race 検出 + カバレッジ計測、CI 用 / ローカル任意）
+test/race:
+	@go test -race -coverprofile=coverage.out $(TEST_PKGS)
+
+test/cover: test/race ## カバレッジを HTML で表示（test/race を実行してからブラウザで開く）
+	go tool cover -html=coverage.out
 
 ## ビルド（./bin/api に出力）
 build:
