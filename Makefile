@@ -3,7 +3,7 @@ LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
 
-.PHONY: help run run/debug run/outbox-worker test test/v build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
+.PHONY: help run run/debug run/outbox-worker test test/v test/race build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
 
 .DEFAULT_GOAL := help
 
@@ -30,6 +30,10 @@ test:
 ## テスト実行（詳細ログ付き: t.Log と slog 出力を表示）
 test/v:
 	go test -v ./...
+
+## テスト実行（race 検出 + カバレッジ計測、CI 用 / ローカル任意）
+test/race:
+	go test -race -coverprofile=coverage.out ./...
 
 ## ビルド（./bin/api に出力）
 build:

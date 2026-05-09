@@ -24,7 +24,11 @@
      - **設計方針:** 書き込み（個人スコア・ギルド集計）と読み取り（ランキング参照）の責務を分離し、参照負荷が書き込みDBを圧迫しない構成とする
 * **テスト戦略 (TDDの徹底):**
   - 標準 `testing` パッケージによる Table-Driven Tests
-  - `uber-go/mock` を使用した `usecase` 層の網羅的なテスト
+  - 層別方針（詳細は CLAUDE.md §4）:
+    - `domain`: 純粋関数・ビジネスルールの単体テスト（外部依存なし、カバレッジ 90% 以上）
+    - `usecase`: `uber-go/mock` による網羅的テスト（カバレッジ 85% 以上）
+    - `infrastructure`: `testcontainers-go` を用いた MySQL/Redis 実体テスト（カバレッジ 80% 以上）
+  - 競合状態（Race Condition）: 更新系には `t.Parallel()` + goroutine 並行ケースを最低1件含め、`make test/race` で検出する
   - Claudeは必ずローカルでテストを実行し、パスするまで実装を修正すること
 
 ---
@@ -32,6 +36,7 @@
 ## フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）
 **目標:** 商用サービスを想定したモダンなインフラ構成を、IaCを用いて構築する。
 
+* **前提作業:** ECS デプロイ前に CI 品質ゲートを整備する（GitHub Actions で `make lint` / `make test/race` / カバレッジ計測 を PR・main push 時に必須化）
 * **IaC化:** Terraformを使用し、AWSリソースをコードで定義
 * **主要コンポーネント:**
   - コンテナオーケストレーション: Amazon ECS (Fargate)

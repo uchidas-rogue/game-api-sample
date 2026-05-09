@@ -30,7 +30,14 @@
 # 4. Testing Rules (規約)
 - アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する
-- カバレッジ: `usecase` 層は正常系・異常系・エッジケースを網羅し **85% 以上** を維持
+- 層別カバレッジ・テスト方針:
+  - `domain` 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ **90% 以上**
+  - `usecase` 層: 正常系・異常系・エッジケースを網羅。カバレッジ **85% 以上** を維持
+  - `infrastructure` 層: `testcontainers-go` を用いた MySQL/Redis 実体テストを基本方針とする（`miniredis` / `go-sqlmock` は補助的位置付け）。検証対象は sqlc 型 ⇄ domain 型の変換、エラー変換（`sql.ErrNoRows` → `domain.ErrNotFound` 等）、`Transactor` のコミット/ロールバック挙動。カバレッジ **80% 以上**
+- Race / 競合テスト:
+  - 更新系の repository / usecase は `t.Parallel()` + 複数 goroutine による同時アクセスケースを最低1件持つ
+  - race 検出は `make test/race` で実行し CI で必須化（ローカル `make test` は race 無しで高速実行を維持）
+  - 単体テストは race 検出と最小同時実行に責務を絞り、規模負荷は k6 側に寄せる
 - テスト作業の委譲ルールは §7 を参照（手順は `.claude/agents/test-engineer.md`）
 
 # 5. Database Rules (sqlc + golang-migrate)
