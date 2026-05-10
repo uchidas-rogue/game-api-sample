@@ -3,6 +3,10 @@ LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
 
+IMAGE_NAME ?= game-api
+IMAGE_TAG  ?= latest
+BIN        ?= api
+
 # テスト対象外パッケージは .testignore で宣言する（除外理由もファイル内に併記）。
 # - コメント行（#）と空行を除いた各行を | で連結して 1 本の正規表現にする
 # - ファイルが空 / 欠損のときに `grep -vE ''` が全行除外する footgun を踏まないよう、
@@ -11,7 +15,7 @@ TEST_IGNORE_FILE := .testignore
 TEST_EXCLUDE_RE  := $(shell { echo '^__never_match__$$'; grep -vE '^[[:space:]]*(\#|$$)' $(TEST_IGNORE_FILE) 2>/dev/null; } | tr '\n' '|' | sed 's/|$$//')
 TEST_PKGS        := $(shell go list ./... | grep -vE '$(TEST_EXCLUDE_RE)')
 
-.PHONY: help run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli
+.PHONY: help run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/run docker/run/worker docker/run/batch
 
 .DEFAULT_GOAL := help
 
@@ -95,6 +99,37 @@ db/cli:
 	docker compose -f deployments/docker-compose.yml exec -it \
 		-e MYSQL_PWD=game -e LANG=C.UTF-8 -e LC_ALL=C.UTF-8 \
 		mysql mysql --default-character-set=utf8mb4 -ugame game_db
+
+## 本番イメージをビルド（BIN=api|batch|outbox-worker, 既定: api）
+docker/build:
+	docker build --platform=linux/arm64 --build-arg BIN=$(BIN) -t $(IMAGE_NAME)-$(BIN):$(IMAGE_TAG) .
+
+## 3バイナリ全部のイメージをビルド
+docker/build/all:
+	$(MAKE) docker/build BIN=api
+	$(MAKE) docker/build BIN=batch
+	$(MAKE) docker/build BIN=outbox-worker
+
+## ローカルで本番APIイメージを起動（ポート8080公開, .env.docker を読み込み）
+docker/run:
+	docker run --rm -p $(PORT):8080 \
+		--env-file .env.docker \
+		--name $(IMAGE_NAME)-api \
+		$(IMAGE_NAME)-api:$(IMAGE_TAG)
+
+## ローカルで outbox-worker を起動（ポート公開なし, api と同時起動可）
+docker/run/worker:
+	docker run --rm \
+		--env-file .env.docker \
+		--name $(IMAGE_NAME)-outbox-worker \
+		$(IMAGE_NAME)-outbox-worker:$(IMAGE_TAG)
+
+## ローカルで batch を起動（ポート公開なし, ワンショット想定）
+docker/run/batch:
+	docker run --rm \
+		--env-file .env.docker \
+		--name $(IMAGE_NAME)-batch \
+		$(IMAGE_NAME)-batch:$(IMAGE_TAG)
 
 ## migrations/*.up.sql を結合して schema.sql を再生成（sqlc 用）
 db/schema/dump:
