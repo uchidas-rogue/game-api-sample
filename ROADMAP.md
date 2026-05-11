@@ -44,6 +44,8 @@
   - キャッシュ: Amazon ElastiCache (Redis)
   - ネットワーク/セキュリティ: VPC設定、IAM最小権限の原則適用、暗号化設定。
 * **デプロイ:** 作成したGoアプリケーションのDockerfile（マルチステージビルド）を作成し、ECSへデプロイ
+* **対象外（意図的に実装しない）:**
+  - **AWS WAF / Shield**: 本プロジェクトはエンドユーザーが k6（負荷試験ツール）であり、WAF を ALB 前段に置くとレートベースルール等が k6 リクエストを弾き、フェーズ3 の負荷試験結果が歪む。攻撃耐性の検証は別途 k6 シナリオ側で行う方針のため、WAF は今後も導入しない（GCP 参考構成の Cloud Armor に相当する層は意図的に省く）
 
 ---
 
@@ -81,3 +83,22 @@
   - スケーリング応答性（スパイク時のスケールアウト時間）
   - 運用工数（マニフェスト量、デプロイ手順、障害対応）
 * **成果のアウトプット:** ECS Fargate と EKS のリアルな差分（コスト・運用性・拡張性）を技術記事として発信
+
+---
+
+## フェーズ5：マスタデータ配信フローの構築（発展課題 / フェーズ1〜3 完了後に着手）
+**目標:** ゲーム設定値（マスタデータ）を「DB → 配信用ファイル → クライアント/サーバ」へ流すパイプラインを AWS 上に構築する。admin ツールは本プロジェクトでは実装しないため、パッキング処理は専用バッチで代替する。
+
+* **データフロー（admin 抜きの簡易版）:**
+  - パッキング用バッチ（ECS ScheduledTask または RunTask）が Aurora MySQL のマスタデータを読み取り、`gob`（サーバ向け）/ `SQLite`（クライアント向け）ファイルを生成して S3 にアップロード
+  - api（Cloud Run 相当の ECS Service）は起動時/更新時に S3 から `gob` を取得してインメモリキャッシュ
+  - クライアント向け `SQLite` は CloudFront 経由で配信（クライアントはローカルキャッシュ）
+* **インフラ追加（Terraform）:**
+  - `storage` モジュール新設: S3 バケット ×2（server master / client master）+ CloudFront ディストリビューション（OAC で S3 を保護）
+  - **S3 VPC Gateway Endpoint を `network` モジュールに追加**（無料）— ECS タスクの S3 アクセスを NAT 経由から AWS 内部経路へ切り替え、NAT データ処理料を削減。※このタスクと同じ PR で必ず一緒に入れる
+  - パッキング用 ECR リポジトリ追加（または `migrate` イメージに同梱）
+  - IAM: api の task role に S3 read、パッカー task role に S3 write + Aurora read を追加
+* **アプリ追加:**
+  - パッカー: Aurora → gob/SQLite 生成のバッチコマンド（`internal/driver/batch` 配下）
+  - ローダー: S3 から gob を取得しインメモリキャッシュする infrastructure 層 repository + DI 配線
+* **想定コスト:** S3 ~$1/月、CloudFront 実トラフィック比例（ポートフォリオ規模なら実質無料枠内）、パッキングタスク < $1/月、Gateway Endpoint $0
