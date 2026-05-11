@@ -57,6 +57,10 @@
 * **パフォーマンス改善:**
   - データベースのインデックス最適化
   - Redisを用いたキャッシュ戦略の拡張
+    - **Redis の cache 用 / ranking 用 分離**（負荷試験で ranking ZSet 参照と outbox Pub/Sub・汎用キャッシュの相互影響が顕在化した場合に対応）:
+      - アプリ側: `configs` の Redis アドレスを `REDIS_CACHE_ADDR` / `REDIS_RANKING_ADDR` の2系統に分け、DI（`internal/di/container.go`・各 `cmd/*/main.go`）で `RankingStore` ← ranking、`OutboxNotifier`/`Subscriber`・汎用キャッシュ ← cache へ注入。今は両方同一アドレスを向けるだけで挙動不変（工数 ~0.5日）
+      - インフラ側: ElastiCache をもう1レプリケーショングループ追加（`cache.t4g.micro` で +$12〜$25/月目安）、ECS タスク定義の env に `REDIS_RANKING_ADDR` を追加
+    - 汎用キャッシュ用途（GET/SET/TTL）の追加。現状 Redis は ZSet（ランキング）と Pub/Sub（outbox 通知）のみで key/value キャッシュは未実装
   - GoのGoroutine/Channelを用いた並行処理のチューニング
 * **成果のアウトプット:** ビフォーアフターの数値と設計判断をまとめ、技術記事（Qiita等）として発信する
 
