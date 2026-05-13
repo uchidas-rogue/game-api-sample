@@ -1,0 +1,142 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - "**.md"
+      - "terraform/**"
+      - ".github/workflows/terraform.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-1
+  PROJECT: game-api
+  ENVIRONMENT: dev
+
+jobs:
+  build-and-deploy:
+    name: Build images and deploy to ECS
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push app images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          for bin in api batch outbox-worker; do
+            docker buildx build \
+              --platform=linux/arm64 \
+              --build-arg BIN=$bin \
+              -t $REGISTRY/$PREFIX-$bin:$TAG \
+              --push \
+              .
+          done
+
+      - name: Build and push migrate image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker buildx build \
+            --platform=linux/arm64 \
+            -f Dockerfile.migrate \
+            -t $REGISTRY/$PREFIX-migrate:$TAG \
+            --push \
+            .
+
+      - name: Run migration (ECS RunTask)
+        env:
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          # 既存 TaskDefinition の image を新タグで上書きして RunTask 起動
+          aws ecs describe-task-definition --task-definition $PREFIX-migrate \
+            --query 'taskDefinition' --output json > taskdef.json
+          jq --arg img "$REGISTRY/$PREFIX-migrate:$TAG" '
+            .containerDefinitions[0].image = $img
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)
+          ' taskdef.json > taskdef.new.json
+          NEW_TD=$(aws ecs register-task-definition --cli-input-json file://taskdef.new.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "New migrate TaskDef: $NEW_TD"
+
+          # network 設定は ECS Service api のものを流用
+          NET=$(aws ecs describe-services --cluster $PREFIX-cluster --services $PREFIX-api \
+            --query 'services[0].networkConfiguration' --output json)
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster $PREFIX-cluster \
+            --task-definition "$NEW_TD" \
+            --launch-type FARGATE \
+            --network-configuration "$NET" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Migration task: $TASK_ARN"
+
+          aws ecs wait tasks-stopped --cluster $PREFIX-cluster --tasks "$TASK_ARN"
+
+          EXIT=$(aws ecs describe-tasks --cluster $PREFIX-cluster --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT" != "0" ]; then
+            echo "Migration failed with exit code $EXIT"
+            exit 1
+          fi
+
+      - name: Update ECS services (api / outbox-worker)
+        env:
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          for svc in api outbox-worker; do
+            aws ecs describe-task-definition --task-definition $PREFIX-$svc \
+              --query 'taskDefinition' --output json > td.json
+            jq --arg img "$REGISTRY/$PREFIX-$svc:$TAG" '
+              .containerDefinitions[0].image = $img
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                    .compatibilities, .registeredAt, .registeredBy)
+            ' td.json > td.new.json
+            NEW_TD=$(aws ecs register-task-definition --cli-input-json file://td.new.json \
+              --query 'taskDefinition.taskDefinitionArn' --output text)
+            aws ecs update-service \
+              --cluster $PREFIX-cluster \
+              --service $PREFIX-$svc \
+              --task-definition "$NEW_TD" \
+              --force-new-deployment > /dev/null
+            echo "Updated $svc -> $NEW_TD"
+          done
+
+          aws ecs wait services-stable \
+            --cluster $PREFIX-cluster \
+            --services $PREFIX-api $PREFIX-outbox-worker

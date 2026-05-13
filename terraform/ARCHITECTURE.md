@@ -104,10 +104,10 @@ flowchart LR
         end
 
         subgraph Modules["modules/"]
-            ModNet["network<br/>VPC, Subnet, IGW, NAT, RouteTable, SG"]
-            ModDB["database<br/>Aurora MySQL, ElastiCache Redis, KMS"]
-            ModReg["registry<br/>ECR x 4 (api/batch/worker/migrate)"]
-            ModECS["compute_ecs<br/>ECS Cluster, TaskDef, Service, ALB, IAM"]
+            ModNet["network<br/>VPC, Subnet, IGW, NAT, RouteTable, SG<br/>(route table ID を output)"]
+            ModDB["database<br/>Aurora MySQL, ElastiCache Redis, KMS<br/>(ElastiCache は可変構造)"]
+            ModReg["registry<br/>ECR (for_each = var.repositories)<br/>初期: api/batch/worker/migrate"]
+            ModECS["compute_ecs<br/>ECS Cluster, TaskDef(env=リスト), Service, ALB, IAM"]
             ModCI["iam_oidc<br/>OIDC Provider, role-deploy/tf-plan/tf-apply"]
         end
     end
@@ -123,13 +123,29 @@ flowchart LR
     ModECS -. "ECR repository URL" .-> ModReg
     ModECS -. "DB endpoint, Redis endpoint" .-> ModDB
 
-    classDef phase4 fill:#E5E7EB,stroke:#6B7280,color:#374151,stroke-dasharray: 5 5
-    ModEKS["compute_eks<br/>(Phase 4 で追加予定)"]:::phase4
+    classDef future fill:#E5E7EB,stroke:#6B7280,color:#374151,stroke-dasharray: 5 5
+    ModEKS["compute_eks<br/>(Phase 4 で追加予定)"]:::future
+    ModStorage["storage<br/>S3 x 2 + CloudFront<br/>(Phase 5 で追加予定)"]:::future
+    ModNet2["+ S3 VPC Gateway Endpoint<br/>(Phase 5 で network に追加)"]:::future
+
     Main -. "Phase 4" .-> ModEKS
     ModEKS -. "流用" .-> ModNet
     ModEKS -. "流用" .-> ModDB
     ModEKS -. "流用" .-> ModReg
+
+    Main -. "Phase 5" .-> ModStorage
+    ModNet -. "Phase 5 で拡張" .-> ModNet2
+    ModReg -. "Phase 5: packer 追加" .-> ModReg
 ```
+
+## 後続フェーズへの前方互換（Phase 2 設計に組み込む配慮）
+
+| 後続フェーズの追加要件 | Phase 2 設計での配慮 |
+|---|---|
+| **§フェーズ3**: Redis を cache/ranking 2系統に分離（`REDIS_CACHE_ADDR` / `REDIS_RANKING_ADDR`） | ECS TaskDef の env を**リスト構造**で記述し、後から `REDIS_RANKING_ADDR` を追加しても破壊変更にならない形にする。`database` モジュールの ElastiCache も**リスト/可変構造**で定義し、2台目を増やせる構造に |
+| **§フェーズ4**: EKS 比較 / App Runner 候補 | `network` / `database` / `registry` を `compute_ecs` から疎結合に保ち、`compute_eks` を別モジュールで追加可能にする。VPC/Subnet は `compute_ecs` が所有しない |
+| **§フェーズ5**: マスタデータ配信（S3 + CloudFront、S3 VPC Gateway Endpoint） | `network` モジュールが **route table ID を output として expose**。Phase 5 で `aws_vpc_endpoint`（S3 Gateway, 無料）を**後付け**できる形に。実装は Phase 5 と同 PR で行う（先取りしない） |
+| **§フェーズ5**: パッカー用 ECR 追加 | `registry` モジュールは `for_each = var.repositories` でリポジトリ集合を扱い、Phase 5 で `packer` を1行追加できる形に |
 
 ## デプロイフロー（時系列）
 
@@ -171,7 +187,7 @@ sequenceDiagram
 - **青系**: Terraform state（S3 + DynamoDB）
 - **緑系**: CI/CD（GitHub）
 - **点線**: 認証・参照・依存
-- **破線枠**: Phase 4 で追加予定（EKS）
+- **破線枠（グレー）**: 後続フェーズで追加予定（Phase 4: EKS / Phase 5: storage・S3 VPC Endpoint・packer ECR）
 
 ## 対象外（意図的に実装しない）
 

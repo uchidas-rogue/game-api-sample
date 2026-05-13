@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+
+# golang-migrate を migrations 同梱で実行する専用イメージ。
+# ECS RunTask で起動し、`-source file:///migrations -database $MIGRATE_DSN up` を実行する。
+
+FROM --platform=linux/arm64 alpine:3.20
+
+ARG MIGRATE_VERSION=v4.18.1
+
+RUN apk add --no-cache curl ca-certificates \
+    && curl -fsSL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-arm64.tar.gz" \
+       | tar -xz -C /usr/local/bin migrate \
+    && apk del curl \
+    && chmod +x /usr/local/bin/migrate
+
+COPY deployments/mysql/migrations /migrations
+
+ENV MIGRATE_SOURCE=file:///migrations
+
+ENTRYPOINT ["/bin/sh", "-c", "migrate -source $MIGRATE_SOURCE -database \"$MIGRATE_DSN\" up"]

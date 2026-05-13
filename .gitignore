@@ -16,3 +16,12 @@
 
 # macOS
 .DS_Store
+
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+# .terraform.lock.hcl は コミット対象（プロバイダのバージョン固定）

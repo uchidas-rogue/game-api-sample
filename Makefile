@@ -15,7 +15,7 @@ TEST_IGNORE_FILE := .testignore
 TEST_EXCLUDE_RE  := $(shell { echo '^__never_match__$$'; grep -vE '^[[:space:]]*(\#|$$)' $(TEST_IGNORE_FILE) 2>/dev/null; } | tr '\n' '|' | sed 's/|$$//')
 TEST_PKGS        := $(shell go list ./... | grep -vE '$(TEST_EXCLUDE_RE)')
 
-.PHONY: help run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/run docker/run/worker docker/run/batch
+.PHONY: help run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint mock/gen db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/schema/dump db/cli docker/build docker/build/all docker/build/migrate docker/run docker/run/worker docker/run/batch
 
 .DEFAULT_GOAL := help
 
@@ -109,6 +109,10 @@ docker/build/all:
 	$(MAKE) docker/build BIN=api
 	$(MAKE) docker/build BIN=batch
 	$(MAKE) docker/build BIN=outbox-worker
+
+## golang-migrate + migrations 同梱の専用イメージをビルド（ECS RunTask 起動用）
+docker/build/migrate:
+	docker build --platform=linux/arm64 -f Dockerfile.migrate -t $(IMAGE_NAME)-migrate:$(IMAGE_TAG) .
 
 ## ローカルで本番APIイメージを起動（ポート8080公開, .env.docker を読み込み）
 docker/run:

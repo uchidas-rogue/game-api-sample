@@ -44,6 +44,15 @@
   - キャッシュ: Amazon ElastiCache (Redis)
   - ネットワーク/セキュリティ: VPC設定、IAM最小権限の原則適用、暗号化設定。
 * **デプロイ:** 作成したGoアプリケーションのDockerfile（マルチステージビルド）を作成し、ECSへデプロイ
+* **コンテナアーキテクチャ:** `linux/arm64`（Fargate Graviton）前提。コスト最適化（同等性能で約 20% 安）と Apple Silicon ローカルとのビルド一致を狙う
+* **マイグレーション戦略:** `Dockerfile.migrate`（`golang-migrate` + `deployments/mysql/migrations/` 同梱）を ECS RunTask で先行実行。init container / CI 直叩きは不採用（ECS Fargate に init container 概念が無く、Aurora を private subnet に置く方針と両立しないため）
+* **Terraform 構成:** `modules/{network, database, registry, compute_ecs, iam_oidc}` + `environments/dev`。state は S3 + DynamoDB（暗号化・lock）。GitHub Actions ↔ AWS は OIDC AssumeRole（`role-deploy` / `role-tf-plan` / `role-tf-apply` の3ロール、apply は `production-apply` environment 経由）
+* **前方互換配慮:**
+  - TaskDefinition の env をリスト構造で記述 → フェーズ3 で `REDIS_RANKING_ADDR` を破壊変更なしで追加可能
+  - `database` モジュールの ElastiCache は `for_each` で可変構造 → フェーズ3 で ranking 用を追加可能
+  - `registry` モジュールは `for_each = var.repositories` → フェーズ5 で packer リポジトリを追加可能
+  - `network` モジュールは `private_route_table_id` を output → フェーズ5 の S3 VPC Gateway Endpoint を後付け可能
+  - `network` / `database` / `registry` は `compute_ecs` から疎結合 → フェーズ4 で `compute_eks` を別モジュールで追加可能
 * **対象外（意図的に実装しない）:**
   - **AWS WAF / Shield**: 本プロジェクトはエンドユーザーが k6（負荷試験ツール）であり、WAF を ALB 前段に置くとレートベースルール等が k6 リクエストを弾き、フェーズ3 の負荷試験結果が歪む。攻撃耐性の検証は別途 k6 シナリオ側で行う方針のため、WAF は今後も導入しない（GCP 参考構成の Cloud Armor に相当する層は意図的に省く）
 
