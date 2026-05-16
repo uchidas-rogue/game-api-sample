@@ -13,7 +13,7 @@ flowchart TB
     end
 
     subgraph TFState["Terraform State 管理"]
-        S3State["S3 Bucket<br/>tfstate (KMS暗号化, versioning)"]
+        S3State["S3 Bucket<br/>tfstate (暗号化, versioning)"]
         DDB["DynamoDB<br/>terraform-lock<br/>(LockID)"]
     end
 

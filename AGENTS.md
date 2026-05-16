@@ -54,6 +54,7 @@
 
 # 5. Makefile Rules (開発コマンドの統一)
 - 日常的な開発操作は `make` 経由で実行する。デバッグ目的のピンポイント実行（`go test -run` 等）は許容
+- AWS インフラの初回構築は `make tf/bootstrap`（state 保管先の S3/DynamoDB 作成）→ `make tf/init` → `terraform plan`/`apply` の順。詳細は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md)
 - 利用可能なコマンドは `make help` で確認する（Makefile の `##` コメントが説明として表示される）
 - マイグレーションの DSN は `MIGRATE_DSN` 環境変数で上書き可能。ローカル以外の環境では明示的に指定する
 - `make test` / `make test/race` は `.testignore` に列挙されたパッケージを除外対象とする。除外理由はファイル内のコメントを参照すること。新規にテスト対象外としたいパッケージが出た場合は、**除外理由をコメントで明記したうえで** `.testignore` にパターンを追加する。逆に interface 定義のみのパッケージへ実装を足す等で除外を解除する場合は、`.testignore` から該当行を削除し §3 のカバレッジ目標に従ってテストを整備する
