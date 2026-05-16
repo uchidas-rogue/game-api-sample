@@ -1,17 +1,18 @@
 name: Deploy
 
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
     branches:
       - main
-    paths-ignore:
-      - "**.md"
-      - "terraform/**"
-      - ".github/workflows/terraform.yml"
   workflow_dispatch:
 
+# terraform.yml と同一グループを共有し、インフラ変更と
+# アプリデプロイが同時に ECS を触る競合を防ぐ（先に来た方が走り、他方は待機）。
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: infra-deploy-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -20,14 +21,80 @@ env:
   ENVIRONMENT: dev
 
 jobs:
-  build-and-deploy:
-    name: Build images and deploy to ECS
-    runs-on: ubuntu-24.04-arm
+  # deploy.yml は describe-task-definition で現在のタスク定義を読み image だけ書き換える。
+  # terraform 側の env/secrets 変更が未適用だと「新コード × 旧 env」でデプロイされるため、
+  # deploy 前に terraform plan を実行し ECS タスク定義に未適用差分があれば停止する。
+  precheck:
+    name: Verify ECS task definitions are in sync with Terraform
+    runs-on: ubuntu-latest
+    # CI が成功で完了したとき、または手動実行のときだけ実行する
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     permissions:
       id-token: write
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          # workflow_run 起動時は CI をトリガしたコミットを明示的に取得する
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.3
+
+      - name: Configure AWS credentials (OIDC, plan role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform init
+        working-directory: terraform/environments/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="dynamodb_table=${{ secrets.TFLOCK_TABLE }}" \
+            -backend-config="encrypt=true"
+
+      - name: terraform plan
+        working-directory: terraform/environments/dev
+        run: terraform plan -input=false -no-color -lock-timeout=120s -out=tfplan
+
+      - name: Detect un-applied ECS task definition drift
+        working-directory: terraform/environments/dev
+        run: |
+          terraform show -json tfplan > plan.json
+          CHANGED=$(jq -r '
+            [ .resource_changes[]
+              | select(.type == "aws_ecs_task_definition")
+              | select(.change.actions != ["no-op"]) ] | length
+          ' plan.json)
+          if [ "$CHANGED" -gt 0 ]; then
+            echo "::error::未適用の ECS タスク定義変更が ${CHANGED} 件あります。先に terraform.yml を apply してください。"
+            jq -r '.resource_changes[]
+              | select(.type == "aws_ecs_task_definition")
+              | select(.change.actions != ["no-op"])
+              | "  - \(.address): \(.change.actions | join(","))"' plan.json
+            exit 1
+          fi
+          echo "ECS タスク定義に未適用の差分なし。デプロイを継続します。"
+
+  build-and-deploy:
+    name: Build images and deploy to ECS
+    needs: precheck
+    runs-on: ubuntu-24.04-arm
+    # CI が成功で完了したとき、または手動実行のときだけデプロイする
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run 起動時は CI をトリガしたコミットを明示的に取得する
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -41,7 +108,10 @@ jobs:
 
       - name: Set image tag
         id: meta
-        run: echo "tag=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+        env:
+          # workflow_run 起動時は CI をトリガしたコミット SHA を使う
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "tag=sha-${SHA::12}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

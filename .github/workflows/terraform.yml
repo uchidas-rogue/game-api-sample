@@ -22,8 +22,10 @@ permissions:
   contents: read
   pull-requests: write
 
+# terraform.yml と deploy.yml で同一グループを共有し、インフラ変更と
+# アプリデプロイが同時に ECS を触る競合を防ぐ（先に来た方が走り、他方は待機）。
 concurrency:
-  group: terraform-${{ github.ref }}
+  group: infra-deploy-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:

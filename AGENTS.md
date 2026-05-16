@@ -1,6 +1,7 @@
 # Project Overview
 - プロジェクト: Go言語とEchoを用いたゲームバックエンドAPI
 - アーキテクチャ: Clean Architecture
+- AWS インフラ構成・Terraform モジュール分割・CI/CD ワークフローの安全装置は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md) を参照
 
 # 1. Architecture & Design Rules (Clean Architecture)
 - 層構成: `driver`(interface adapters; HTTP handler / batch / worker 等の delivery) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止

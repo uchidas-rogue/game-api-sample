@@ -181,6 +181,19 @@ sequenceDiagram
     ECS-->>GHA: deployment COMPLETED
 ```
 
+## CI/CD ワークフローの安全装置
+
+`.github/workflows/` の `ci.yml` / `terraform.yml` / `deploy.yml` には以下の安全装置を組み込んでいる。
+
+| 安全装置 | 内容 | 防ぐ事象 |
+|---|---|---|
+| **CI ゲート** | `deploy.yml` は `workflow_run` トリガで `ci.yml` の成功完了時のみ起動する | テスト未通過のコードが本番デプロイされる |
+| **concurrency 共有** | `terraform.yml` と `deploy.yml` は同一 concurrency グループ（`infra-deploy-${ref}`）。先着が走り他方は待機 | インフラ変更とアプリデプロイが同時に ECS を書き換える競合 |
+| **ECS タスク定義ドリフト検査** | `deploy.yml` の `precheck` ジョブが `terraform plan` を実行し、`aws_ecs_task_definition` に未適用差分があればデプロイを停止 | terraform 側の env/secrets 変更が未適用のまま「新コード × 旧 env」でデプロイされる |
+| **マイグレーション先行** | `deploy.yml` は ECS サービス更新前に migrate タスクを RunTask し、exit code≠0 で停止 | スキーマ不整合のままアプリが起動する |
+
+`precheck` は読み取り権限のみの `tf_plan` IAM ロールを流用し、IAM 権限の拡張はしていない。
+
 ## 凡例
 
 - **オレンジ系**: AWS リソース
@@ -192,6 +205,7 @@ sequenceDiagram
 ## 対象外（意図的に実装しない）
 
 - **AWS WAF / Shield**（GCP 参考構成の Cloud Armor に相当する層）: 本プロジェクトのエンドユーザーは k6（負荷試験ツール）であり、ALB 前段に WAF を置くとレートベースルール等が k6 リクエストを弾いてフェーズ3 の負荷試験結果が歪む。攻撃耐性の検証は k6 シナリオ側に寄せる方針のため、**今後も導入しない**。詳細は [ROADMAP.md](../ROADMAP.md) フェーズ2「対象外」を参照。
+- **NAT Gateway の AZ 冗長化**: 本プロジェクトは負荷試験用のテストサービスであり、本番相当の高可用性運用は目的としない。コスト優先のため NAT Gateway は **1 台に集約**し（`azs[0]` の public subnet に配置）、AZ 障害時の egress 冗長性は捨てる。そのため `azs[0]` が障害を起こすと、生存 AZ の ECS タスクも外向き通信（ECR pull 等）ができなくなる。**本番想定では NAT を AZ ごとに 1 台ずつ配置**し、各 private route table を同一 AZ の NAT に紐付けて完全冗長にすること。なお Subnet / ALB / ECS / Aurora は 2 AZ に分散済みで SPOF を排除した設計自体は維持しており、負荷試験トラフィックは ALB → ECS → Aurora/Redis の VPC 内で完結し NAT を経由しないため、この割り切りが負荷試験結果に影響することはない。
 
 ## 関連ドキュメント
 
