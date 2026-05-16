@@ -35,6 +35,7 @@ module "registry" {
   name_prefix  = local.name_prefix
   repositories = var.ecr_repositories
   kms_key_arn  = module.database.kms_key_arn
+  force_delete = var.ecr_force_delete
 }
 
 module "compute_ecs" {

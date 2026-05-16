@@ -70,6 +70,12 @@ variable "ecr_repositories" {
   default     = ["api", "batch", "outbox-worker", "migrate"]
 }
 
+variable "ecr_force_delete" {
+  description = "イメージが残っていても ECR リポジトリ削除を許可するか。dev は作り直し前提のため true"
+  type        = bool
+  default     = true
+}
+
 variable "api_desired_count" {
   description = "ECS Service api の desired count"
   type        = number

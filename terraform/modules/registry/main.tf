@@ -4,6 +4,10 @@ resource "aws_ecr_repository" "this" {
   name                 = "${var.name_prefix}-${each.value}"
   image_tag_mutability = "IMMUTABLE"
 
+  # イメージが残っていても terraform destroy でリポジトリを削除できるようにする
+  # （負荷試験用途で「作っては壊す」運用を前提とするため。本番相当では false を渡す）
+  force_delete = var.force_delete
+
   image_scanning_configuration {
     scan_on_push = true
   }
