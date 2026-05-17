@@ -12,10 +12,9 @@ IMAGE_TAG  ?= latest
 BIN        ?= api
 
 # Terraform backend（state 保管先）のブートストラップ用。
-# バケット/テーブル名は <prefix>-<アカウントID> で、main.tf の locals と一致させる。
+# バケット名は <prefix>-<アカウントID> で、main.tf の locals と一致させる。
 AWS_REGION     ?= ap-northeast-1
 TFSTATE_PREFIX ?= game-api-tfstate
-TFLOCK_PREFIX  ?= game-api-tflock
 
 # テスト対象外パッケージは .testignore で宣言する（除外理由もファイル内に併記）。
 # - コメント行（#）と空行を除いた各行を | で連結して 1 本の正規表現にする

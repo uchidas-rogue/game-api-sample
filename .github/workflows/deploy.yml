@@ -55,7 +55,7 @@ jobs:
             -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
             -backend-config="key=dev/terraform.tfstate" \
             -backend-config="region=${{ env.AWS_REGION }}" \
-            -backend-config="dynamodb_table=${{ secrets.TFLOCK_TABLE }}" \
+            -backend-config="use_lockfile=true" \
             -backend-config="encrypt=true"
 
       - name: terraform plan

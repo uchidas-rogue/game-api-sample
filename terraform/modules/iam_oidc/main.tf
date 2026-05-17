@@ -142,15 +142,11 @@ data "aws_iam_policy_document" "tf_state_access" {
     actions   = ["s3:ListBucket", "s3:GetBucketVersioning"]
     resources = [var.tfstate_bucket_arn]
   }
+  # tfstate 本体と state ロックファイル（use_lockfile が同バケットに *.tflock を置く）の双方をカバーする。
   statement {
     effect    = "Allow"
     actions   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
     resources = ["${var.tfstate_bucket_arn}/*"]
-  }
-  statement {
-    effect    = "Allow"
-    actions   = ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:DeleteItem", "dynamodb:DescribeTable"]
-    resources = [var.tflock_table_arn]
   }
 }
 

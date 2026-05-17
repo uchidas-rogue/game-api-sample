@@ -4,7 +4,6 @@ locals {
   name_prefix = "${var.project}-${var.environment}"
 
   tfstate_bucket_arn = "arn:aws:s3:::game-api-tfstate-${data.aws_caller_identity.current.account_id}"
-  tflock_table_arn   = "arn:aws:dynamodb:${var.region}:${data.aws_caller_identity.current.account_id}:table/game-api-tflock-${data.aws_caller_identity.current.account_id}"
 }
 
 module "network" {
@@ -76,7 +75,6 @@ module "iam_oidc" {
   github_repo  = var.github_repo
 
   tfstate_bucket_arn  = local.tfstate_bucket_arn
-  tflock_table_arn    = local.tflock_table_arn
   ecr_repository_arns = values(module.registry.repository_arns)
   ecs_cluster_arn     = module.compute_ecs.cluster_arn
 }

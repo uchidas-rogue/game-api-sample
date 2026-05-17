@@ -2,15 +2,13 @@
 
 .PHONY: tf/bootstrap tf/init tf/bootstrap/destroy
 
-## Terraform backend 用の S3 バケット + DynamoDB ロックテーブルを作成（初回のみ / 冪等）
+## Terraform backend 用の S3 バケットを作成（初回のみ / 冪等）。state ロックは S3 use_lockfile で行う
 tf/bootstrap:
 	@set -eu; \
 	ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
 	BUCKET=$(TFSTATE_PREFIX)-$$ACCOUNT_ID; \
-	TABLE=$(TFLOCK_PREFIX)-$$ACCOUNT_ID; \
 	echo "Region : $(AWS_REGION)"; \
 	echo "Bucket : $$BUCKET"; \
-	echo "Table  : $$TABLE"; \
 	if aws s3api head-bucket --bucket $$BUCKET >/dev/null 2>&1; then \
 		echo "[skip] S3 バケットは既に存在します"; \
 	else \
@@ -26,35 +24,25 @@ tf/bootstrap:
 			BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true; \
 		echo "[ok] S3 バケットを作成しました"; \
 	fi; \
-	if aws dynamodb describe-table --table-name $$TABLE --region $(AWS_REGION) >/dev/null 2>&1; then \
-		echo "[skip] DynamoDB テーブルは既に存在します"; \
-	else \
-		aws dynamodb create-table --table-name $$TABLE --region $(AWS_REGION) \
-			--attribute-definitions AttributeName=LockID,AttributeType=S \
-			--key-schema AttributeName=LockID,KeyType=HASH \
-			--billing-mode PAY_PER_REQUEST >/dev/null; \
-		echo "[ok] DynamoDB テーブルを作成しました"; \
-	fi; \
 	echo "完了。続けて make tf/init を実行してください"
 
-## terraform init（backend を S3/DynamoDB に接続。tf/bootstrap 実行後に1回）
+## terraform init（backend を S3 に接続。tf/bootstrap 実行後に1回。state ロックは S3 use_lockfile）
 tf/init:
 	@set -eu; \
 	ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
-	cd terraform/environments/dev && terraform init \
+	cd terraform/environments/dev && terraform init -reconfigure \
 		-backend-config="bucket=$(TFSTATE_PREFIX)-$$ACCOUNT_ID" \
 		-backend-config="key=dev/terraform.tfstate" \
 		-backend-config="region=$(AWS_REGION)" \
-		-backend-config="dynamodb_table=$(TFLOCK_PREFIX)-$$ACCOUNT_ID" \
+		-backend-config="use_lockfile=true" \
 		-backend-config="encrypt=true"
 
-## Terraform backend の S3/DynamoDB を削除（tfstate が失われる。全インフラ destroy 後のみ実行）
+## Terraform backend の S3 バケットを削除（tfstate が失われる。全インフラ destroy 後のみ実行）
 tf/bootstrap/destroy:
 	@set -eu; \
 	ACCOUNT_ID=$$(aws sts get-caller-identity --query Account --output text); \
 	BUCKET=$(TFSTATE_PREFIX)-$$ACCOUNT_ID; \
-	TABLE=$(TFLOCK_PREFIX)-$$ACCOUNT_ID; \
-	echo "削除対象: S3=$$BUCKET / DynamoDB=$$TABLE"; \
+	echo "削除対象: S3=$$BUCKET"; \
 	echo "警告: tfstate が完全に失われます。terraform 管理リソースを全て destroy 済みであることを確認してください"; \
 	printf "削除する場合は 'yes' を入力: "; read ans; \
 	[ "$$ans" = "yes" ] || { echo "中止しました"; exit 1; }; \
@@ -71,10 +59,4 @@ tf/bootstrap/destroy:
 		echo "[ok] S3 バケットを削除しました"; \
 	else \
 		echo "[skip] S3 バケットは存在しません"; \
-	fi; \
-	if aws dynamodb describe-table --table-name $$TABLE --region $(AWS_REGION) >/dev/null 2>&1; then \
-		aws dynamodb delete-table --table-name $$TABLE --region $(AWS_REGION) >/dev/null; \
-		echo "[ok] DynamoDB テーブルを削除しました"; \
-	else \
-		echo "[skip] DynamoDB テーブルは存在しません"; \
 	fi

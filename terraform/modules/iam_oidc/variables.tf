@@ -18,11 +18,6 @@ variable "tfstate_bucket_arn" {
   type        = string
 }
 
-variable "tflock_table_arn" {
-  description = "Terraform lock 用 DynamoDB テーブルの ARN"
-  type        = string
-}
-
 variable "ecr_repository_arns" {
   description = "deploy role が push する ECR リポジトリの ARN リスト"
   type        = list(string)

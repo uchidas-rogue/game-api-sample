@@ -12,13 +12,13 @@ terraform {
     }
   }
 
-  # Backend は `terraform init -backend-config=backend.hcl` で値を注入する想定。
-  # backend.hcl の例:
-  #   bucket         = "game-api-tfstate-123456789012"
-  #   key            = "dev/terraform.tfstate"
-  #   region         = "ap-northeast-1"
-  #   dynamodb_table = "game-api-tflock-123456789012"
-  #   encrypt        = true
+  # Backend は `make tf/init`（terraform init -backend-config=...）で値を注入する想定。
+  # 注入する値:
+  #   bucket       = "game-api-tfstate-123456789012"
+  #   key          = "dev/terraform.tfstate"
+  #   region       = "ap-northeast-1"
+  #   use_lockfile = true   # state ロックは S3 上の *.tflock で行う（DynamoDB 不要）
+  #   encrypt      = true
   backend "s3" {}
 }
 

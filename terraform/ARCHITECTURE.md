@@ -13,8 +13,7 @@ flowchart TB
     end
 
     subgraph TFState["Terraform State 管理"]
-        S3State["S3 Bucket<br/>tfstate (暗号化, versioning)"]
-        DDB["DynamoDB<br/>terraform-lock<br/>(LockID)"]
+        S3State["S3 Bucket<br/>tfstate (暗号化, versioning)<br/>state ロックは use_lockfile (*.tflock)"]
     end
 
     subgraph AWS["AWS Account"]
@@ -54,9 +53,7 @@ flowchart TB
     OIDC -. "AssumeRole" .-> RoleTfPlan
     OIDC -. "AssumeRole" .-> RoleTfApply
 
-    GHA -- "terraform plan/apply" --> S3State
-    GHA -- "lock" --> DDB
-    S3State <-.-> DDB
+    GHA -- "terraform plan/apply<br/>+ state ロック" --> S3State
 
     GHA -- "docker build/push<br/>(api/batch/worker/migrate)" --> ECR
 
@@ -89,7 +86,7 @@ flowchart TB
     classDef state fill:#7AA2F7,stroke:#1F3A8A,color:#000
     classDef ci fill:#22C55E,stroke:#14532D,color:#000
     class ECR,ALB,NAT,Aurora,Redis,Logs,Secrets,SvcAPI,SvcWorker,TaskBatch,TaskMigrate,OIDC,RoleDeploy,RoleTfPlan,RoleTfApply aws
-    class S3State,DDB state
+    class S3State state
     class GH,GHA,Dev1 ci
 ```
 
@@ -100,7 +97,7 @@ flowchart LR
     subgraph TFRepo["terraform/"]
         subgraph EnvDev["environments/dev/"]
             Main["main.tf<br/>module 呼び出し"]
-            Provider["provider.tf<br/>aws + S3/DynamoDB backend"]
+            Provider["provider.tf<br/>aws + S3 backend (use_lockfile)"]
         end
 
         subgraph Modules["modules/"]
@@ -197,7 +194,7 @@ sequenceDiagram
 ## 凡例
 
 - **オレンジ系**: AWS リソース
-- **青系**: Terraform state（S3 + DynamoDB）
+- **青系**: Terraform state（S3、ロックは use_lockfile）
 - **緑系**: CI/CD（GitHub）
 - **点線**: 認証・参照・依存
 - **破線枠（グレー）**: 後続フェーズで追加予定（Phase 4: EKS / Phase 5: storage・S3 VPC Endpoint・packer ECR）

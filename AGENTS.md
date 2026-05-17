@@ -3,6 +3,14 @@
 - アーキテクチャ: Clean Architecture
 - AWS インフラ構成・Terraform モジュール分割・CI/CD ワークフローの安全装置は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md) を参照
 
+# Infrastructure Change Rules
+- Terraform 関連の変更時は **影響範囲を terraform/ 配下に限定せず**、必ず以下を併せて確認・更新する:
+  - `terraform/**`（モジュール・環境定義）
+  - `.github/workflows/terraform.yml`, `.github/workflows/deploy.yml`（CI/CD で terraform を実行する箇所）
+  - `make/terraform.mk`, ルート `Makefile`（ローカル実行コマンド・変数）
+  - `terraform/ARCHITECTURE.md`（構成図・解説）
+- とくに backend 設定（bucket / key / ロック方式等）・IAM ロール ARN・terraform バージョン・リソース名は、上記ファイル間で値や前提が一致している必要がある。片方だけ変更しないこと
+
 # 1. Architecture & Design Rules (Clean Architecture)
 - 層構成: `driver`(interface adapters; HTTP handler / batch / worker 等の delivery) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止
 - `driver` 配下は配信形式ごとにサブディレクトリを切る（`internal/driver/http`, `internal/driver/batch`, `internal/driver/worker`）。新規 driver（gRPC, SQS consumer 等）を追加する際もこの配下に配置する
