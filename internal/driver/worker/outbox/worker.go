@@ -30,6 +30,7 @@ type Worker struct {
 	logger       *slog.Logger
 	pollInterval time.Duration
 	batchSize    int32
+	tickTimeout  time.Duration
 }
 
 // Config は Worker のコンストラクタ引数。
@@ -41,6 +42,9 @@ type Config struct {
 	Logger       *slog.Logger
 	PollInterval time.Duration
 	BatchSize    int
+	// TickTimeout は1ティック（runOnce）の処理時間上限。
+	// DB/Redis のブロッキングでループがハングするのを防ぐ。0 の場合は無制限。
+	TickTimeout time.Duration
 }
 
 // New は Worker を生成する。Config.Logger は呼び出し側で必ず初期化済みのものを渡す。
@@ -53,6 +57,7 @@ func New(cfg Config) *Worker {
 		logger:       cfg.Logger,
 		pollInterval: cfg.PollInterval,
 		batchSize:    int32(cfg.BatchSize),
+		tickTimeout:  cfg.TickTimeout,
 	}
 }
 
@@ -107,7 +112,14 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 // runOnce は1ティックぶんの処理を実行する。トランザクション境界はここに集約。
+// tickTimeout > 0 のとき、DB/Redis のブロッキングでループがハングしないよう
+// ティックごとに deadline 付き context を被せる。
 func (w *Worker) runOnce(ctx context.Context) error {
+	if w.tickTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, w.tickTimeout)
+		defer cancel()
+	}
 	return w.tx.DoInTx(ctx, func(tx shared.Tx) error {
 		events, err := w.repo.ListPending(ctx, tx, w.batchSize)
 		if err != nil {

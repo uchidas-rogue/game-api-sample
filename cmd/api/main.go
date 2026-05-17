@@ -41,6 +41,14 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
+	// 遅延接続のため起動時に疎通確認する（DB 未到達なら fail fast で ECS に再起動を委ねる）
+	pingCtx, cancelPing := context.WithTimeout(ctx, cfg.DBPingTimeout)
+	defer cancelPing()
+	if err := infraMysql.Ping(pingCtx, db); err != nil {
+		log.Error("failed to ping mysql", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	// Redis接続を確立
 	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
 	if err != nil {
