@@ -33,7 +33,7 @@ flowchart TB
                 subgraph ECS["ECS Cluster (Fargate Graviton/arm64)"]
                     SvcAPI["Service: api<br/>(desiredCount=N)"]
                     SvcWorker["Service: outbox-worker"]
-                    TaskBatch["ScheduledTask: batch"]
+                    TaskBatch["RunTask: batch<br/>(回復用 / 手動実行)"]
                     TaskMigrate["RunTask: migrate<br/>(deploy 前に1回)"]
                 end
                 Aurora[("Aurora MySQL<br/>Serverless v2<br/>Multi-AZ, KMS")]
@@ -61,7 +61,7 @@ flowchart TB
     GHA -- "UpdateService" --> SvcAPI
     GHA -- "UpdateService" --> SvcWorker
 
-    User["エンドユーザー / k6"] -- "HTTPS" --> ALB
+    User["エンドユーザー / k6"] -- "HTTP" --> ALB
     ALB --> SvcAPI
     SvcAPI --> Aurora
     SvcAPI --> Redis

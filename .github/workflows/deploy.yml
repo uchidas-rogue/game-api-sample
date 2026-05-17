@@ -189,6 +189,7 @@ jobs:
           TAG: ${{ steps.meta.outputs.tag }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
+          declare -A NEW_TDS
           for svc in api outbox-worker; do
             aws ecs describe-task-definition --task-definition $PREFIX-$svc \
               --query 'taskDefinition' --output json > td.json
@@ -199,6 +200,7 @@ jobs:
             ' td.json > td.new.json
             NEW_TD=$(aws ecs register-task-definition --cli-input-json file://td.new.json \
               --query 'taskDefinition.taskDefinitionArn' --output text)
+            NEW_TDS[$svc]=$NEW_TD
             aws ecs update-service \
               --cluster $PREFIX-cluster \
               --service $PREFIX-$svc \
@@ -210,3 +212,17 @@ jobs:
           aws ecs wait services-stable \
             --cluster $PREFIX-cluster \
             --services $PREFIX-api $PREFIX-outbox-worker
+
+          # circuit breaker がロールバックすると services-stable は成功で返るため、
+          # PRIMARY デプロイが新タスク定義のまま安定化したかを明示的に検証する。
+          for svc in api outbox-worker; do
+            PRIMARY_TD=$(aws ecs describe-services \
+              --cluster $PREFIX-cluster --services $PREFIX-$svc \
+              --query 'services[0].deployments[?status==`PRIMARY`].taskDefinition | [0]' \
+              --output text)
+            if [ "$PRIMARY_TD" != "${NEW_TDS[$svc]}" ]; then
+              echo "::error::$svc が新タスク定義で安定化していません (PRIMARY=$PRIMARY_TD, 期待=${NEW_TDS[$svc]})。circuit breaker がロールバックした可能性があります。"
+              exit 1
+            fi
+            echo "$svc deploy OK: $PRIMARY_TD"
+          done

@@ -288,6 +288,12 @@ resource "aws_ecs_service" "api" {
   deployment_minimum_healthy_percent = 50
   deployment_maximum_percent         = 200
 
+  # 起動失敗・ヘルスチェック失敗が続いたらデプロイを止め、直前の安定版へ自動ロールバックする。
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }
@@ -307,11 +313,19 @@ resource "aws_ecs_service" "outbox_worker" {
     security_groups = var.app_security_group_ids
   }
 
+  # ALB 非接続のため判定材料はタスク起動失敗のみ。起動後のハング検知には
+  # task definition のコンテナ healthCheck（別途対応）が前提となる。
+  deployment_circuit_breaker {
+    enable   = true
+    rollback = true
+  }
+
   lifecycle {
     ignore_changes = [task_definition, desired_count]
   }
 }
 
 # batch / migrate は Service ではなく RunTask 起動。
-# EventBridge Scheduler / GitHub Actions からトリガする想定。
+# migrate: deploy.yml が ECS サービス更新前に RunTask。
+# batch: 回復用。make batch/run または GitHub Actions の手動実行でトリガ（定期実行はしない）。
 

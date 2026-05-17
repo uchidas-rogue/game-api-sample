@@ -46,7 +46,7 @@
 * **デプロイ:** 作成したGoアプリケーションのDockerfile（マルチステージビルド）を作成し、ECSへデプロイ
 * **コンテナアーキテクチャ:** `linux/arm64`（Fargate Graviton）前提。コスト最適化（同等性能で約 20% 安）と Apple Silicon ローカルとのビルド一致を狙う
 * **マイグレーション戦略:** `Dockerfile.migrate`（`golang-migrate` + `deployments/mysql/migrations/` 同梱）を ECS RunTask で先行実行。init container / CI 直叩きは不採用（ECS Fargate に init container 概念が無く、Aurora を private subnet に置く方針と両立しないため）
-* **Terraform 構成:** `modules/{network, database, registry, compute_ecs, iam_oidc}` + `environments/dev`。state は S3 + DynamoDB（暗号化・lock）。GitHub Actions ↔ AWS は OIDC AssumeRole（`role-deploy` / `role-tf-plan` / `role-tf-apply` の3ロール、apply は `production-apply` environment 経由）
+* **Terraform 構成:** `modules/{network, database, registry, compute_ecs, iam_oidc}` + `environments/dev`。state は S3（暗号化・versioning）、state ロックは `use_lockfile`（同バケットに `*.tflock` を置く方式）。GitHub Actions ↔ AWS は OIDC AssumeRole（`role-deploy` / `role-tf-plan` / `role-tf-apply` の3ロール、apply は `production-apply` environment 経由）
 * **前方互換配慮:**
   - TaskDefinition の env をリスト構造で記述 → フェーズ3 で `REDIS_RANKING_ADDR` を破壊変更なしで追加可能
   - `database` モジュールの ElastiCache は `for_each` で可変構造 → フェーズ3 で ranking 用を追加可能
