@@ -205,6 +205,8 @@ sequenceDiagram
 
 `tf_plan` の信頼ポリシー（assume 条件）は OIDC sub クレームを `StringEquals` で `repo:${owner}/${repo}:pull_request`（terraform.yml の `plan`）と `repo:${owner}/${repo}:ref:refs/heads/main`（deploy.yml の `precheck` / main 上の dispatch）の2値のみに限定する。以前は `StringLike` + `repo:${owner}/${repo}:*` で全 ref を許可しており、リポジトリ内の任意ブランチ・PR・environment コンテキスト（細工された任意ワークフロー含む）が同ロールを assume して Aurora 認証情報を読み取れる状態だった。これを塞ぐためワイルドカードを排した（`deploy` / `tf_apply` は元から `StringEquals` 限定）。なお非 main ブランチからの `workflow_dispatch` による手動 plan は assume 不可となるため、plan は PR か main 文脈で実行する。
 
+`tf_apply` は `PowerUserAccess` + `IAMFullAccess`（実質 admin 相当）を付与しており、IAMFull により「admin 権限を持つ別 role を作って assume する」等の**権限昇格**が原理上可能になる。assume を `environment:production-apply` に限定し、GitHub Environment の承認（required reviewers）を歯止めとしているが、この承認設定はリポジトリの IaC では検知できない GitHub 側設定であるため、唯一の歯止めが Terraform 管理外にある状態だった。これを補うため `tf_apply` ロールに **permissions boundary**（`${name_prefix}-tf-apply-boundary`）を付与する。boundary は実効権限の上限であり、Terraform 運用に必要な広範な権限（`Allow *`）は残しつつ、(1) boundary を継承しない IAM エンティティの作成、(2) boundary の付替・剥奪、(3) boundary ポリシー自身の改変、を `Deny` で封じる。これにより GitHub 側設定に依存せず、コード（IaC）で昇格経路を遮断する。GitHub Environment 側の保護（承認者・wait timer）は引き続き併用すること。
+
 ## 凡例
 
 - **オレンジ系**: AWS リソース

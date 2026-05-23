@@ -4,6 +4,11 @@ locals {
   github_sub_main    = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
   github_sub_pr      = "repo:${var.github_owner}/${var.github_repo}:pull_request"
   github_sub_env_apl = "repo:${var.github_owner}/${var.github_repo}:environment:production-apply"
+
+  # boundary ポリシーは自身の document 内で ARN を参照する（循環参照になる）ため、
+  # aws_iam_policy.tf_apply_boundary.arn ではなく account_id から手動で組み立てる。
+  tf_apply_boundary_name = "${var.name_prefix}-tf-apply-boundary"
+  tf_apply_boundary_arn  = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/${local.tf_apply_boundary_name}"
 }
 
 resource "aws_iam_openid_connect_provider" "github" {
@@ -206,9 +211,90 @@ data "aws_iam_policy_document" "tf_apply_assume" {
 resource "aws_iam_role" "tf_apply" {
   name               = "${var.name_prefix}-role-tf-apply"
   assume_role_policy = data.aws_iam_policy_document.tf_apply_assume.json
+  # 権限昇格を防ぐ上限（permissions boundary）。PowerUser+IAMFull のままでも
+  # boundary の Deny を超える実効権限は付与されない。
+  permissions_boundary = local.tf_apply_boundary_arn
 }
 
-# apply は強力。PowerUserAccess を付与し、必要に応じて条件で絞る
+# tf-apply の permissions boundary（実効権限の上限）。
+# PowerUserAccess + IAMFullAccess は実質 admin 相当で、IAMFull により
+# 「admin 権限を持つ別 role を作って assume する」等の昇格が可能になる。
+# この boundary を role に付けることで、Terraform 運用に必要な広い権限は
+# 残しつつ、昇格経路（boundary なしの IAM エンティティ作成・boundary の
+# 付替/剥奪・boundary ポリシー自身の改変）のみを GitHub 側設定に依存せず封じる。
+data "aws_iam_policy_document" "tf_apply_boundary" {
+  # ベースライン: Terraform が多様なリソースを扱うため広範に許可する。
+  # 実効権限は「role のポリシー ∩ この boundary」なので、ここで許可しても
+  # 下の Deny に該当する操作は実行できない。
+  statement {
+    sid       = "AllowAll"
+    effect    = "Allow"
+    actions   = ["*"]
+    resources = ["*"]
+  }
+
+  # 昇格防止1: この boundary を付けない（または別 boundary の）role/user の作成を禁止。
+  # tf-apply が作る IAM エンティティは必ず同じ上限を継承する。
+  statement {
+    sid    = "DenyCreateWithoutBoundary"
+    effect = "Deny"
+    actions = [
+      "iam:CreateRole",
+      "iam:CreateUser",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringNotEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.tf_apply_boundary_arn]
+    }
+  }
+
+  # 昇格防止2: boundary の剥奪、および別 boundary への付替を禁止。
+  statement {
+    sid    = "DenyBoundaryDeletion"
+    effect = "Deny"
+    actions = [
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:DeleteUserPermissionsBoundary",
+    ]
+    resources = ["*"]
+  }
+  statement {
+    sid    = "DenyBoundaryAlteration"
+    effect = "Deny"
+    actions = [
+      "iam:PutRolePermissionsBoundary",
+      "iam:PutUserPermissionsBoundary",
+    ]
+    resources = ["*"]
+    condition {
+      test     = "StringNotEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [local.tf_apply_boundary_arn]
+    }
+  }
+
+  # 昇格防止3: boundary ポリシー自身の改変・削除を禁止（上限の骨抜き防止）。
+  statement {
+    sid    = "ProtectBoundaryPolicy"
+    effect = "Deny"
+    actions = [
+      "iam:CreatePolicyVersion",
+      "iam:DeletePolicyVersion",
+      "iam:SetDefaultPolicyVersion",
+      "iam:DeletePolicy",
+    ]
+    resources = [local.tf_apply_boundary_arn]
+  }
+}
+
+resource "aws_iam_policy" "tf_apply_boundary" {
+  name   = local.tf_apply_boundary_name
+  policy = data.aws_iam_policy_document.tf_apply_boundary.json
+}
+
+# apply は強力。PowerUserAccess を付与し、上限は permissions boundary で絞る
 resource "aws_iam_role_policy_attachment" "tf_apply_power" {
   role       = aws_iam_role.tf_apply.name
   policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
