@@ -21,7 +21,7 @@ variable "cache_security_group_ids" {
 variable "aurora_engine_version" {
   description = "Aurora MySQL のエンジンバージョン"
   type        = string
-  default     = "8.0.mysql_aurora.3.07.1"
+  default     = "8.0.mysql_aurora.3.08.2"
 }
 
 variable "aurora_master_username" {
