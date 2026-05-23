@@ -72,6 +72,7 @@ data "aws_iam_policy_document" "deploy" {
     resources = var.ecr_repository_arns
   }
 
+  # cluster スコープを持つ操作。ecs:cluster 条件で対象クラスタに限定する。
   statement {
     sid    = "ECSUpdate"
     effect = "Allow"
@@ -80,8 +81,6 @@ data "aws_iam_policy_document" "deploy" {
       "ecs:UpdateService",
       "ecs:DescribeTasks",
       "ecs:RunTask",
-      "ecs:DescribeTaskDefinition",
-      "ecs:RegisterTaskDefinition",
       "ecs:ListTasks",
     ]
     resources = ["*"]
@@ -90,6 +89,18 @@ data "aws_iam_policy_document" "deploy" {
       variable = "ecs:cluster"
       values   = [var.ecs_cluster_arn]
     }
+  }
+
+  # TaskDefinition 系はクラスタに属さないため ecs:cluster 条件キー非対応
+  # （条件を付けると永久に満たされず AccessDenied になる）。resource も * 必須。
+  statement {
+    sid    = "ECSTaskDefinition"
+    effect = "Allow"
+    actions = [
+      "ecs:DescribeTaskDefinition",
+      "ecs:RegisterTaskDefinition",
+    ]
+    resources = ["*"]
   }
 
   statement {
