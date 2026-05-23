@@ -135,6 +135,17 @@ flowchart LR
     ModReg -. "Phase 5: packer 追加" .-> ModReg
 ```
 
+## コンテナ実行時セキュリティ
+
+`compute_ecs` の全 TaskDef（api / outbox-worker / batch / migrate）は、コンテナ侵害時の影響範囲を狭めるデプスディフェンス（多層防御）として以下を共通適用する。設定は `locals.container_security` に集約し、各 `container_definitions` へ `merge()` で合成しているため、追加漏れと値の不整合を防いでいる。
+
+| 設定 | 値 | 効果 / 前提 |
+|---|---|---|
+| `readonlyRootFilesystem` | `true` | ルートFSを読み取り専用化し、侵害後のツール書き込み・永続化を阻止。アプリ（distroless static / migrate）はローカル書き込みをしないため writable volume は不要。将来 temp 書き込みが必要になった場合は Fargate のエフェメラル `volume` + `mountPoints` で書込先を限定的に開ける（tmpfs は Fargate 非対応） |
+| `linuxParameters.capabilities.drop` | `["ALL"]` | 全 Linux capability を剥奪。コンテナは `nonroot` 実行かつ待受は 8080(>1024) のため `NET_BIND_SERVICE` 等の追加は不要。Fargate は `drop` を完全サポート |
+
+イメージ側も `gcr.io/distroless/static-debian12:nonroot`（api/batch/outbox-worker）で非 root・最小構成を担保している（migrate のみ alpine ベース）。
+
 ## 後続フェーズへの前方互換（Phase 2 設計に組み込む配慮）
 
 | 後続フェーズの追加要件 | Phase 2 設計での配慮 |

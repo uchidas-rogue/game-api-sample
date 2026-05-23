@@ -19,6 +19,16 @@ locals {
     { name = "MYSQL_USERNAME", valueFrom = "${var.aurora_master_secret_arn}:username::" },
     { name = "MYSQL_PASSWORD", valueFrom = "${var.aurora_master_secret_arn}:password::" },
   ]
+
+  # 全 TaskDef 共通のコンテナセキュリティ設定（コンテナ侵害時の影響範囲を狭めるデプスディフェンス）。
+  # readonly root: 現状アプリはローカル書き込みをしないため writable volume は不要。
+  # capabilities drop ALL: nonroot 実行かつ待受は 8080(>1024) のため追加 capability は不要。
+  container_security = {
+    readonlyRootFilesystem = true
+    linuxParameters = {
+      capabilities = { drop = ["ALL"] }
+    }
+  }
 }
 
 # ---- ECS Cluster ----
@@ -149,7 +159,7 @@ resource "aws_ecs_task_definition" "api" {
   }
 
   container_definitions = jsonencode([
-    {
+    merge(local.container_security, {
       name      = "api"
       image     = "${var.repository_urls["api"]}:${var.image_tags["api"]}"
       essential = true
@@ -168,7 +178,7 @@ resource "aws_ecs_task_definition" "api" {
           awslogs-stream-prefix = "ecs"
         }
       }
-    }
+    })
   ])
 }
 
@@ -187,7 +197,7 @@ resource "aws_ecs_task_definition" "outbox_worker" {
   }
 
   container_definitions = jsonencode([
-    {
+    merge(local.container_security, {
       name        = "outbox-worker"
       image       = "${var.repository_urls["outbox-worker"]}:${var.image_tags["outbox-worker"]}"
       essential   = true
@@ -201,7 +211,7 @@ resource "aws_ecs_task_definition" "outbox_worker" {
           awslogs-stream-prefix = "ecs"
         }
       }
-    }
+    })
   ])
 }
 
@@ -220,7 +230,7 @@ resource "aws_ecs_task_definition" "batch" {
   }
 
   container_definitions = jsonencode([
-    {
+    merge(local.container_security, {
       name        = "batch"
       image       = "${var.repository_urls["batch"]}:${var.image_tags["batch"]}"
       essential   = true
@@ -234,7 +244,7 @@ resource "aws_ecs_task_definition" "batch" {
           awslogs-stream-prefix = "ecs"
         }
       }
-    }
+    })
   ])
 }
 
@@ -253,7 +263,7 @@ resource "aws_ecs_task_definition" "migrate" {
   }
 
   container_definitions = jsonencode([
-    {
+    merge(local.container_security, {
       name        = "migrate"
       image       = "${var.repository_urls["migrate"]}:${var.image_tags["migrate"]}"
       essential   = true
@@ -267,7 +277,7 @@ resource "aws_ecs_task_definition" "migrate" {
           awslogs-stream-prefix = "ecs"
         }
       }
-    }
+    })
   ])
 }
 
