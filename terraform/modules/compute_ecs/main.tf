@@ -26,7 +26,10 @@ locals {
   container_security = {
     readonlyRootFilesystem = true
     linuxParameters = {
-      capabilities = { drop = ["ALL"] }
+      # add = [] は AWS が自動補完する空フィールド。これを config 側にも明示しないと
+      # provider の container_definitions 正規化が一致せず、毎 plan で task def が
+      # delete/create（永続差分）になり deploy.yml の precheck を誤検知させる。
+      capabilities = { add = [], drop = ["ALL"] }
     }
   }
 }
