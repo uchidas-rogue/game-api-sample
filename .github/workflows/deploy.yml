@@ -25,10 +25,11 @@ env:
 
 jobs:
   # deploy.yml は describe-task-definition で現在のタスク定義を読み image だけ書き換える。
-  # terraform 側の env/secrets 変更が未適用だと「新コード × 旧 env」でデプロイされるため、
-  # deploy 前に terraform plan を実行し ECS タスク定義に未適用差分があれば停止する。
+  # terraform apply はしないため、未適用の差分があると「新コード × 旧インフラ」でデプロイされる。
+  # これはタスク定義（env/secrets）に限らず ALB リスナー・SG ルール等でも起こりうるため、
+  # deploy 前に terraform plan を実行し、未適用差分が一切ない（クリーンな state）ことを保証する。
   precheck:
-    name: Verify ECS task definitions are in sync with Terraform
+    name: Verify infrastructure is in sync with Terraform
     runs-on: ubuntu-latest
     # CI が成功で完了したとき、または手動実行のときだけ実行する
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
@@ -65,24 +66,23 @@ jobs:
         working-directory: terraform/environments/dev
         run: terraform plan -input=false -no-color -lock-timeout=120s -out=tfplan
 
-      - name: Detect un-applied ECS task definition drift
+      - name: Detect un-applied Terraform drift
         working-directory: terraform/environments/dev
         run: |
           terraform show -json tfplan > plan.json
+          # データソース read 等は no-op のため除外し、実リソースの変更のみを対象にする。
           CHANGED=$(jq -r '
             [ .resource_changes[]
-              | select(.type == "aws_ecs_task_definition")
               | select(.change.actions != ["no-op"]) ] | length
           ' plan.json)
           if [ "$CHANGED" -gt 0 ]; then
-            echo "::error::未適用の ECS タスク定義変更が ${CHANGED} 件あります。先に terraform.yml を apply してください。"
+            echo "::error::未適用の Terraform 変更が ${CHANGED} 件あります。先に terraform.yml を apply してください。"
             jq -r '.resource_changes[]
-              | select(.type == "aws_ecs_task_definition")
               | select(.change.actions != ["no-op"])
               | "  - \(.address): \(.change.actions | join(","))"' plan.json
             exit 1
           fi
-          echo "ECS タスク定義に未適用の差分なし。デプロイを継続します。"
+          echo "未適用の Terraform 差分なし。デプロイを継続します。"
 
   build-and-deploy:
     name: Build images and deploy to ECS

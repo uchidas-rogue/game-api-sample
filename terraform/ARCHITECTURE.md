@@ -186,7 +186,7 @@ sequenceDiagram
 |---|---|---|
 | **CI ゲート** | `deploy.yml` は `workflow_run` トリガで `ci.yml` の成功完了時のみ起動する | テスト未通過のコードが本番デプロイされる |
 | **concurrency 共有** | `terraform.yml` と `deploy.yml` は同一 concurrency グループ（`infra-deploy-${ref}`）。先着が走り他方は待機 | インフラ変更とアプリデプロイが同時に ECS を書き換える競合 |
-| **ECS タスク定義ドリフト検査** | `deploy.yml` の `precheck` ジョブが `terraform plan` を実行し、`aws_ecs_task_definition` に未適用差分があればデプロイを停止 | terraform 側の env/secrets 変更が未適用のまま「新コード × 旧 env」でデプロイされる |
+| **Terraform ドリフト検査** | `deploy.yml` の `precheck` ジョブが `terraform plan` を実行し、未適用差分（no-op 以外の全リソース変更）が1件でもあればデプロイを停止 | terraform 側の未適用変更（タスク定義の env/secrets、ALB リスナー、SG ルール等）のまま「新コード × 旧インフラ」でデプロイされる |
 | **マイグレーション先行** | `deploy.yml` は ECS サービス更新前に migrate タスクを RunTask し、exit code≠0 で停止 | スキーマ不整合のままアプリが起動する |
 | **ECS ウェイター timeout** | `deploy.yml` の `aws ecs wait`（migrate `tasks-stopped` 600s / `services-stable` 900s）を `timeout` でラップし、超過時にジョブを fail | migrate タスクや ECS デプロイのハングで CI ジョブが AWS デフォルト上限（最大約40分）まで長時間ブロックされる |
 
