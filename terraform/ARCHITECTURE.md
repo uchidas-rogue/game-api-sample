@@ -189,7 +189,7 @@ sequenceDiagram
 | **ECS タスク定義ドリフト検査** | `deploy.yml` の `precheck` ジョブが `terraform plan` を実行し、`aws_ecs_task_definition` に未適用差分があればデプロイを停止 | terraform 側の env/secrets 変更が未適用のまま「新コード × 旧 env」でデプロイされる |
 | **マイグレーション先行** | `deploy.yml` は ECS サービス更新前に migrate タスクを RunTask し、exit code≠0 で停止 | スキーマ不整合のままアプリが起動する |
 
-`precheck` は読み取り権限のみの `tf_plan` IAM ロールを流用し、IAM 権限の拡張はしていない。
+`precheck` は `tf_plan` IAM ロールを流用する。`tf_plan` には `ReadOnlyAccess` を基本付与しているが、同マネージドポリシーは機密保護のため `secretsmanager:GetSecretValue` / `kms:Decrypt` を含まない。plan の refresh で CMK 暗号化された Aurora マスター Secret（`aws_secretsmanager_secret_version`）を読む必要があるため、**当該 Secret と暗号化 CMK に限定して** この2アクションのみインラインで補っている（権限拡張は対象リソース限定のスコープに留める）。
 
 ## 凡例
 

@@ -60,6 +60,7 @@ module "compute_ecs" {
   aurora_cluster_endpoint  = module.database.aurora_cluster_endpoint
   aurora_database_name     = module.database.aurora_database_name
   aurora_master_secret_arn = module.database.aurora_master_secret_arn
+  db_kms_key_arn           = module.database.kms_key_arn
   redis_endpoints          = module.database.redis_endpoints
 
   api_desired_count    = var.api_desired_count
@@ -77,4 +78,7 @@ module "iam_oidc" {
   tfstate_bucket_arn  = local.tfstate_bucket_arn
   ecr_repository_arns = values(module.registry.repository_arns)
   ecs_cluster_arn     = module.compute_ecs.cluster_arn
+
+  aurora_master_secret_arn = module.database.aurora_master_secret_arn
+  db_kms_key_arn           = module.database.kms_key_arn
 }

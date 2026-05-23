@@ -1,6 +1,17 @@
-# Terraform 系（backend のブートストラップ / init / 削除）
+# Terraform 系（backend のブートストラップ / init / 検証 / 削除）
 
-.PHONY: tf/bootstrap tf/init tf/bootstrap/destroy
+.PHONY: tf/bootstrap tf/init tf/fmt tf/validate tf/check tf/bootstrap/destroy
+
+## Terraform フォーマット検証（差分があれば失敗。CI の fmt -check と同等）
+tf/fmt:
+	terraform -chdir=terraform fmt -check -recursive
+
+## Terraform 構文・整合性検証（事前に make tf/init が必要）
+tf/validate:
+	terraform -chdir=terraform/environments/dev validate
+
+## fmt -check + validate をまとめて実行（ローカル検証エントリポイント）
+tf/check: tf/fmt tf/validate
 
 ## Terraform backend 用の S3 バケットを作成（初回のみ / 冪等）。state ロックは S3 use_lockfile で行う
 tf/bootstrap:

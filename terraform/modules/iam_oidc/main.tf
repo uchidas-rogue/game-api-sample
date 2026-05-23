@@ -156,6 +156,28 @@ resource "aws_iam_role_policy" "tf_plan_state" {
   policy = data.aws_iam_policy_document.tf_state_access.json
 }
 
+# ReadOnlyAccess は機密保護のため GetSecretValue / kms:Decrypt を含まない。
+# plan の refresh で aws_secretsmanager_secret_version を読むため、対象の Aurora
+# Secret と暗号化 CMK に限定して両アクションを補う。
+data "aws_iam_policy_document" "tf_plan_secret_read" {
+  statement {
+    effect    = "Allow"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [var.aurora_master_secret_arn]
+  }
+  statement {
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [var.db_kms_key_arn]
+  }
+}
+
+resource "aws_iam_role_policy" "tf_plan_secret_read" {
+  name   = "aurora-secret-read"
+  role   = aws_iam_role.tf_plan.id
+  policy = data.aws_iam_policy_document.tf_plan_secret_read.json
+}
+
 # ---- Role: terraform-apply (main + production-apply environment 限定) ----
 
 data "aws_iam_policy_document" "tf_apply_assume" {

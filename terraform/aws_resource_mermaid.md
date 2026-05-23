@@ -113,7 +113,7 @@ flowchart TB
         RoleExec["iam_role.task_execution"]
         RoleTask["iam_role.task"]
         ExecManaged["role_policy_attachment.task_execution_managed<br/>(ECSTaskExecutionRolePolicy)"]
-        ExecSecrets["iam_role_policy.task_execution_secrets<br/>(secretsmanager:GetSecretValue)"]
+        ExecSecrets["iam_role_policy.task_execution_secrets<br/>(secretsmanager:GetSecretValue + kms:Decrypt)"]
     end
 
     Cluster["aws_ecs_cluster.this<br/>(containerInsights)"]
@@ -194,6 +194,7 @@ flowchart TB
         RPlan["iam_role.tf_plan"]
         APlanRO["policy_attachment.tf_plan_readonly<br/>(ReadOnlyAccess)"]
         PPlanState["iam_role_policy.tf_plan_state<br/>(tfstate S3 R/W)"]
+        PPlanSecret["iam_role_policy.tf_plan_secret_read<br/>(Aurora Secret GetSecretValue + kms:Decrypt)"]
     end
 
     subgraph TfApply["Role: tf-apply (production-apply env)"]

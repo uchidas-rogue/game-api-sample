@@ -58,6 +58,11 @@ variable "aurora_master_secret_arn" {
   type        = string
 }
 
+variable "db_kms_key_arn" {
+  description = "Aurora Secret を暗号化する CMK の ARN（GetSecretValue に伴う Decrypt 用）"
+  type        = string
+}
+
 variable "redis_endpoints" {
   description = "Redis レプリケーショングループ名 → endpoint（Phase 3 で ranking を追加）"
   type        = map(string)

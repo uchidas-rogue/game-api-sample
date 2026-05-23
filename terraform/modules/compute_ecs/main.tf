@@ -61,6 +61,12 @@ data "aws_iam_policy_document" "task_execution_secrets" {
     actions   = ["secretsmanager:GetSecretValue"]
     resources = [var.aurora_master_secret_arn]
   }
+  # Secret は CMK 暗号化のため、GetSecretValue には対象鍵への Decrypt が必須。
+  statement {
+    effect    = "Allow"
+    actions   = ["kms:Decrypt"]
+    resources = [var.db_kms_key_arn]
+  }
 }
 
 resource "aws_iam_role_policy" "task_execution_secrets" {
