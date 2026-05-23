@@ -424,3 +424,51 @@ func TestWorker_runOnce_IncrementRetry_error(t *testing.T) {
 	cancel()
 	assert.NoError(t, w.Run(ctx))
 }
+
+// TestWorker_runOnce_appliesTickTimeout は TickTimeout > 0 のとき
+// runOnce が deadline 付き context を DoInTx へ渡すことを確認する。
+// これにより DB/Redis のブロッキングでループがハングしない。
+func TestWorker_runOnce_appliesTickTimeout(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	repo := mockoutbox.NewMockRepository(ctrl)
+	store := mockranking.NewMockRankingStore(ctrl)
+	tx := mockshared.NewMockTransactor(ctrl)
+
+	gotDeadline := make(chan bool, 1)
+	tx.EXPECT().
+		DoInTx(gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, fn func(shared.Tx) error) error {
+			_, ok := ctx.Deadline()
+			select {
+			case gotDeadline <- ok:
+			default:
+			}
+			return fn(nil)
+		}).
+		AnyTimes()
+	repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(nil, nil).AnyTimes()
+
+	w := workeroutbox.New(workeroutbox.Config{
+		Repo: repo, RankingStore: store, Tx: tx,
+		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
+		TickTimeout: time.Minute,
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = w.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case ok := <-gotDeadline:
+		assert.True(t, ok, "runOnce は deadline 付き context を DoInTx に渡すべき")
+	case <-time.After(2 * time.Second):
+		t.Fatal("DoInTx が呼ばれなかった")
+	}
+	stopAndWait(t, cancel, done)
+}

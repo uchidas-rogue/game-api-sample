@@ -44,6 +44,17 @@
   - キャッシュ: Amazon ElastiCache (Redis)
   - ネットワーク/セキュリティ: VPC設定、IAM最小権限の原則適用、暗号化設定。
 * **デプロイ:** 作成したGoアプリケーションのDockerfile（マルチステージビルド）を作成し、ECSへデプロイ
+* **コンテナアーキテクチャ:** `linux/arm64`（Fargate Graviton）前提。コスト最適化（同等性能で約 20% 安）と Apple Silicon ローカルとのビルド一致を狙う
+* **マイグレーション戦略:** `Dockerfile.migrate`（`golang-migrate` + `deployments/mysql/migrations/` 同梱）を ECS RunTask で先行実行。init container / CI 直叩きは不採用（ECS Fargate に init container 概念が無く、Aurora を private subnet に置く方針と両立しないため）
+* **Terraform 構成:** `modules/{network, database, registry, compute_ecs, iam_oidc}` + `environments/dev`。state は S3（暗号化・versioning）、state ロックは `use_lockfile`（同バケットに `*.tflock` を置く方式）。GitHub Actions ↔ AWS は OIDC AssumeRole（`role-deploy` / `role-tf-plan` / `role-tf-apply` の3ロール、apply は `production-apply` environment 経由）
+* **前方互換配慮:**
+  - TaskDefinition の env をリスト構造で記述 → フェーズ3 で `REDIS_RANKING_ADDR` を破壊変更なしで追加可能
+  - `database` モジュールの ElastiCache は `for_each` で可変構造 → フェーズ3 で ranking 用を追加可能
+  - `registry` モジュールは `for_each = var.repositories` → フェーズ5 で packer リポジトリを追加可能
+  - `network` モジュールは `private_route_table_id` を output → フェーズ5 の S3 VPC Gateway Endpoint を後付け可能
+  - `network` / `database` / `registry` は `compute_ecs` から疎結合 → フェーズ4 で `compute_eks` を別モジュールで追加可能
+* **対象外（意図的に実装しない）:**
+  - **AWS WAF / Shield**: 本プロジェクトはエンドユーザーが k6（負荷試験ツール）であり、WAF を ALB 前段に置くとレートベースルール等が k6 リクエストを弾き、フェーズ3 の負荷試験結果が歪む。攻撃耐性の検証は別途 k6 シナリオ側で行う方針のため、WAF は今後も導入しない（GCP 参考構成の Cloud Armor に相当する層は意図的に省く）
 
 ---
 
@@ -55,6 +66,10 @@
 * **パフォーマンス改善:**
   - データベースのインデックス最適化
   - Redisを用いたキャッシュ戦略の拡張
+    - **Redis の cache 用 / ranking 用 分離**（負荷試験で ranking ZSet 参照と outbox Pub/Sub・汎用キャッシュの相互影響が顕在化した場合に対応）:
+      - アプリ側: `configs` の Redis アドレスを `REDIS_CACHE_ADDR` / `REDIS_RANKING_ADDR` の2系統に分け、DI（`internal/di/container.go`・各 `cmd/*/main.go`）で `RankingStore` ← ranking、`OutboxNotifier`/`Subscriber`・汎用キャッシュ ← cache へ注入。今は両方同一アドレスを向けるだけで挙動不変（工数 ~0.5日）
+      - インフラ側: ElastiCache をもう1レプリケーショングループ追加（`cache.t4g.micro` で +$12〜$25/月目安）、ECS タスク定義の env に `REDIS_RANKING_ADDR` を追加
+    - 汎用キャッシュ用途（GET/SET/TTL）の追加。現状 Redis は ZSet（ランキング）と Pub/Sub（outbox 通知）のみで key/value キャッシュは未実装
   - GoのGoroutine/Channelを用いた並行処理のチューニング
 * **成果のアウトプット:** ビフォーアフターの数値と設計判断をまとめ、技術記事（Qiita等）として発信する
 
@@ -80,4 +95,24 @@
   - 同一 k6 シナリオでの ECS Fargate vs EKS のスループット・p99 レイテンシ・コスト比較
   - スケーリング応答性（スパイク時のスケールアウト時間）
   - 運用工数（マニフェスト量、デプロイ手順、障害対応）
+* **比較候補（任意の拡張）:** AWS App Runner（GCP Cloud Run 相当のフルマネージドコンテナ。リクエスト駆動オートスケール、ただし完全なゼロスケールは不可）を3者目の比較対象に加えるか検討。記事ネタとして「ECS Fargate vs EKS vs App Runner」の運用性・コスト・スケール応答性の比較は価値があるが、構築コストとのトレードオフで判断
 * **成果のアウトプット:** ECS Fargate と EKS のリアルな差分（コスト・運用性・拡張性）を技術記事として発信
+
+---
+
+## フェーズ5：マスタデータ配信フローの構築（発展課題 / フェーズ1〜3 完了後に着手）
+**目標:** ゲーム設定値（マスタデータ）を「DB → 配信用ファイル → クライアント/サーバ」へ流すパイプラインを AWS 上に構築する。admin ツールは本プロジェクトでは実装しないため、パッキング処理は専用バッチで代替する。
+
+* **データフロー（admin 抜きの簡易版）:**
+  - パッキング用バッチ（ECS ScheduledTask または RunTask）が Aurora MySQL のマスタデータを読み取り、`gob`（サーバ向け）/ `SQLite`（クライアント向け）ファイルを生成して S3 にアップロード
+  - api（Cloud Run 相当の ECS Service）は起動時/更新時に S3 から `gob` を取得してインメモリキャッシュ
+  - クライアント向け `SQLite` は CloudFront 経由で配信（クライアントはローカルキャッシュ）
+* **インフラ追加（Terraform）:**
+  - `storage` モジュール新設: S3 バケット ×2（server master / client master）+ CloudFront ディストリビューション（OAC で S3 を保護）
+  - **S3 VPC Gateway Endpoint を `network` モジュールに追加**（無料）— ECS タスクの S3 アクセスを NAT 経由から AWS 内部経路へ切り替え、NAT データ処理料を削減。※このタスクと同じ PR で必ず一緒に入れる
+  - パッキング用 ECR リポジトリ追加（または `migrate` イメージに同梱）
+  - IAM: api の task role に S3 read、パッカー task role に S3 write + Aurora read を追加
+* **アプリ追加:**
+  - パッカー: Aurora → gob/SQLite 生成のバッチコマンド（`internal/driver/batch` 配下）
+  - ローダー: S3 から gob を取得しインメモリキャッシュする infrastructure 層 repository + DI 配線
+* **想定コスト:** S3 ~$1/月、CloudFront 実トラフィック比例（ポートフォリオ規模なら実質無料枠内）、パッキングタスク < $1/月、Gateway Endpoint $0

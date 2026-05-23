@@ -1,0 +1,226 @@
+# AWS インフラ構成図（Phase 2 完了時点）
+
+本ドキュメントは ROADMAP フェーズ2 で構築する AWS インフラの構成・モジュール分割・デプロイフローを mermaid で可視化したもの。
+
+## 全体構成図
+
+```mermaid
+flowchart TB
+    subgraph Dev["開発者・CI"]
+        Dev1["開発者<br/>(Apple Silicon Mac)"]
+        GH["GitHub<br/>(uchidas-rogue/game-api-sample)"]
+        GHA["GitHub Actions<br/>ci.yml / deploy.yml / terraform.yml"]
+    end
+
+    subgraph TFState["Terraform State 管理"]
+        S3State["S3 Bucket<br/>tfstate (暗号化, versioning)<br/>state ロックは use_lockfile (*.tflock)"]
+    end
+
+    subgraph AWS["AWS Account"]
+        OIDC["IAM OIDC Provider<br/>token.actions.githubusercontent.com"]
+        RoleDeploy["IAM Role<br/>role-deploy<br/>(ECR push + ECS update)"]
+        RoleTfPlan["IAM Role<br/>role-terraform-plan"]
+        RoleTfApply["IAM Role<br/>role-terraform-apply<br/>(main + manual approval)"]
+
+        ECR["ECR<br/>game-api-api<br/>game-api-batch<br/>game-api-outbox-worker<br/>game-api-migrate"]
+
+        subgraph VPC["VPC 10.0.0.0/16"]
+            subgraph PubAZ["Public Subnets (multi-AZ)"]
+                ALB["ALB<br/>:80 → :8080"]
+                NAT["NAT Gateway"]
+            end
+            subgraph PrivAZ["Private Subnets (multi-AZ)"]
+                subgraph ECS["ECS Cluster (Fargate Graviton/arm64)"]
+                    SvcAPI["Service: api<br/>(desiredCount=N)"]
+                    SvcWorker["Service: outbox-worker"]
+                    TaskBatch["RunTask: batch<br/>(回復用 / 手動実行)"]
+                    TaskMigrate["RunTask: migrate<br/>(deploy 前に1回)"]
+                end
+                Aurora[("Aurora MySQL<br/>Serverless v2<br/>Multi-AZ, KMS")]
+                Redis[("ElastiCache Redis<br/>cluster mode disabled")]
+            end
+        end
+
+        Logs["CloudWatch Logs"]
+        Secrets["Secrets Manager<br/>(DB password など)"]
+    end
+
+    Dev1 -- "git push" --> GH
+    GH -- "PR / push main" --> GHA
+
+    GHA -. "OIDC JWT" .-> OIDC
+    OIDC -. "AssumeRole" .-> RoleDeploy
+    OIDC -. "AssumeRole" .-> RoleTfPlan
+    OIDC -. "AssumeRole" .-> RoleTfApply
+
+    GHA -- "terraform plan/apply<br/>+ state ロック" --> S3State
+
+    GHA -- "docker build/push<br/>(api/batch/worker/migrate)" --> ECR
+
+    GHA -- "RunTask migrate<br/>(deploy 前)" --> TaskMigrate
+    GHA -- "UpdateService" --> SvcAPI
+    GHA -- "UpdateService" --> SvcWorker
+
+    User["エンドユーザー / k6"] -- "HTTP" --> ALB
+    ALB --> SvcAPI
+    SvcAPI --> Aurora
+    SvcAPI --> Redis
+    SvcWorker --> Aurora
+    SvcWorker --> Redis
+    TaskBatch --> Aurora
+    TaskMigrate --> Aurora
+
+    SvcAPI -.-> Secrets
+    SvcWorker -.-> Secrets
+    TaskMigrate -.-> Secrets
+
+    SvcAPI -.-> Logs
+    SvcWorker -.-> Logs
+    TaskBatch -.-> Logs
+    TaskMigrate -.-> Logs
+
+    PrivAZ -- "egress" --> NAT
+    NAT --> ECR
+
+    classDef aws fill:#FF9900,stroke:#232F3E,color:#000
+    classDef state fill:#7AA2F7,stroke:#1F3A8A,color:#000
+    classDef ci fill:#22C55E,stroke:#14532D,color:#000
+    class ECR,ALB,NAT,Aurora,Redis,Logs,Secrets,SvcAPI,SvcWorker,TaskBatch,TaskMigrate,OIDC,RoleDeploy,RoleTfPlan,RoleTfApply aws
+    class S3State state
+    class GH,GHA,Dev1 ci
+```
+
+## Terraform モジュール構成
+
+```mermaid
+flowchart LR
+    subgraph TFRepo["terraform/"]
+        subgraph EnvDev["environments/dev/"]
+            Main["main.tf<br/>module 呼び出し"]
+            Provider["provider.tf<br/>aws + S3 backend (use_lockfile)"]
+        end
+
+        subgraph Modules["modules/"]
+            ModNet["network<br/>VPC, Subnet, IGW, NAT, RouteTable, SG<br/>(route table ID を output)"]
+            ModDB["database<br/>Aurora MySQL, ElastiCache Redis, KMS<br/>(ElastiCache は可変構造)"]
+            ModReg["registry<br/>ECR (for_each = var.repositories)<br/>初期: api/batch/worker/migrate"]
+            ModECS["compute_ecs<br/>ECS Cluster, TaskDef(env=リスト), Service, ALB, IAM"]
+            ModCI["iam_oidc<br/>OIDC Provider, role-deploy/tf-plan/tf-apply"]
+        end
+    end
+
+    Main --> ModNet
+    Main --> ModDB
+    Main --> ModReg
+    Main --> ModECS
+    Main --> ModCI
+
+    ModECS -. "VPC ID, Subnet IDs" .-> ModNet
+    ModDB -. "VPC ID, Subnet IDs, SG IDs" .-> ModNet
+    ModECS -. "ECR repository URL" .-> ModReg
+    ModECS -. "DB endpoint, Redis endpoint" .-> ModDB
+
+    classDef future fill:#E5E7EB,stroke:#6B7280,color:#374151,stroke-dasharray: 5 5
+    ModEKS["compute_eks<br/>(Phase 4 で追加予定)"]:::future
+    ModStorage["storage<br/>S3 x 2 + CloudFront<br/>(Phase 5 で追加予定)"]:::future
+    ModNet2["+ S3 VPC Gateway Endpoint<br/>(Phase 5 で network に追加)"]:::future
+
+    Main -. "Phase 4" .-> ModEKS
+    ModEKS -. "流用" .-> ModNet
+    ModEKS -. "流用" .-> ModDB
+    ModEKS -. "流用" .-> ModReg
+
+    Main -. "Phase 5" .-> ModStorage
+    ModNet -. "Phase 5 で拡張" .-> ModNet2
+    ModReg -. "Phase 5: packer 追加" .-> ModReg
+```
+
+## コンテナ実行時セキュリティ
+
+`compute_ecs` の全 TaskDef（api / outbox-worker / batch / migrate）は、コンテナ侵害時の影響範囲を狭めるデプスディフェンス（多層防御）として以下を共通適用する。設定は `locals.container_security` に集約し、各 `container_definitions` へ `merge()` で合成しているため、追加漏れと値の不整合を防いでいる。
+
+| 設定 | 値 | 効果 / 前提 |
+|---|---|---|
+| `readonlyRootFilesystem` | `true` | ルートFSを読み取り専用化し、侵害後のツール書き込み・永続化を阻止。アプリ（distroless static / migrate）はローカル書き込みをしないため writable volume は不要。将来 temp 書き込みが必要になった場合は Fargate のエフェメラル `volume` + `mountPoints` で書込先を限定的に開ける（tmpfs は Fargate 非対応） |
+| `linuxParameters.capabilities.drop` | `["ALL"]` | 全 Linux capability を剥奪。コンテナは `nonroot` 実行かつ待受は 8080(>1024) のため `NET_BIND_SERVICE` 等の追加は不要。Fargate は `drop` を完全サポート |
+
+イメージ側も `gcr.io/distroless/static-debian12:nonroot`（api/batch/outbox-worker）で非 root・最小構成を担保している（migrate のみ alpine ベース）。
+
+## 後続フェーズへの前方互換（Phase 2 設計に組み込む配慮）
+
+| 後続フェーズの追加要件 | Phase 2 設計での配慮 |
+|---|---|
+| **§フェーズ3**: Redis を cache/ranking 2系統に分離（`REDIS_CACHE_ADDR` / `REDIS_RANKING_ADDR`） | ECS TaskDef の env を**リスト構造**で記述し、後から `REDIS_RANKING_ADDR` を追加しても破壊変更にならない形にする。`database` モジュールの ElastiCache も**リスト/可変構造**で定義し、2台目を増やせる構造に |
+| **§フェーズ4**: EKS 比較 / App Runner 候補 | `network` / `database` / `registry` を `compute_ecs` から疎結合に保ち、`compute_eks` を別モジュールで追加可能にする。VPC/Subnet は `compute_ecs` が所有しない |
+| **§フェーズ5**: マスタデータ配信（S3 + CloudFront、S3 VPC Gateway Endpoint） | `network` モジュールが **route table ID を output として expose**。Phase 5 で `aws_vpc_endpoint`（S3 Gateway, 無料）を**後付け**できる形に。実装は Phase 5 と同 PR で行う（先取りしない） |
+| **§フェーズ5**: パッカー用 ECR 追加 | `registry` モジュールは `for_each = var.repositories` でリポジトリ集合を扱い、Phase 5 で `packer` を1行追加できる形に |
+
+## デプロイフロー（時系列）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Dev as 開発者
+    participant GH as GitHub
+    participant GHA as GitHub Actions
+    participant STS as AWS STS
+    participant ECR as ECR
+    participant ECS as ECS
+    participant DB as Aurora
+
+    Dev->>GH: git push (main)
+    GH->>GHA: trigger deploy.yml
+    GHA->>STS: OIDC JWT で AssumeRole(role-deploy)
+    STS-->>GHA: 一時クレデンシャル(数分有効)
+
+    GHA->>GHA: docker buildx build (arm64)<br/>api / batch / worker / migrate
+    GHA->>ECR: docker push :sha-xxx
+
+    Note over GHA,ECS: マイグレーション先行実行
+    GHA->>ECS: RunTask(migrate, image=:sha-xxx)
+    ECS->>DB: golang-migrate up
+    DB-->>ECS: schema_migrations 更新
+    ECS-->>GHA: Task exit 0
+
+    Note over GHA,ECS: 本体デプロイ
+    GHA->>ECS: UpdateService(api, image=:sha-xxx)
+    GHA->>ECS: UpdateService(outbox-worker, image=:sha-xxx)
+    ECS->>ECS: rolling update (健全性チェック後に旧 task 停止)
+    ECS-->>GHA: deployment COMPLETED
+```
+
+## CI/CD ワークフローの安全装置
+
+`.github/workflows/` の `ci.yml` / `terraform.yml` / `deploy.yml` には以下の安全装置を組み込んでいる。
+
+| 安全装置 | 内容 | 防ぐ事象 |
+|---|---|---|
+| **CI ゲート** | `deploy.yml` は `workflow_run` トリガで `ci.yml` の成功完了時のみ起動する | テスト未通過のコードが本番デプロイされる |
+| **concurrency 共有** | `terraform.yml` と `deploy.yml` は同一 concurrency グループ（`infra-deploy-${ref}`）。先着が走り他方は待機 | インフラ変更とアプリデプロイが同時に ECS を書き換える競合 |
+| **Terraform ドリフト検査** | `deploy.yml` の `precheck` ジョブが `terraform plan` を実行し、未適用差分（no-op 以外の全リソース変更）が1件でもあればデプロイを停止 | terraform 側の未適用変更（タスク定義の env/secrets、ALB リスナー、SG ルール等）のまま「新コード × 旧インフラ」でデプロイされる |
+| **マイグレーション先行** | `deploy.yml` は ECS サービス更新前に migrate タスクを RunTask し、exit code≠0 で停止 | スキーマ不整合のままアプリが起動する |
+| **ECS ウェイター timeout** | `deploy.yml` の `aws ecs wait`（migrate `tasks-stopped` 600s / `services-stable` 900s）を `timeout` でラップし、超過時にジョブを fail | migrate タスクや ECS デプロイのハングで CI ジョブが AWS デフォルト上限（最大約40分）まで長時間ブロックされる |
+
+`precheck` は `tf_plan` IAM ロールを流用する。`tf_plan` には `ReadOnlyAccess` を基本付与しているが、同マネージドポリシーは機密保護のため `secretsmanager:GetSecretValue` / `kms:Decrypt` を含まない。plan の refresh で CMK 暗号化された Aurora マスター Secret（`aws_secretsmanager_secret_version`）を読む必要があるため、**当該 Secret と暗号化 CMK に限定して** この2アクションのみインラインで補っている（権限拡張は対象リソース限定のスコープに留める）。
+
+`tf_plan` の信頼ポリシー（assume 条件）は OIDC sub クレームを `StringEquals` で `repo:${owner}/${repo}:pull_request`（terraform.yml の `plan`）と `repo:${owner}/${repo}:ref:refs/heads/main`（deploy.yml の `precheck` / main 上の dispatch）の2値のみに限定する。以前は `StringLike` + `repo:${owner}/${repo}:*` で全 ref を許可しており、リポジトリ内の任意ブランチ・PR・environment コンテキスト（細工された任意ワークフロー含む）が同ロールを assume して Aurora 認証情報を読み取れる状態だった。これを塞ぐためワイルドカードを排した（`deploy` / `tf_apply` は元から `StringEquals` 限定）。なお非 main ブランチからの `workflow_dispatch` による手動 plan は assume 不可となるため、plan は PR か main 文脈で実行する。
+
+`tf_apply` は `PowerUserAccess` + `IAMFullAccess`（実質 admin 相当）を付与しており、IAMFull により「admin 権限を持つ別 role を作って assume する」等の**権限昇格**が原理上可能になる。assume を `environment:production-apply` に限定し、GitHub Environment の承認（required reviewers）を歯止めとしているが、この承認設定はリポジトリの IaC では検知できない GitHub 側設定であるため、唯一の歯止めが Terraform 管理外にある状態だった。これを補うため `tf_apply` ロールに **permissions boundary**（`${name_prefix}-tf-apply-boundary`）を付与する。boundary は実効権限の上限であり、Terraform 運用に必要な広範な権限（`Allow *`）は残しつつ、(1) boundary を継承しない IAM エンティティの作成、(2) boundary の付替・剥奪、(3) boundary ポリシー自身の改変、を `Deny` で封じる。これにより GitHub 側設定に依存せず、コード（IaC）で昇格経路を遮断する。GitHub Environment 側の保護（承認者・wait timer）は引き続き併用すること。
+
+## 凡例
+
+- **オレンジ系**: AWS リソース
+- **青系**: Terraform state（S3、ロックは use_lockfile）
+- **緑系**: CI/CD（GitHub）
+- **点線**: 認証・参照・依存
+- **破線枠（グレー）**: 後続フェーズで追加予定（Phase 4: EKS / Phase 5: storage・S3 VPC Endpoint・packer ECR）
+
+## 対象外（意図的に実装しない）
+
+- **AWS WAF / Shield**（GCP 参考構成の Cloud Armor に相当する層）: 本プロジェクトのエンドユーザーは k6（負荷試験ツール）であり、ALB 前段に WAF を置くとレートベースルール等が k6 リクエストを弾いてフェーズ3 の負荷試験結果が歪む。攻撃耐性の検証は k6 シナリオ側に寄せる方針のため、**今後も導入しない**。詳細は [ROADMAP.md](../ROADMAP.md) フェーズ2「対象外」を参照。
+- **NAT Gateway の AZ 冗長化**: 本プロジェクトは負荷試験用のテストサービスであり、本番相当の高可用性運用は目的としない。コスト優先のため NAT Gateway は **1 台に集約**し（`azs[0]` の public subnet に配置）、AZ 障害時の egress 冗長性は捨てる。そのため `azs[0]` が障害を起こすと、生存 AZ の ECS タスクも外向き通信（ECR pull 等）ができなくなる。**本番想定では NAT を AZ ごとに 1 台ずつ配置**し、各 private route table を同一 AZ の NAT に紐付けて完全冗長にすること。なお Subnet / ALB / ECS / Aurora は 2 AZ に分散済みで SPOF を排除した設計自体は維持しており、負荷試験トラフィックは ALB → ECS → Aurora/Redis の VPC 内で完結し NAT を経由しないため、この割り切りが負荷試験結果に影響することはない。
+
+## 関連ドキュメント
+
+- [ROADMAP.md](../ROADMAP.md) — プロジェクト全体ロードマップ
+- [AGENTS.md](../AGENTS.md) — コーディング規約

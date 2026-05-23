@@ -28,6 +28,15 @@ const (
 	defaultOutboxPollInterval = 10 * time.Minute
 	envOutboxBatchSize        = "OUTBOX_BATCH_SIZE"
 	defaultOutboxBatchSize    = 100
+	envOutboxTickTimeout      = "OUTBOX_TICK_TIMEOUT"
+	// defaultOutboxTickTimeout は1ティック（runOnce）の処理時間上限。
+	// DB/Redis のブロッキングで worker のループがハングするのを防ぐ。
+	defaultOutboxTickTimeout = 30 * time.Second
+
+	envDBPingTimeout = "DB_PING_TIMEOUT"
+	// defaultDBPingTimeout は起動時の疎通確認1回ぶんの上限。
+	// DB 未到達を有限時間で確定エラーにし、ECS の起動失敗判定に乗せる（fail fast）。
+	defaultDBPingTimeout = 5 * time.Second
 )
 
 // Config はアプリケーション全体の設定値を保持する。
@@ -38,6 +47,8 @@ type Config struct {
 	RedisAddr          string
 	OutboxPollInterval time.Duration
 	OutboxBatchSize    int
+	OutboxTickTimeout  time.Duration
+	DBPingTimeout      time.Duration
 }
 
 // Load は環境変数から設定値を読み込む。
@@ -95,6 +106,30 @@ func Load() (*Config, error) {
 		batchSize = parsed
 	}
 
+	tickTimeout := defaultOutboxTickTimeout
+	if v := os.Getenv(envOutboxTickTimeout); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s %q: %w", envOutboxTickTimeout, v, err)
+		}
+		if parsed <= 0 {
+			return nil, fmt.Errorf("invalid %s: must be positive", envOutboxTickTimeout)
+		}
+		tickTimeout = parsed
+	}
+
+	pingTimeout := defaultDBPingTimeout
+	if v := os.Getenv(envDBPingTimeout); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s %q: %w", envDBPingTimeout, v, err)
+		}
+		if parsed <= 0 {
+			return nil, fmt.Errorf("invalid %s: must be positive", envDBPingTimeout)
+		}
+		pingTimeout = parsed
+	}
+
 	return &Config{
 		Port:               port,
 		LogLevel:           level,
@@ -102,5 +137,7 @@ func Load() (*Config, error) {
 		RedisAddr:          redisAddr,
 		OutboxPollInterval: pollInterval,
 		OutboxBatchSize:    batchSize,
+		OutboxTickTimeout:  tickTimeout,
+		DBPingTimeout:      pingTimeout,
 	}, nil
 }

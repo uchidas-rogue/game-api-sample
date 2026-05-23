@@ -1,6 +1,15 @@
 # Project Overview
 - プロジェクト: Go言語とEchoを用いたゲームバックエンドAPI
 - アーキテクチャ: Clean Architecture
+- AWS インフラ構成・Terraform モジュール分割・CI/CD ワークフローの安全装置は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md) を参照
+
+# Infrastructure Change Rules
+- Terraform 関連の変更時は **影響範囲を terraform/ 配下に限定せず**、必ず以下を併せて確認・更新する:
+  - `terraform/**`（モジュール・環境定義）
+  - `.github/workflows/terraform.yml`, `.github/workflows/deploy.yml`（CI/CD で terraform を実行する箇所）
+  - `make/terraform.mk`, ルート `Makefile`（ローカル実行コマンド・変数）
+  - `terraform/ARCHITECTURE.md`（構成図・解説）
+- とくに backend 設定（bucket / key / ロック方式等）・IAM ロール ARN・terraform バージョン・リソース名は、上記ファイル間で値や前提が一致している必要がある。片方だけ変更しないこと
 
 # 1. Architecture & Design Rules (Clean Architecture)
 - 層構成: `driver`(interface adapters; HTTP handler / batch / worker 等の delivery) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止
@@ -53,6 +62,7 @@
 
 # 5. Makefile Rules (開発コマンドの統一)
 - 日常的な開発操作は `make` 経由で実行する。デバッグ目的のピンポイント実行（`go test -run` 等）は許容
+- AWS インフラの初回構築は `make tf/bootstrap`（state 保管先の S3/DynamoDB 作成）→ `make tf/init` → `terraform plan`/`apply` の順。詳細は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md)
 - 利用可能なコマンドは `make help` で確認する（Makefile の `##` コメントが説明として表示される）
 - マイグレーションの DSN は `MIGRATE_DSN` 環境変数で上書き可能。ローカル以外の環境では明示的に指定する
 - `make test` / `make test/race` は `.testignore` に列挙されたパッケージを除外対象とする。除外理由はファイル内のコメントを参照すること。新規にテスト対象外としたいパッケージが出た場合は、**除外理由をコメントで明記したうえで** `.testignore` にパターンを追加する。逆に interface 定義のみのパッケージへ実装を足す等で除外を解除する場合は、`.testignore` から該当行を削除し §3 のカバレッジ目標に従ってテストを整備する
@@ -65,6 +75,11 @@
   - 同一のテスト失敗・コンパイルエラーが3回連続で再発した場合
   - DB の初期化、マイグレーションの down 適用、ファイルの大量削除など後戻りできない操作
 - 報告フォーマット: エスカレーション時は「現状」「試したこと」「仮説」「次の選択肢」を簡潔に提示する
+- 想定外の通知: タスク実行中に次のいずれかを検知したら、その時点で応答内に **`【想定外】`** の見出しを付けた目立つブロックを出力し、通常の進捗報告に埋もれさせない
+  - エラー・テスト失敗系: 予期しないコンパイル/テスト/ビルドの失敗、想定と異なる実行結果やエラーログ
+  - 計画からの逸脱系: 当初の方針・前提が崩れた、想定と異なる実装が必要になった、副作用や影響範囲が事前見積りより大きい
+  - ブロック内容: 「何が想定外か」「当初の想定との差分」「影響と次の選択肢」を簡潔に記す
+  - 既存のエスカレーション規約に該当する場合は作業を止めて確認する。該当しない場合も、検知した事実は本ルールに従い必ず明示してから作業を続行する
 - タスク完了時の確認: コード変更を伴うタスクの完了前に `make test` と `make lint` を1回ずつ実行する（変更ごとの逐次実行は不要）
 - インターフェース変更時: `make mock/gen` でモックを再生成してからテストを実行する
 - git 操作: ユーザーから明示的な指示があるまで commit / push しない

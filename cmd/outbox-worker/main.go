@@ -37,6 +37,13 @@ func main() {
 	}
 	defer func() { _ = db.Close() }()
 
+	pingCtx, cancelPing := context.WithTimeout(ctx, cfg.DBPingTimeout)
+	defer cancelPing()
+	if err := infraMysql.Ping(pingCtx, db); err != nil {
+		log.Error("failed to ping mysql", slog.Any("error", err))
+		os.Exit(1)
+	}
+
 	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
 	if err != nil {
 		log.Error("failed to connect redis", slog.Any("error", err))
@@ -57,6 +64,7 @@ func main() {
 		Logger:       log,
 		PollInterval: cfg.OutboxPollInterval,
 		BatchSize:    cfg.OutboxBatchSize,
+		TickTimeout:  cfg.OutboxTickTimeout,
 	})
 
 	if err := w.Run(ctx); err != nil {

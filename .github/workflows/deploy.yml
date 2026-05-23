@@ -1,0 +1,237 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+# terraform.yml と同一グループを共有し、インフラ変更と
+# アプリデプロイが同時に ECS を触る競合を防ぐ（先に来た方が走り、他方は待機）。
+concurrency:
+  group: infra-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-1
+  PROJECT: game-api
+  ENVIRONMENT: dev
+  # ECS ウェイターの上限秒数（AWS デフォルト: tasks-stopped≈600 / services-stable≈2400）
+  ECS_WAIT_MIGRATE_TIMEOUT: 600
+  ECS_WAIT_SERVICE_TIMEOUT: 900
+
+jobs:
+  # deploy.yml は describe-task-definition で現在のタスク定義を読み image だけ書き換える。
+  # terraform apply はしないため、未適用の差分があると「新コード × 旧インフラ」でデプロイされる。
+  # これはタスク定義（env/secrets）に限らず ALB リスナー・SG ルール等でも起こりうるため、
+  # deploy 前に terraform plan を実行し、未適用差分が一切ない（クリーンな state）ことを保証する。
+  precheck:
+    name: Verify infrastructure is in sync with Terraform
+    runs-on: ubuntu-latest
+    # CI が成功で完了したとき、または手動実行のときだけ実行する
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run 起動時は CI をトリガしたコミットを明示的に取得する
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.15.3
+
+      - name: Configure AWS credentials (OIDC, plan role)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_TF_PLAN_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: terraform init
+        working-directory: terraform/environments/dev
+        run: |
+          terraform init \
+            -backend-config="bucket=${{ secrets.TFSTATE_BUCKET }}" \
+            -backend-config="key=dev/terraform.tfstate" \
+            -backend-config="region=${{ env.AWS_REGION }}" \
+            -backend-config="use_lockfile=true" \
+            -backend-config="encrypt=true"
+
+      - name: terraform plan
+        working-directory: terraform/environments/dev
+        run: terraform plan -input=false -no-color -lock-timeout=120s -out=tfplan
+
+      - name: Detect un-applied Terraform drift
+        working-directory: terraform/environments/dev
+        run: |
+          terraform show -json tfplan > plan.json
+          # データソース read 等は no-op のため除外し、実リソースの変更のみを対象にする。
+          CHANGED=$(jq -r '
+            [ .resource_changes[]
+              | select(.change.actions != ["no-op"]) ] | length
+          ' plan.json)
+          if [ "$CHANGED" -gt 0 ]; then
+            echo "::error::未適用の Terraform 変更が ${CHANGED} 件あります。先に terraform.yml を apply してください。"
+            jq -r '.resource_changes[]
+              | select(.change.actions != ["no-op"])
+              | "  - \(.address): \(.change.actions | join(","))"' plan.json
+            exit 1
+          fi
+          echo "未適用の Terraform 差分なし。デプロイを継続します。"
+
+  build-and-deploy:
+    name: Build images and deploy to ECS
+    needs: precheck
+    runs-on: ubuntu-24.04-arm
+    # CI が成功で完了したとき、または手動実行のときだけデプロイする
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # workflow_run 起動時は CI をトリガしたコミットを明示的に取得する
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set image tag
+        id: meta
+        env:
+          # workflow_run 起動時は CI をトリガしたコミット SHA を使う
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: echo "tag=sha-${SHA::12}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push app images
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          for bin in api batch outbox-worker; do
+            docker buildx build \
+              --platform=linux/arm64 \
+              --build-arg BIN=$bin \
+              -t $REGISTRY/$PREFIX-$bin:$TAG \
+              --push \
+              .
+          done
+
+      - name: Build and push migrate image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          docker buildx build \
+            --platform=linux/arm64 \
+            -f Dockerfile.migrate \
+            -t $REGISTRY/$PREFIX-migrate:$TAG \
+            --push \
+            .
+
+      - name: Run migration (ECS RunTask)
+        env:
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          # 既存 TaskDefinition の image を新タグで上書きして RunTask 起動
+          aws ecs describe-task-definition --task-definition $PREFIX-migrate \
+            --query 'taskDefinition' --output json > taskdef.json
+          jq --arg img "$REGISTRY/$PREFIX-migrate:$TAG" '
+            .containerDefinitions[0].image = $img
+            | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                  .compatibilities, .registeredAt, .registeredBy)
+          ' taskdef.json > taskdef.new.json
+          NEW_TD=$(aws ecs register-task-definition --cli-input-json file://taskdef.new.json \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "New migrate TaskDef: $NEW_TD"
+
+          # network 設定は ECS Service api のものを流用
+          NET=$(aws ecs describe-services --cluster $PREFIX-cluster --services $PREFIX-api \
+            --query 'services[0].networkConfiguration' --output json)
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster $PREFIX-cluster \
+            --task-definition "$NEW_TD" \
+            --launch-type FARGATE \
+            --network-configuration "$NET" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Migration task: $TASK_ARN"
+
+          if ! timeout "$ECS_WAIT_MIGRATE_TIMEOUT" aws ecs wait tasks-stopped --cluster $PREFIX-cluster --tasks "$TASK_ARN"; then
+            echo "::error::migrate タスクが ${ECS_WAIT_MIGRATE_TIMEOUT} 秒以内に停止しませんでした（タイムアウトまたはウェイター失敗）。タスク $TASK_ARN がハングしている可能性があります。AWS コンソールで状態を確認してください。"
+            exit 1
+          fi
+
+          EXIT=$(aws ecs describe-tasks --cluster $PREFIX-cluster --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT" != "0" ]; then
+            echo "Migration failed with exit code $EXIT"
+            exit 1
+          fi
+
+      - name: Update ECS services (api / outbox-worker)
+        env:
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          declare -A NEW_TDS
+          for svc in api outbox-worker; do
+            aws ecs describe-task-definition --task-definition $PREFIX-$svc \
+              --query 'taskDefinition' --output json > td.json
+            jq --arg img "$REGISTRY/$PREFIX-$svc:$TAG" '
+              .containerDefinitions[0].image = $img
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                    .compatibilities, .registeredAt, .registeredBy)
+            ' td.json > td.new.json
+            NEW_TD=$(aws ecs register-task-definition --cli-input-json file://td.new.json \
+              --query 'taskDefinition.taskDefinitionArn' --output text)
+            NEW_TDS[$svc]=$NEW_TD
+            aws ecs update-service \
+              --cluster $PREFIX-cluster \
+              --service $PREFIX-$svc \
+              --task-definition "$NEW_TD" \
+              --force-new-deployment > /dev/null
+            echo "Updated $svc -> $NEW_TD"
+          done
+
+          if ! timeout "$ECS_WAIT_SERVICE_TIMEOUT" aws ecs wait services-stable \
+            --cluster $PREFIX-cluster \
+            --services $PREFIX-api $PREFIX-outbox-worker; then
+            echo "::error::ECS サービスが ${ECS_WAIT_SERVICE_TIMEOUT} 秒以内に安定化しませんでした（タイムアウトまたはウェイター失敗）。デプロイがハングまたは失敗している可能性があります。"
+            exit 1
+          fi
+
+          # circuit breaker がロールバックすると services-stable は成功で返るため、
+          # PRIMARY デプロイが新タスク定義のまま安定化したかを明示的に検証する。
+          for svc in api outbox-worker; do
+            PRIMARY_TD=$(aws ecs describe-services \
+              --cluster $PREFIX-cluster --services $PREFIX-$svc \
+              --query 'services[0].deployments[?status==`PRIMARY`].taskDefinition | [0]' \
+              --output text)
+            if [ "$PRIMARY_TD" != "${NEW_TDS[$svc]}" ]; then
+              echo "::error::$svc が新タスク定義で安定化していません (PRIMARY=$PRIMARY_TD, 期待=${NEW_TDS[$svc]})。circuit breaker がロールバックした可能性があります。"
+              exit 1
+            fi
+            echo "$svc deploy OK: $PRIMARY_TD"
+          done
