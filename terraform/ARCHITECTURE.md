@@ -188,6 +188,7 @@ sequenceDiagram
 | **concurrency 共有** | `terraform.yml` と `deploy.yml` は同一 concurrency グループ（`infra-deploy-${ref}`）。先着が走り他方は待機 | インフラ変更とアプリデプロイが同時に ECS を書き換える競合 |
 | **ECS タスク定義ドリフト検査** | `deploy.yml` の `precheck` ジョブが `terraform plan` を実行し、`aws_ecs_task_definition` に未適用差分があればデプロイを停止 | terraform 側の env/secrets 変更が未適用のまま「新コード × 旧 env」でデプロイされる |
 | **マイグレーション先行** | `deploy.yml` は ECS サービス更新前に migrate タスクを RunTask し、exit code≠0 で停止 | スキーマ不整合のままアプリが起動する |
+| **ECS ウェイター timeout** | `deploy.yml` の `aws ecs wait`（migrate `tasks-stopped` 600s / `services-stable` 900s）を `timeout` でラップし、超過時にジョブを fail | migrate タスクや ECS デプロイのハングで CI ジョブが AWS デフォルト上限（最大約40分）まで長時間ブロックされる |
 
 `precheck` は `tf_plan` IAM ロールを流用する。`tf_plan` には `ReadOnlyAccess` を基本付与しているが、同マネージドポリシーは機密保護のため `secretsmanager:GetSecretValue` / `kms:Decrypt` を含まない。plan の refresh で CMK 暗号化された Aurora マスター Secret（`aws_secretsmanager_secret_version`）を読む必要があるため、**当該 Secret と暗号化 CMK に限定して** この2アクションのみインラインで補っている（権限拡張は対象リソース限定のスコープに留める）。
 

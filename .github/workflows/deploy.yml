@@ -19,6 +19,9 @@ env:
   AWS_REGION: ap-northeast-1
   PROJECT: game-api
   ENVIRONMENT: dev
+  # ECS ウェイターの上限秒数（AWS デフォルト: tasks-stopped≈600 / services-stable≈2400）
+  ECS_WAIT_MIGRATE_TIMEOUT: 600
+  ECS_WAIT_SERVICE_TIMEOUT: 900
 
 jobs:
   # deploy.yml は describe-task-definition で現在のタスク定義を読み image だけ書き換える。
@@ -174,7 +177,10 @@ jobs:
             --query 'tasks[0].taskArn' --output text)
           echo "Migration task: $TASK_ARN"
 
-          aws ecs wait tasks-stopped --cluster $PREFIX-cluster --tasks "$TASK_ARN"
+          if ! timeout "$ECS_WAIT_MIGRATE_TIMEOUT" aws ecs wait tasks-stopped --cluster $PREFIX-cluster --tasks "$TASK_ARN"; then
+            echo "::error::migrate タスクが ${ECS_WAIT_MIGRATE_TIMEOUT} 秒以内に停止しませんでした（タイムアウトまたはウェイター失敗）。タスク $TASK_ARN がハングしている可能性があります。AWS コンソールで状態を確認してください。"
+            exit 1
+          fi
 
           EXIT=$(aws ecs describe-tasks --cluster $PREFIX-cluster --tasks "$TASK_ARN" \
             --query 'tasks[0].containers[0].exitCode' --output text)
@@ -209,9 +215,12 @@ jobs:
             echo "Updated $svc -> $NEW_TD"
           done
 
-          aws ecs wait services-stable \
+          if ! timeout "$ECS_WAIT_SERVICE_TIMEOUT" aws ecs wait services-stable \
             --cluster $PREFIX-cluster \
-            --services $PREFIX-api $PREFIX-outbox-worker
+            --services $PREFIX-api $PREFIX-outbox-worker; then
+            echo "::error::ECS サービスが ${ECS_WAIT_SERVICE_TIMEOUT} 秒以内に安定化しませんでした（タイムアウトまたはウェイター失敗）。デプロイがハングまたは失敗している可能性があります。"
+            exit 1
+          fi
 
           # circuit breaker がロールバックすると services-stable は成功で返るため、
           # PRIMARY デプロイが新タスク定義のまま安定化したかを明示的に検証する。
