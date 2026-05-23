@@ -5,11 +5,19 @@
 
 FROM --platform=linux/arm64 alpine:3.20
 
+# バージョン更新時は MIGRATE_SHA256 も必ず同時に差し替える。古いままだとビルドが失敗する。
+# ハッシュ取得元: https://github.com/golang-migrate/migrate/releases/download/<VERSION>/sha256sum.txt の linux-arm64 行
+# 将来の自動化メモ: Renovate の customManager で MIGRATE_VERSION の bump PR は自動生成できるが、
+# tarball の SHA256 再計算は Renovate 非対応のためハッシュ行は手動更新が必要。
 ARG MIGRATE_VERSION=v4.18.1
+ARG MIGRATE_SHA256=56110625dbd272965837e551bf7401b7ae64336d060f8bf13e65b1f8b13ac14e
 
 RUN apk add --no-cache curl ca-certificates \
-    && curl -fsSL "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-arm64.tar.gz" \
-       | tar -xz -C /usr/local/bin migrate \
+    && curl -fsSL -o /tmp/migrate.tar.gz \
+       "https://github.com/golang-migrate/migrate/releases/download/${MIGRATE_VERSION}/migrate.linux-arm64.tar.gz" \
+    && echo "${MIGRATE_SHA256}  /tmp/migrate.tar.gz" | sha256sum -c - \
+    && tar -xz -C /usr/local/bin -f /tmp/migrate.tar.gz migrate \
+    && rm /tmp/migrate.tar.gz \
     && apk del curl \
     && chmod +x /usr/local/bin/migrate
 
