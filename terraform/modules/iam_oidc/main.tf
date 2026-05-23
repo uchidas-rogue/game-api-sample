@@ -213,7 +213,9 @@ resource "aws_iam_role" "tf_apply" {
   assume_role_policy = data.aws_iam_policy_document.tf_apply_assume.json
   # 権限昇格を防ぐ上限（permissions boundary）。PowerUser+IAMFull のままでも
   # boundary の Deny を超える実効権限は付与されない。
-  permissions_boundary = local.tf_apply_boundary_arn
+  # boundary ポリシー作成 → role 付与の順序を保証するため、手組み ARN(local)
+  # ではなくリソースの arn を参照する（local はポリシー document 内の自己参照専用）。
+  permissions_boundary = aws_iam_policy.tf_apply_boundary.arn
 }
 
 # tf-apply の permissions boundary（実効権限の上限）。
