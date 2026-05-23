@@ -191,6 +191,8 @@ sequenceDiagram
 
 `precheck` は `tf_plan` IAM ロールを流用する。`tf_plan` には `ReadOnlyAccess` を基本付与しているが、同マネージドポリシーは機密保護のため `secretsmanager:GetSecretValue` / `kms:Decrypt` を含まない。plan の refresh で CMK 暗号化された Aurora マスター Secret（`aws_secretsmanager_secret_version`）を読む必要があるため、**当該 Secret と暗号化 CMK に限定して** この2アクションのみインラインで補っている（権限拡張は対象リソース限定のスコープに留める）。
 
+`tf_plan` の信頼ポリシー（assume 条件）は OIDC sub クレームを `StringEquals` で `repo:${owner}/${repo}:pull_request`（terraform.yml の `plan`）と `repo:${owner}/${repo}:ref:refs/heads/main`（deploy.yml の `precheck` / main 上の dispatch）の2値のみに限定する。以前は `StringLike` + `repo:${owner}/${repo}:*` で全 ref を許可しており、リポジトリ内の任意ブランチ・PR・environment コンテキスト（細工された任意ワークフロー含む）が同ロールを assume して Aurora 認証情報を読み取れる状態だった。これを塞ぐためワイルドカードを排した（`deploy` / `tf_apply` は元から `StringEquals` 限定）。なお非 main ブランチからの `workflow_dispatch` による手動 plan は assume 不可となるため、plan は PR か main 文脈で実行する。
+
 ## 凡例
 
 - **オレンジ系**: AWS リソース

@@ -2,7 +2,6 @@ data "aws_caller_identity" "current" {}
 
 locals {
   github_sub_main    = "repo:${var.github_owner}/${var.github_repo}:ref:refs/heads/main"
-  github_sub_any     = "repo:${var.github_owner}/${var.github_repo}:*"
   github_sub_pr      = "repo:${var.github_owner}/${var.github_repo}:pull_request"
   github_sub_env_apl = "repo:${var.github_owner}/${var.github_repo}:environment:production-apply"
 }
@@ -118,9 +117,12 @@ data "aws_iam_policy_document" "tf_plan_assume" {
       values   = ["sts.amazonaws.com"]
     }
     condition {
-      test     = "StringLike"
+      test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
-      values   = [local.github_sub_any]
+      values = [
+        local.github_sub_pr,   # repo:owner/repo:pull_request  (terraform.yml plan)
+        local.github_sub_main, # repo:owner/repo:ref:refs/heads/main (deploy.yml precheck / main dispatch)
+      ]
     }
   }
 }
