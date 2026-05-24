@@ -43,23 +43,13 @@ variable "image_tags" {
   type        = map(string)
 }
 
-variable "aurora_cluster_endpoint" {
-  description = "Aurora ライターエンドポイント"
-  type        = string
-}
-
-variable "aurora_database_name" {
-  description = "Aurora の初期データベース名"
-  type        = string
-}
-
-variable "aurora_master_secret_arn" {
-  description = "Aurora マスター認証情報 Secret の ARN"
+variable "dsn_secret_arn" {
+  description = "app/migrate 用 DSN を同梱した Secret の ARN（JSON: app / migrate）"
   type        = string
 }
 
 variable "db_kms_key_arn" {
-  description = "Aurora Secret を暗号化する CMK の ARN（GetSecretValue に伴う Decrypt 用）"
+  description = "DSN Secret を暗号化する CMK の ARN（GetSecretValue に伴う Decrypt 用）"
   type        = string
 }
 

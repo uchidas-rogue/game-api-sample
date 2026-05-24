@@ -33,6 +33,11 @@ variable "aurora_master_secret_arn" {
   type        = string
 }
 
+variable "dsn_secret_arn" {
+  description = "tf-plan role が refresh 時に読む DSN Secret の ARN（app/migrate 同梱）"
+  type        = string
+}
+
 variable "db_kms_key_arn" {
   description = "Aurora Secret を暗号化する CMK の ARN（GetSecretValue に伴う Decrypt 用）"
   type        = string

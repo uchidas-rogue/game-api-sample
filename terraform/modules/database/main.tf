@@ -51,6 +51,34 @@ resource "aws_secretsmanager_secret_version" "aurora_master" {
   })
 }
 
+# アプリ(api/worker/batch)と migrate が読む完全な DSN を Secrets Manager に格納する。
+# パスワードは secret のため task def の env では合成できない（ECS は secret を
+# 単独 env 値としてしか注入できず文字列補間不可）。terraform が random_password を
+# 持つため、ここで完全な DSN を組み立てて secret 化し、task def から valueFrom で注入する。
+# app/migrate は DSN 形式が異なる（go-sql-driver native vs golang-migrate URL、
+# クエリも parseTime vs multiStatements）ため JSON の2キーに分けて1 secret に同梱する。
+locals {
+  aurora_dsn_authority = "${var.aurora_master_username}:${random_password.aurora.result}@tcp(${aws_rds_cluster.aurora.endpoint}:3306)/${var.aurora_database_name}"
+  app_mysql_dsn        = "${local.aurora_dsn_authority}?parseTime=true&loc=Local"
+  migrate_dsn          = "mysql://${local.aurora_dsn_authority}?multiStatements=true"
+}
+
+resource "aws_secretsmanager_secret" "dsn" {
+  name        = "${var.name_prefix}/aurora/dsn"
+  description = "Aurora connection DSNs (app / migrate)"
+  kms_key_id  = aws_kms_key.this.arn
+
+  recovery_window_in_days = 0
+}
+
+resource "aws_secretsmanager_secret_version" "dsn" {
+  secret_id = aws_secretsmanager_secret.dsn.id
+  secret_string = jsonencode({
+    app     = local.app_mysql_dsn
+    migrate = local.migrate_dsn
+  })
+}
+
 resource "aws_rds_cluster_parameter_group" "aurora" {
   name        = "${var.name_prefix}-aurora-cpg"
   family      = "aurora-mysql8.0"

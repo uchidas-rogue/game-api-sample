@@ -57,11 +57,9 @@ module "compute_ecs" {
     migrate         = var.api_image_tag
   }
 
-  aurora_cluster_endpoint  = module.database.aurora_cluster_endpoint
-  aurora_database_name     = module.database.aurora_database_name
-  aurora_master_secret_arn = module.database.aurora_master_secret_arn
-  db_kms_key_arn           = module.database.kms_key_arn
-  redis_endpoints          = module.database.redis_endpoints
+  dsn_secret_arn  = module.database.dsn_secret_arn
+  db_kms_key_arn  = module.database.kms_key_arn
+  redis_endpoints = module.database.redis_endpoints
 
   api_desired_count    = var.api_desired_count
   worker_desired_count = var.worker_desired_count
@@ -80,5 +78,6 @@ module "iam_oidc" {
   ecs_cluster_arn     = module.compute_ecs.cluster_arn
 
   aurora_master_secret_arn = module.database.aurora_master_secret_arn
+  dsn_secret_arn           = module.database.dsn_secret_arn
   db_kms_key_arn           = module.database.kms_key_arn
 }
