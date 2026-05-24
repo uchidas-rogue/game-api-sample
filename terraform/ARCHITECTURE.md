@@ -42,7 +42,7 @@ flowchart TB
         end
 
         Logs["CloudWatch Logs"]
-        Secrets["Secrets Manager<br/>(DB password など)"]
+        Secrets["Secrets Manager<br/>(DB master 認証情報 / 接続 DSN)"]
     end
 
     Dev1 -- "git push" --> GH
@@ -145,6 +145,12 @@ flowchart LR
 | `linuxParameters.capabilities.drop` | `["ALL"]` | 全 Linux capability を剥奪。コンテナは `nonroot` 実行かつ待受は 8080(>1024) のため `NET_BIND_SERVICE` 等の追加は不要。Fargate は `drop` を完全サポート |
 
 イメージ側も `gcr.io/distroless/static-debian12:nonroot`（api/batch/outbox-worker）で非 root・最小構成を担保している（migrate のみ alpine ベース）。
+
+## DB 接続情報の注入（DSN secret）
+
+アプリ（api/outbox-worker/batch）は `configs/config.go` が単一の `MYSQL_DSN`（go-sql-driver 形式 `user:pass@tcp(host:3306)/db?parseTime=true&loc=Local`）を読み、migrate は `MIGRATE_DSN`（golang-migrate URL 形式 `mysql://...?multiStatements=true`）を読む。いずれもパスワードを含む合成文字列だが、**ECS は Secrets Manager の値を単独の env としてしか注入できず、env 文字列への補間ができない**ため、task def 側で `host:user:pass:db` から DSN を組み立てることはできない。
+
+そこで Aurora のパスワードを生成している `database` モジュールが、完全な DSN を組み立てて Secrets Manager に格納する（`${name_prefix}/aurora/dsn`、JSON で `app` / `migrate` の2キーを同梱）。task def は `valueFrom = "<dsn_secret_arn>:app::"`（api/worker/batch → `MYSQL_DSN`）/ `:migrate::`（migrate → `MIGRATE_DSN`）で JSON キー抽出注入する。app と migrate で DSN 形式・クエリ（`parseTime` vs `multiStatements`）が異なるため2キーに分けている。ECS task execution role には当該 secret の `GetSecretValue` と暗号化 CMK の `kms:Decrypt` のみを許可する。
 
 ## 後続フェーズへの前方互換（Phase 2 設計に組み込む配慮）
 

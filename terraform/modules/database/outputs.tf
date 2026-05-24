@@ -15,6 +15,12 @@ output "aurora_master_secret_arn" {
   sensitive = true
 }
 
+# app/migrate 用 DSN を同梱した secret の ARN（JSON: app / migrate）。
+output "dsn_secret_arn" {
+  value     = aws_secretsmanager_secret.dsn.arn
+  sensitive = true
+}
+
 output "redis_endpoints" {
   description = "Redis レプリケーショングループ名 → primary endpoint"
   value = {

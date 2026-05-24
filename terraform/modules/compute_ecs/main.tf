@@ -6,8 +6,6 @@ locals {
   common_env = concat(
     [
       { name = "LOG_LEVEL", value = "info" },
-      { name = "MYSQL_HOST", value = var.aurora_cluster_endpoint },
-      { name = "MYSQL_DATABASE", value = var.aurora_database_name },
     ],
     [
       for k, v in var.redis_endpoints :
@@ -15,9 +13,11 @@ locals {
     ],
   )
 
-  common_secrets = [
-    { name = "MYSQL_USERNAME", valueFrom = "${var.aurora_master_secret_arn}:username::" },
-    { name = "MYSQL_PASSWORD", valueFrom = "${var.aurora_master_secret_arn}:password::" },
+  # アプリ(api/worker/batch)は config.go が単一の MYSQL_DSN を読む。同梱 secret の
+  # app キーから注入する（DSN を secret 化している理由は database モジュール参照）。
+  # migrate は別形式のため migrate キーから別途注入する（各 task def 参照）。
+  app_secrets = [
+    { name = "MYSQL_DSN", valueFrom = "${var.dsn_secret_arn}:app::" },
   ]
 
   # 全 TaskDef 共通のコンテナセキュリティ設定（コンテナ侵害時の影響範囲を狭めるデプスディフェンス）。
@@ -72,7 +72,7 @@ data "aws_iam_policy_document" "task_execution_secrets" {
   statement {
     effect    = "Allow"
     actions   = ["secretsmanager:GetSecretValue"]
-    resources = [var.aurora_master_secret_arn]
+    resources = [var.dsn_secret_arn]
   }
   # Secret は CMK 暗号化のため、GetSecretValue には対象鍵への Decrypt が必須。
   statement {
@@ -123,7 +123,7 @@ resource "aws_lb_target_group" "api" {
   vpc_id      = var.vpc_id
 
   health_check {
-    path                = "/health"
+    path                = "/healthz"
     interval            = 15
     timeout             = 5
     healthy_threshold   = 2
@@ -172,7 +172,7 @@ resource "aws_ecs_task_definition" "api" {
       environment = concat(local.common_env, [
         { name = "PORT", value = "8080" }
       ])
-      secrets = local.common_secrets
+      secrets = local.app_secrets
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -205,7 +205,7 @@ resource "aws_ecs_task_definition" "outbox_worker" {
       image       = "${var.repository_urls["outbox-worker"]}:${var.image_tags["outbox-worker"]}"
       essential   = true
       environment = local.common_env
-      secrets     = local.common_secrets
+      secrets     = local.app_secrets
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -238,7 +238,7 @@ resource "aws_ecs_task_definition" "batch" {
       image       = "${var.repository_urls["batch"]}:${var.image_tags["batch"]}"
       essential   = true
       environment = local.common_env
-      secrets     = local.common_secrets
+      secrets     = local.app_secrets
       logConfiguration = {
         logDriver = "awslogs"
         options = {
@@ -267,11 +267,14 @@ resource "aws_ecs_task_definition" "migrate" {
 
   container_definitions = jsonencode([
     merge(local.container_security, {
-      name        = "migrate"
-      image       = "${var.repository_urls["migrate"]}:${var.image_tags["migrate"]}"
-      essential   = true
-      environment = local.common_env
-      secrets     = local.common_secrets
+      name      = "migrate"
+      image     = "${var.repository_urls["migrate"]}:${var.image_tags["migrate"]}"
+      essential = true
+      # migrate は golang-migrate を実行するのみで MIGRATE_DSN だけ読む（接続先・
+      # source は Dockerfile.migrate の ENV と MIGRATE_DSN に集約）。common_env は不要。
+      secrets = [
+        { name = "MIGRATE_DSN", valueFrom = "${var.dsn_secret_arn}:migrate::" },
+      ]
       logConfiguration = {
         logDriver = "awslogs"
         options = {
