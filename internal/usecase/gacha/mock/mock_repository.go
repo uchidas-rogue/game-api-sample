@@ -14,6 +14,7 @@ import (
 	reflect "reflect"
 
 	gacha "github.com/uchidas-rogue/game-api-sample/internal/domain/gacha"
+	gacha0 "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
 	shared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 	gomock "go.uber.org/mock/gomock"
 )
@@ -57,18 +58,18 @@ func (mr *MockRepositoryMockRecorder) GetUserForUpdate(ctx, tx, userID any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserForUpdate", reflect.TypeOf((*MockRepository)(nil).GetUserForUpdate), ctx, tx, userID)
 }
 
-// InsertGachaHistory mocks base method.
-func (m *MockRepository) InsertGachaHistory(ctx context.Context, tx shared.Tx, userID, itemID int64) error {
+// InsertGachaHistories mocks base method.
+func (m *MockRepository) InsertGachaHistories(ctx context.Context, tx shared.Tx, userID int64, itemIDs []int64) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "InsertGachaHistory", ctx, tx, userID, itemID)
+	ret := m.ctrl.Call(m, "InsertGachaHistories", ctx, tx, userID, itemIDs)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// InsertGachaHistory indicates an expected call of InsertGachaHistory.
-func (mr *MockRepositoryMockRecorder) InsertGachaHistory(ctx, tx, userID, itemID any) *gomock.Call {
+// InsertGachaHistories indicates an expected call of InsertGachaHistories.
+func (mr *MockRepositoryMockRecorder) InsertGachaHistories(ctx, tx, userID, itemIDs any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertGachaHistory", reflect.TypeOf((*MockRepository)(nil).InsertGachaHistory), ctx, tx, userID, itemID)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertGachaHistories", reflect.TypeOf((*MockRepository)(nil).InsertGachaHistories), ctx, tx, userID, itemIDs)
 }
 
 // ListItems mocks base method.
@@ -100,16 +101,16 @@ func (mr *MockRepositoryMockRecorder) UpdateUserGems(ctx, tx, userID, newGems an
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateUserGems", reflect.TypeOf((*MockRepository)(nil).UpdateUserGems), ctx, tx, userID, newGems)
 }
 
-// UpsertUserItem mocks base method.
-func (m *MockRepository) UpsertUserItem(ctx context.Context, tx shared.Tx, userID, itemID int64, num int) error {
+// UpsertUserItems mocks base method.
+func (m *MockRepository) UpsertUserItems(ctx context.Context, tx shared.Tx, userID int64, items []gacha0.UserItemCount) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpsertUserItem", ctx, tx, userID, itemID, num)
+	ret := m.ctrl.Call(m, "UpsertUserItems", ctx, tx, userID, items)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
-// UpsertUserItem indicates an expected call of UpsertUserItem.
-func (mr *MockRepositoryMockRecorder) UpsertUserItem(ctx, tx, userID, itemID, num any) *gomock.Call {
+// UpsertUserItems indicates an expected call of UpsertUserItems.
+func (mr *MockRepositoryMockRecorder) UpsertUserItems(ctx, tx, userID, items any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertUserItem", reflect.TypeOf((*MockRepository)(nil).UpsertUserItem), ctx, tx, userID, itemID, num)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertUserItems", reflect.TypeOf((*MockRepository)(nil).UpsertUserItems), ctx, tx, userID, items)
 }

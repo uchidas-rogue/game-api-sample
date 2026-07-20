@@ -48,6 +48,7 @@
 
 # 4. Database Rules (sqlc + golang-migrate)
 - クエリ生成: `sqlc`。型安全・コンパイル時検証のため ORM (GORM 等) は使用しない
+  - 例外: sqlc が生成できない**可変行数の複数行 INSERT**（bulk upsert 等、負荷対策でトランザクション内の DB 往復を集約する用途）は、`infrastructure` 層に限りプレースホルダを組み立てた**パラメータ化生 SQL**で発行してよい（値の文字列連結は禁止）。tx から生の `sqlc.DBTX` を取り出す seam（`repository/factory.go` の `execerFactory`）経由で実行し、go-sqlmock でクエリ・引数を検証する。ORM 導入は引き続き禁止
 - マイグレーション: `golang-migrate` の連番形式で `up`/`down` をペア作成。down が困難な変更（カラム削除等）は事前にユーザーへ確認する
 - `schema.sql` は `make db/schema/dump` の生成物。手動編集しない
 - トランザクション制御:

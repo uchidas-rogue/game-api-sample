@@ -22,6 +22,16 @@ func NewGachaRepositoryWithQuerier(q sqlc.Querier) *GachaRepository {
 	}
 }
 
+// NewGachaRepositoryWithExecer はテスト専用のコンストラクタ。
+// execer ファクトリを本番実装（newExecerFactory）で組み立てつつ、db に sqlmock 等の
+// sqlc.DBTX 実装を注入できるようにする。querier は未使用（nil のまま）のため、
+// bulk 系（execer 経由）メソッドの検証専用。tx=nil で呼び出すことで execer が db を直接使う。
+func NewGachaRepositoryWithExecer(db sqlc.DBTX) *GachaRepository {
+	return &GachaRepository{
+		execer: newExecerFactory(db),
+	}
+}
+
 // NewRankingRepositoryWithQuerier はテスト専用のコンストラクタ。
 func NewRankingRepositoryWithQuerier(q sqlc.Querier) *RankingRepository {
 	return &RankingRepository{
