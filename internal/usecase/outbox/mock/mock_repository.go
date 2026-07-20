@@ -42,19 +42,20 @@ func (m *MockRepository) EXPECT() *MockRepositoryMockRecorder {
 	return m.recorder
 }
 
-// GetMaxID mocks base method.
-func (m *MockRepository) GetMaxID(ctx context.Context, tx shared.Tx) (uint64, error) {
+// ClaimByID mocks base method.
+func (m *MockRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64) (outbox.Event, bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetMaxID", ctx, tx)
-	ret0, _ := ret[0].(uint64)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret := m.ctrl.Call(m, "ClaimByID", ctx, tx, id)
+	ret0, _ := ret[0].(outbox.Event)
+	ret1, _ := ret[1].(bool)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
-// GetMaxID indicates an expected call of GetMaxID.
-func (mr *MockRepositoryMockRecorder) GetMaxID(ctx, tx any) *gomock.Call {
+// ClaimByID indicates an expected call of ClaimByID.
+func (mr *MockRepositoryMockRecorder) ClaimByID(ctx, tx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetMaxID", reflect.TypeOf((*MockRepository)(nil).GetMaxID), ctx, tx)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimByID", reflect.TypeOf((*MockRepository)(nil).ClaimByID), ctx, tx, id)
 }
 
 // IncrementRetry mocks base method.
@@ -113,19 +114,4 @@ func (m *MockRepository) MarkProcessed(ctx context.Context, tx shared.Tx, id uin
 func (mr *MockRepositoryMockRecorder) MarkProcessed(ctx, tx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessed", reflect.TypeOf((*MockRepository)(nil).MarkProcessed), ctx, tx, id)
-}
-
-// MarkProcessedUpTo mocks base method.
-func (m *MockRepository) MarkProcessedUpTo(ctx context.Context, tx shared.Tx, maxID uint64, eventType outbox.EventType) (int64, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MarkProcessedUpTo", ctx, tx, maxID, eventType)
-	ret0, _ := ret[0].(int64)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// MarkProcessedUpTo indicates an expected call of MarkProcessedUpTo.
-func (mr *MockRepositoryMockRecorder) MarkProcessedUpTo(ctx, tx, maxID, eventType any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessedUpTo", reflect.TypeOf((*MockRepository)(nil).MarkProcessedUpTo), ctx, tx, maxID, eventType)
 }

@@ -466,7 +466,7 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 		checkResult func(t *testing.T, r rankingdomain.UserPointAddResult)
 	}{
 		{
-			name:  "正常系: 既存ポイント・ギルドスコアありで加算成功",
+			name:  "正常系: 既存ポイントありで加算成功",
 			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
 			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
 				t.Helper()
@@ -478,22 +478,15 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 				newDoInTxCaller(tx)
 
 				const prevPoints = int64(1000)
-				const prevGuildScore = int64(5000)
 				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
 					Return("テストユーザー", nil)
 				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
 					Return(guildID, nil)
 				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
 					Return(rankingdomain.UserPoint{UserID: userID, Points: prevPoints}, nil)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{GuildID: guildID, Score: prevGuildScore}, nil)
 				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
 					Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).
-					Return(nil)
 				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(nil)
-				repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, points).
 					Return(nil)
 				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, points)
 				notifier.EXPECT().Notify(gomock.Any()).Return(nil)
@@ -508,12 +501,10 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 				assert.Equal(t, int64(1000), r.PreviousTotal)
 				assert.Equal(t, int64(1500), r.NewTotal)
 				assert.Equal(t, guildID, r.GuildID)
-				assert.Equal(t, int64(5000), r.GuildPreviousTotal)
-				assert.Equal(t, int64(5500), r.GuildNewTotal)
 			},
 		},
 		{
-			name:  "正常系: 初回ユーザー（ErrPointsNotFound）かつ初回ギルド（ErrScoreNotFound）でも加算成功",
+			name:  "正常系: 初回ユーザー（ErrPointsNotFound）でも加算成功",
 			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
 			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
 				t.Helper()
@@ -530,15 +521,9 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 					Return(guildID, nil)
 				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
 					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
 				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
 					Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).
-					Return(nil)
 				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(nil)
-				repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, points).
 					Return(nil)
 				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, points)
 				notifier.EXPECT().Notify(gomock.Any()).Return(nil)
@@ -553,8 +538,6 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 				assert.Equal(t, int64(0), r.PreviousTotal)
 				assert.Equal(t, points, r.NewTotal)
 				assert.Equal(t, guildID, r.GuildID)
-				assert.Equal(t, int64(0), r.GuildPreviousTotal)
-				assert.Equal(t, points, r.GuildNewTotal)
 			},
 		},
 		{
@@ -576,12 +559,8 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 					Return(guildID, nil)
 				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
 					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
 				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, maxPts, reason).Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, maxPts).Return(nil)
 				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, maxPts).Return(nil)
-				repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, maxPts).Return(nil)
 				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, maxPts)
 				notifier.EXPECT().Notify(gomock.Any()).Return(nil)
 
@@ -612,12 +591,8 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 					Return(guildID, nil)
 				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
 					Return(rankingdomain.UserPoint{UserID: userID, Points: 0}, nil)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{GuildID: guildID, Score: 0}, nil)
 				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).Return(nil)
 				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).Return(nil)
-				repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, points).Return(nil)
 				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, points)
 				notifier.EXPECT().Notify(gomock.Any()).Return(errors.New("redis down"))
 
@@ -739,32 +714,6 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:  "異常系: GetGuildScore が予期せぬエラー",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				errDB := errors.New("db error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, errDB)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
 			name:  "異常系: InsertUserPointHistory がエラー",
 			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
 			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
@@ -783,39 +732,7 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 					Return(guildID, nil)
 				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
 					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
 				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(errDB)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:  "異常系: InsertGuildScoreHistory がエラー",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				errDB := errors.New("db error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).
 					Return(errDB)
 
 				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
@@ -841,47 +758,9 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 					Return(guildID, nil)
 				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
 					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
 				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
 					Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).
-					Return(nil)
 				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(errDB)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:  "異常系: IncrementGuildScore(repo) がエラー",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				errDB := errors.New("db error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).
-					Return(nil)
-				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(nil)
-				repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, points).
 					Return(errDB)
 
 				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
@@ -907,15 +786,9 @@ func TestAddUserPoints_正常系_異常系(t *testing.T) {
 					Return(guildID, nil)
 				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
 					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
 				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
 					Return(nil)
-				repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).
-					Return(nil)
 				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(nil)
-				repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, points).
 					Return(nil)
 				outboxRepo.EXPECT().
 					InsertEvent(gomock.Any(), gomock.Any(), outboxdomain.EventTypeRankingScoreAdded, gomock.Any()).

@@ -11,6 +11,38 @@ import (
 	"encoding/json"
 )
 
+const claimPendingOutboxEventByID = `-- name: ClaimPendingOutboxEventByID :one
+SELECT id, event_type, payload, retry_count
+FROM outbox_events
+WHERE id = ? AND processed_at IS NULL
+FOR UPDATE SKIP LOCKED
+`
+
+type ClaimPendingOutboxEventByIDRow struct {
+	ID         uint64
+	EventType  string
+	Payload    json.RawMessage
+	RetryCount uint32
+}
+
+// 指定 ID の未処理イベントを FOR UPDATE SKIP LOCKED で確保（claim）する。
+// worker は ListPending で得た候補を1件ずつ本クエリで claim し、handleEvent（MySQL 副作用）と
+// MarkProcessed を同一 tx でコミットして exactly-once を担保する。
+// ID 指定にすることで、先頭イベントが恒久失敗しても後続を処理でき（head-of-line blocking 回避）、
+// SKIP LOCKED と processed_at IS NULL 条件により複数 worker が同一イベントを二重処理しない。
+// 既に処理済み or 他 worker がロック中は sql.ErrNoRows（該当なし）。
+func (q *Queries) ClaimPendingOutboxEventByID(ctx context.Context, id uint64) (ClaimPendingOutboxEventByIDRow, error) {
+	row := q.db.QueryRowContext(ctx, claimPendingOutboxEventByID, id)
+	var i ClaimPendingOutboxEventByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.EventType,
+		&i.Payload,
+		&i.RetryCount,
+	)
+	return i, err
+}
+
 const deleteProcessedOutboxEventsBefore = `-- name: DeleteProcessedOutboxEventsBefore :exec
 DELETE FROM outbox_events
 WHERE processed_at IS NOT NULL
@@ -20,20 +52,6 @@ WHERE processed_at IS NOT NULL
 func (q *Queries) DeleteProcessedOutboxEventsBefore(ctx context.Context, processedAt sql.NullTime) error {
 	_, err := q.db.ExecContext(ctx, deleteProcessedOutboxEventsBefore, processedAt)
 	return err
-}
-
-const getMaxOutboxEventID = `-- name: GetMaxOutboxEventID :one
-SELECT CAST(COALESCE(MAX(id), 0) AS UNSIGNED) AS max_id
-FROM outbox_events
-`
-
-// バッチが「DB を読んだ時点までに COMMIT 済みの outbox イベント」を ID 上限として取得するために使用する。
-// 空テーブルでも 0 を返すよう COALESCE する。
-func (q *Queries) GetMaxOutboxEventID(ctx context.Context) (int64, error) {
-	row := q.db.QueryRowContext(ctx, getMaxOutboxEventID)
-	var max_id int64
-	err := row.Scan(&max_id)
-	return max_id, err
 }
 
 const incrementOutboxEventRetry = `-- name: IncrementOutboxEventRetry :exec
@@ -125,29 +143,4 @@ WHERE id = ?
 func (q *Queries) MarkOutboxEventProcessed(ctx context.Context, id uint64) error {
 	_, err := q.db.ExecContext(ctx, markOutboxEventProcessed, id)
 	return err
-}
-
-const markOutboxEventsProcessedUpTo = `-- name: MarkOutboxEventsProcessedUpTo :execrows
-UPDATE outbox_events
-SET processed_at = NOW(6)
-WHERE processed_at IS NULL
-  AND id <= ?
-  AND event_type = ?
-`
-
-type MarkOutboxEventsProcessedUpToParams struct {
-	MaxID     uint64
-	EventType string
-}
-
-// 指定 ID 以下、かつ event_type が一致する pending イベントを一括で処理済みにマークする。
-// ranking 同期バッチがスナップショット境界 (max_id) までの ranking 系イベントを processed として
-// 確定させるために使用する。ranking 以外のイベント (将来追加されるドメインのイベント) を
-// 巻き添えで processed 化しないよう event_type で必ず絞り込む。
-func (q *Queries) MarkOutboxEventsProcessedUpTo(ctx context.Context, arg MarkOutboxEventsProcessedUpToParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, markOutboxEventsProcessedUpTo, arg.MaxID, arg.EventType)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }

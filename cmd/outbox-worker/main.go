@@ -59,11 +59,13 @@ func main() {
 
 	tx := infraMysql.NewTransactor(db, log)
 	outboxRepo := repository.NewOutboxRepository(db)
+	rankingRepo := repository.NewRankingRepository(db)
 	rankingStore := infraRedis.NewRankingStore(redisClient.Raw())
 	outboxSubscriber := infraRedis.NewOutboxSubscriber(redisClient.Raw())
 
 	w := workeroutbox.New(workeroutbox.Config{
 		Repo:         outboxRepo,
+		RankingRepo:  rankingRepo,
 		RankingStore: rankingStore,
 		Tx:           tx,
 		Subscriber:   outboxSubscriber,

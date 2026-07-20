@@ -181,7 +181,7 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 			return err
 		}
 
-		// 個人ポイント現在値
+		// 個人ポイント現在値（応答の previous_total 用）
 		currentPoints, err := u.repo.GetUserPoints(ctx, tx, input.UserID)
 		var previousTotal int64
 		if err != nil {
@@ -192,34 +192,24 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 			previousTotal = currentPoints.Points
 		}
 
-		// ギルドスコア現在値
-		currentGuildScore, err := u.repo.GetGuildScore(ctx, tx, guildID)
-		var guildPreviousTotal int64
-		if err != nil {
-			if !errors.Is(err, rankingdomain.ErrScoreNotFound) {
-				return err
-			}
-		} else {
-			guildPreviousTotal = currentGuildScore.Score
-		}
+		// ギルド集計（guild_scores 加算・guild_score_histories 挿入）は outbox-worker へ
+		// 非同期化した。ホット行（1ギルド=1行）の排他ロックを同期リクエスト経路から完全に
+		// 除去し、同一ギルドへの同時加算がレスポンスを直列化させないようにするため。
+		// リクエスト tx では個人系（user_points・user_point_histories）と outbox 記録のみ行う。
 
-		// 履歴記録（個人・ギルド双方）
+		// 個人ポイント履歴（user 行ロックはユーザー毎で分散＝低競合）。
 		if err := u.repo.InsertUserPointHistory(ctx, tx, input.UserID, input.Points, input.Reason); err != nil {
 			return err
 		}
-		if err := u.repo.InsertGuildScoreHistory(ctx, tx, guildID, input.UserID, input.Points); err != nil {
-			return err
-		}
 
-		// MySQL 累計加算（個人・ギルド）
+		// 個人ポイント累計加算。
 		if err := u.repo.IncrementUserPoints(ctx, tx, input.UserID, input.Points); err != nil {
 			return err
 		}
-		if err := u.repo.IncrementGuildScore(ctx, tx, guildID, input.Points); err != nil {
-			return err
-		}
 
-		// Redis 反映用イベントを outbox に積む。worker が非同期に処理する。
+		// ギルド集計と Redis 反映用のイベントを outbox に積む。worker が非同期に
+		// guild_scores 加算・guild_score_histories 挿入・Redis 反映を行う。
+		// payload は差分（Points）と対象（UserID/GuildID）を運ぶ。
 		payload := outboxdomain.MarshalRankingScoreAddedPayload(outboxdomain.RankingScoreAddedPayload{
 			UserID:  input.UserID,
 			GuildID: guildID,
@@ -230,13 +220,11 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 		}
 
 		result = rankingdomain.UserPointAddResult{
-			UserID:             input.UserID,
-			Points:             input.Points,
-			PreviousTotal:      previousTotal,
-			NewTotal:           previousTotal + input.Points,
-			GuildID:            guildID,
-			GuildPreviousTotal: guildPreviousTotal,
-			GuildNewTotal:      guildPreviousTotal + input.Points,
+			UserID:        input.UserID,
+			Points:        input.Points,
+			PreviousTotal: previousTotal,
+			NewTotal:      previousTotal + input.Points,
+			GuildID:       guildID,
 		}
 		return nil
 	})

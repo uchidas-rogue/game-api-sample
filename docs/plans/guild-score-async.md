@@ -1,7 +1,8 @@
 # ギルドスコア更新の非同期化
 
-> ステータス: **未着手 / 後フェーズで実施**
-> 想定実施タイミング: 負荷試験で同一ギルド内同時加算のレイテンシ悪化が観測されたタイミング
+> ステータス: **実装済み（2026-07-20）**
+> 実施契機: 負荷試験（k6 `make load/points`）で同一ギルド集中加算のレイテンシ悪化（p99 14s 台・スループット頭打ち）を観測したため実施。
+> 実装時に本プランから乖離した点は末尾「実装メモ（プランからの差分）」を参照。
 
 ## Context
 
@@ -106,3 +107,22 @@
    - MySQL `SELECT * FROM guild_score_histories WHERE guild_id = ?` で履歴が記録されていることを確認
    - Redis `ZSCORE guild_ranking <guild_id>` で ZSet も加算されていることを確認
 4. **負荷確認（本プランの主目的）**: k6 で同一ギルド内 100 並行加算を投げ、レイテンシ p95/p99 が改善すること、および同時にギルドスコア行のロック競合に起因するエラーが発生しないことを確認
+
+## 実装メモ（プランからの差分）
+
+実装時、プラン策定時に見落としていた整合性リスクへの対応として以下を追加・変更した。
+
+### 1. RankingSyncer（sync-rankings batch）を「再構築専用」に変更（プランは「触らない」としていた）
+- **問題**: 本非同期化により不変条件が反転する。従来は「outbox イベントが pending ⟹ guild_scores は既に同期加算済み」だったが、非同期化後は「pending ⟹ guild_scores はまだ未加算（worker が後で適用）」になる。この状態で RankingSyncer の `MarkProcessedUpTo` が pending イベントを未加算のまま processed 化すると、worker がスキップして**そのギルド加算が guild_scores にも Redis にも永久に反映されず消失**する（data loss）。
+- **対応**: RankingSyncer から `GetMaxID` / `MarkProcessedUpTo` / outbox 依存を除去し、`guild_scores` / `user_points` を読んで Redis へ SET するだけの「揃え直し専用ツール」にした（[internal/driver/batch/ranking_sync.go](../../internal/driver/batch/ranking_sync.go)）。worker がイベント処理の唯一の所有者となり整合する。
+- **トレードオフ**: worker 稼働中に走らせるとスナップショット取得後に反映された数件が SET で上書きされ Redis 側で一時欠落しうる（MySQL は常に正しく次回再構築で自己修復）。原則、揮発復旧など書き込みが静穏な状況で実行する。
+
+### 2. worker のイベント単位 tx を「候補取得 → id 指定 claim」方式で実装（複数 worker 安全性 + head-of-line blocking 回避）
+- プラン記載の「ListPending で一括取得 → 即コミット → イベントごとに DoInTx」は、fetch の `FOR UPDATE SKIP LOCKED` ロックがコミットで解放されるため、複数 worker 構成（`worker_desired_count` は可変）で同一イベントを二重処理しうる。
+- **対応**: worker は `ListPending` で候補 id 群を取得し、各候補を **id 指定** で claim する。sqlc クエリ `ClaimPendingOutboxEventByID`（`WHERE id=? AND processed_at IS NULL FOR UPDATE SKIP LOCKED`）を追加し、outbox Repository に `ClaimByID` を実装。worker は「候補ごとに DoInTx { ClaimByID → handleEvent → MarkProcessed }」を回し、handleEvent 失敗時は別 tx で IncrementRetry を記録する。これにより複数 worker 安全性（SKIP LOCKED の設計意図）・MySQL 副作用の exactly-once・イベント単位のロールバック分離を保つ。
+- **id 指定 claim にした理由（当初 `ClaimNext`＝最小 id 固定取得で実装 → 修正）**: 最小 id を毎回 claim する方式だと、先頭イベントが恒久失敗（未知 event_type・壊れた payload 等の poison）した場合、毎ティック同じイベントを掴み続け、**後続イベントが永久に処理されない head-of-line blocking** が発生した。既知課題「Outbox DLQ・max retry 上限の未対応」を悪化させるため、候補を id 指定で処理する方式に修正し、先頭が失敗しても後続が進むようにした（`internal/driver/worker/outbox/worker_test.go` に回避を検証するケースあり）。なお poison を恒久的に打ち切る max-retry/DLQ は引き続き別課題。
+- これに伴い不要となった outbox の `GetMaxID` / `MarkProcessedUpTo`（sqlc クエリ・Repository メソッド）は削除した。
+
+### 3. 検証結果
+- `make test` / `make lint` / `make test/race` 通過。カバレッジ: usecase/ranking 100%・driver/worker/outbox 94.7%・driver/batch 100%・infra/repository 86.0%・driver/http/ranking 97.4%。
+- 負荷確認（`make load/points`）は本コミット後に再測定予定。

@@ -217,20 +217,18 @@ func TestHandler_AddUserPoints(t *testing.T) {
 		wantBodyAbsent   []string
 	}{
 		{
-			name:        "正常系: ポイント加算成功（個人・ギルド集計フィールド含む / rank系は未含有）",
+			name:        "正常系: ポイント加算成功（個人フィールド含む / ギルド集計・rank系は未含有）",
 			paramUserID: "10",
 			body:        `{"points":500,"reason":"クエストクリア"}`,
 			setupMock: func(m *mockranking.MockUsecase) {
 				m.EXPECT().AddUserPoints(gomock.Any(), rankingusecase.AddUserPointsInput{
 					UserID: 10, Points: 500, Reason: "クエストクリア",
 				}).Return(rankingdomain.UserPointAddResult{
-					UserID:             10,
-					Points:             500,
-					PreviousTotal:      1000,
-					NewTotal:           1500,
-					GuildID:            1,
-					GuildPreviousTotal: 5000,
-					GuildNewTotal:      5500,
+					UserID:        10,
+					Points:        500,
+					PreviousTotal: 1000,
+					NewTotal:      1500,
+					GuildID:       1,
 				}, nil)
 			},
 			wantStatusCode: http.StatusOK,
@@ -240,10 +238,8 @@ func TestHandler_AddUserPoints(t *testing.T) {
 				`"previous_total":1000`,
 				`"new_total":1500`,
 				`"guild_id":1`,
-				`"guild_previous_total":5000`,
-				`"guild_new_total":5500`,
 			},
-			wantBodyAbsent: []string{`"rank"`, `"guild_rank"`},
+			wantBodyAbsent: []string{`"rank"`, `"guild_rank"`, `"guild_previous_total"`, `"guild_new_total"`},
 		},
 		{
 			name:           "異常系: userID が数値でない",
