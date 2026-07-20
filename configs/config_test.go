@@ -31,6 +31,44 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:6379", cfg.RedisAddr)
 	assert.Equal(t, 10*time.Minute, cfg.OutboxPollInterval)
 	assert.Equal(t, 100, cfg.OutboxBatchSize)
+	assert.Equal(t, 25, cfg.DBMaxOpenConns)
+	assert.Equal(t, 25, cfg.DBMaxIdleConns)
+	assert.Equal(t, 5*time.Minute, cfg.DBConnMaxLifetime)
+	assert.Equal(t, 5*time.Minute, cfg.DBConnMaxIdleTime)
+}
+
+func TestLoad_DBPool(t *testing.T) {
+	t.Run("override", func(t *testing.T) {
+		t.Setenv("DB_MAX_OPEN_CONNS", "100")
+		t.Setenv("DB_MAX_IDLE_CONNS", "0")
+		t.Setenv("DB_CONN_MAX_LIFETIME", "1m")
+		t.Setenv("DB_CONN_MAX_IDLE_TIME", "30s")
+
+		cfg, err := configs.Load()
+		require.NoError(t, err)
+		assert.Equal(t, 100, cfg.DBMaxOpenConns)
+		assert.Equal(t, 0, cfg.DBMaxIdleConns)
+		assert.Equal(t, time.Minute, cfg.DBConnMaxLifetime)
+		assert.Equal(t, 30*time.Second, cfg.DBConnMaxIdleTime)
+	})
+
+	t.Run("MaxOpenConns must be positive", func(t *testing.T) {
+		t.Setenv("DB_MAX_OPEN_CONNS", "0")
+		_, err := configs.Load()
+		require.Error(t, err)
+	})
+
+	t.Run("MaxOpenConns rejects non-numeric", func(t *testing.T) {
+		t.Setenv("DB_MAX_OPEN_CONNS", "abc")
+		_, err := configs.Load()
+		require.Error(t, err)
+	})
+
+	t.Run("ConnMaxLifetime rejects negative", func(t *testing.T) {
+		t.Setenv("DB_CONN_MAX_LIFETIME", "-1s")
+		_, err := configs.Load()
+		require.Error(t, err)
+	})
 }
 
 func TestLoad_PORT(t *testing.T) {

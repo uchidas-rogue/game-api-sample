@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"time"
 
 	// importで発火するinitだけ必要なので、MySQLドライバを匿名インポート。
 	_ "github.com/go-sql-driver/mysql"
@@ -18,6 +19,26 @@ func Open(dsn string) (*sql.DB, error) {
 		return nil, fmt.Errorf("failed to open mysql: %w", err)
 	}
 	return db, nil
+}
+
+// PoolConfig は *sql.DB のコネクションプール設定。
+// configs から値を受け取り ConfigurePool で適用する（mysql 層は configs に依存しない）。
+type PoolConfig struct {
+	MaxOpenConns    int
+	MaxIdleConns    int
+	ConnMaxLifetime time.Duration
+	ConnMaxIdleTime time.Duration
+}
+
+// ConfigurePool は *sql.DB にプール設定を適用する。
+// database/sql の既定は MaxOpenConns 無制限・MaxIdleConns 2 のため、
+// 高負荷時にコネクションが青天井に増えて MySQL の max_connections を超過する。
+// 上限を張ることで超過分を接続待ちに変え、"Too many connections" を防ぐ。
+func ConfigurePool(db *sql.DB, p PoolConfig) {
+	db.SetMaxOpenConns(p.MaxOpenConns)
+	db.SetMaxIdleConns(p.MaxIdleConns)
+	db.SetConnMaxLifetime(p.ConnMaxLifetime)
+	db.SetConnMaxIdleTime(p.ConnMaxIdleTime)
 }
 
 // Ping は DB への疎通を確認する。
