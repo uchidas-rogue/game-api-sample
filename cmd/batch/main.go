@@ -15,14 +15,18 @@ import (
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/repository"
 	infraRedis "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/redis"
+	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/seed"
 )
 
 func main() {
 	syncRankings := flag.Bool("sync-rankings", false, "sync rankings from DB to Redis")
+	doSeed := flag.Bool("seed", false, "seed dev/load-test data into MySQL")
+	seedUsers := flag.Int("users", seed.DefaultUsers, "number of users to seed (with -seed)")
+	seedGuilds := flag.Int("guilds", seed.DefaultGuilds, "number of guilds to seed (with -seed)")
 	flag.Parse()
 
-	if !*syncRankings {
-		slog.Error("no batch specified. use -sync-rankings")
+	if !*syncRankings && !*doSeed {
+		slog.Error("no batch specified. use -seed or -sync-rankings")
 		os.Exit(1)
 	}
 
@@ -52,6 +56,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	if *doSeed {
+		seeder := seed.NewSeeder(db, log)
+		if err := seeder.Seed(ctx, seed.Params{Users: *seedUsers, Guilds: *seedGuilds}); err != nil {
+			log.Error("seeding failed", slog.Any("error", err))
+			os.Exit(1)
+		}
+		return
+	}
+
+	// *syncRankings
 	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
 	if err != nil {
 		log.Error("failed to connect redis", slog.Any("error", err))
