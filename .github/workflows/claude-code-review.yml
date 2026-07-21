@@ -38,7 +38,9 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
-          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
+          # --comment: これが無いと code-review プラグインはレビュー結果を
+          # ターミナル出力するだけで GitHub に一切投稿しない（プラグイン手順7の仕様）。
+          prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }} --comment'
           # agent モードでは、ここで許可したツールに応じて MCP サーバーの起動要否が決まる。
           # inline_comment サーバーは allowedTools に mcp__github_inline_comment__ が無いと起動せず、
           # プラグインのコメント投稿が全て拒否される（permission_denials）。
