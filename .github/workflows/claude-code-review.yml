@@ -47,6 +47,9 @@ jobs:
           # 許可ツールは code-review プラグインの frontmatter(allowed-tools) に合わせている。
           claude_args: |
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr list:*),Bash(gh issue view:*),Bash(gh issue list:*),Bash(gh search:*)"
+          # 【診断用・一時】permission_denials(18件)の内訳=拒否されたツール名を確認するため
+          # フル出力を有効化。原因特定後にこの行を revert すること。
+          show_full_output: true
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
