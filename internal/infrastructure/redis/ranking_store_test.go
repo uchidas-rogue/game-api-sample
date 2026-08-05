@@ -146,6 +146,123 @@ func TestRankingStore_IncrementUserPoints_ポイント累積(t *testing.T) {
 	assert.Equal(t, int64(125), points)
 }
 
+// TestRankingStore_ApplyScoreDeltas_ユーザーとギルド双方が1往復で反映される は
+// outbox-worker のバッチ適用が使うパイプライン反映を検証する。
+// 既存値がある場合は加算（ZINCRBY）になることも確認する。
+func TestRankingStore_ApplyScoreDeltas_ユーザーとギルド双方が反映される(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	// 既存値を置いておき、上書きではなく加算されることを見る。
+	require.NoError(t, store.SetUserPoints(ctx, 10, 1000))
+	require.NoError(t, store.SetGuildScore(ctx, 1, 5000))
+
+	require.NoError(t, store.ApplyScoreDeltas(ctx,
+		[]rankingdomain.UserPointDelta{
+			{UserID: 10, Points: 150},
+			{UserID: 11, Points: 200},
+		},
+		[]rankingdomain.GuildScoreDelta{
+			{GuildID: 1, Points: 300},
+			{GuildID: 2, Points: 50},
+		},
+	))
+
+	points, found, err := store.GetUserPoints(ctx, 10)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, int64(1150), points)
+
+	points, found, err = store.GetUserPoints(ctx, 11)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, int64(200), points)
+
+	score, found, err := store.GetGuildScore(ctx, 1)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, int64(5300), score)
+
+	score, found, err = store.GetGuildScore(ctx, 2)
+	require.NoError(t, err)
+	assert.True(t, found)
+	assert.Equal(t, int64(50), score)
+}
+
+// TestRankingStore_ApplyScoreDeltas_片方のみでも反映される は users / guilds の
+// 一方が空のケースを確認する（もう一方のキーは作られない）。
+func TestRankingStore_ApplyScoreDeltas_片方のみでも反映される(t *testing.T) {
+	t.Parallel()
+
+	t.Run("users のみ", func(t *testing.T) {
+		t.Parallel()
+
+		store, s := newTestStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, store.ApplyScoreDeltas(ctx,
+			[]rankingdomain.UserPointDelta{{UserID: 1, Points: 10}}, nil))
+
+		points, found, err := store.GetUserPoints(ctx, 1)
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, int64(10), points)
+		assert.False(t, s.Exists(rankingdomain.GuildRankingKey))
+	})
+
+	t.Run("guilds のみ", func(t *testing.T) {
+		t.Parallel()
+
+		store, s := newTestStore(t)
+		ctx := context.Background()
+
+		require.NoError(t, store.ApplyScoreDeltas(ctx, nil,
+			[]rankingdomain.GuildScoreDelta{{GuildID: 1, Points: 10}}))
+
+		score, found, err := store.GetGuildScore(ctx, 1)
+		require.NoError(t, err)
+		assert.True(t, found)
+		assert.Equal(t, int64(10), score)
+		assert.False(t, s.Exists(rankingdomain.UserRankingKey))
+	})
+}
+
+// TestRankingStore_ApplyScoreDeltas_両方空ならコマンドを発行しない は、
+// 空バッチで無駄な Redis 往復を発生させないことを確認する。
+// miniredis に強制エラーを仕込んでおき、それでも nil が返ること
+// （= コマンドが1つも発行されていないこと）で検証する。
+func TestRankingStore_ApplyScoreDeltas_両方空ならコマンドを発行しない(t *testing.T) {
+	t.Parallel()
+
+	store, s := newTestStore(t)
+	ctx := context.Background()
+
+	s.SetError("ERR forced error")
+
+	require.NoError(t, store.ApplyScoreDeltas(ctx, nil, nil))
+	require.NoError(t, store.ApplyScoreDeltas(ctx,
+		[]rankingdomain.UserPointDelta{}, []rankingdomain.GuildScoreDelta{}))
+}
+
+func TestRankingStore_ApplyScoreDeltas_エラー伝播(t *testing.T) {
+	t.Parallel()
+
+	store, s := newTestStore(t)
+	ctx := context.Background()
+
+	s.SetError("ERR forced error")
+	err := store.ApplyScoreDeltas(ctx,
+		[]rankingdomain.UserPointDelta{{UserID: 1, Points: 10}},
+		[]rankingdomain.GuildScoreDelta{{GuildID: 1, Points: 10}})
+
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "pipeline zincrby failed")
+	// エラーメッセージに件数が含まれ、障害調査時にバッチ規模が分かる。
+	assert.Contains(t, err.Error(), "users=1, guilds=1")
+}
+
 func TestRankingStore_SetUserPoints_ポイント上書き(t *testing.T) {
 	t.Parallel()
 

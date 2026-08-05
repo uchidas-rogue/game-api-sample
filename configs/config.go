@@ -27,8 +27,18 @@ const (
 	// 通常時は Redis Pub/Sub の通知駆動で即時処理される。
 	defaultOutboxPollInterval = 10 * time.Minute
 	envOutboxBatchSize        = "OUTBOX_BATCH_SIZE"
-	defaultOutboxBatchSize    = 100
-	envOutboxTickTimeout      = "OUTBOX_TICK_TIMEOUT"
+	// defaultOutboxBatchSize は1トランザクションでまとめて適用するイベント数。
+	// worker はバッチ単位でコミットするため、この値がそのまま COMMIT(fsync) の削減率になる。
+	// 大きいほどスループットは上がるが、1トランザクションのロック保持時間と
+	// バッチ失敗時のフォールバック（イベント単位での再処理）の範囲も広がる。
+	defaultOutboxBatchSize = 500
+	envOutboxConcurrency   = "OUTBOX_CONCURRENCY"
+	// defaultOutboxConcurrency はイベント単位経路（バッチ失敗時のフォールバック）で
+	// 並列処理する goroutine 数。通常時のバッチ経路は単一トランザクションのため影響しない。
+	// 並列度ぶんの同時トランザクションを張るため、DBMaxOpenConns 以下である必要がある
+	// （Load() で検証する）。
+	defaultOutboxConcurrency = 8
+	envOutboxTickTimeout     = "OUTBOX_TICK_TIMEOUT"
 	// defaultOutboxTickTimeout は1ティック（runOnce）の処理時間上限。
 	// DB/Redis のブロッキングで worker のループがハングするのを防ぐ。
 	defaultOutboxTickTimeout = 30 * time.Second
@@ -49,8 +59,8 @@ const (
 	// defaultDBMaxIdleConns はプールに保持するアイドルコネクション数。
 	// 既定(2)のままだと高頻度に接続の開閉が発生しオーバーヘッドになるため、
 	// MaxOpenConns と同値にして再利用性を高める。
-	defaultDBMaxIdleConns    = 25
-	envDBConnMaxLifetime     = "DB_CONN_MAX_LIFETIME"
+	defaultDBMaxIdleConns = 25
+	envDBConnMaxLifetime  = "DB_CONN_MAX_LIFETIME"
 	// defaultDBConnMaxLifetime はコネクションの最大生存時間。
 	// LB/Aurora フェイルオーバ後の古い接続の滞留を防ぐため有限にする。
 	defaultDBConnMaxLifetime = 5 * time.Minute
@@ -67,6 +77,7 @@ type Config struct {
 	RedisAddr          string
 	OutboxPollInterval time.Duration
 	OutboxBatchSize    int
+	OutboxConcurrency  int
 	OutboxTickTimeout  time.Duration
 	DBPingTimeout      time.Duration
 	DBMaxOpenConns     int
@@ -128,6 +139,18 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid %s: must be positive", envOutboxBatchSize)
 		}
 		batchSize = parsed
+	}
+
+	concurrency := defaultOutboxConcurrency
+	if v := os.Getenv(envOutboxConcurrency); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", envOutboxConcurrency, err)
+		}
+		if parsed <= 0 {
+			return nil, fmt.Errorf("invalid %s: must be positive", envOutboxConcurrency)
+		}
+		concurrency = parsed
 	}
 
 	tickTimeout := defaultOutboxTickTimeout
@@ -202,6 +225,15 @@ func Load() (*Config, error) {
 		connMaxIdleTime = parsed
 	}
 
+	// 並列度は同時に張るトランザクション数と等しい。プール上限を超えると goroutine が
+	// コネクション待ちで滞留し、並列化の効果が出ないまま tickTimeout を消費する。
+	if concurrency > maxOpenConns {
+		return nil, fmt.Errorf(
+			"invalid %s: %d exceeds %s (%d); concurrency must not exceed the connection pool size",
+			envOutboxConcurrency, concurrency, envDBMaxOpenConns, maxOpenConns,
+		)
+	}
+
 	return &Config{
 		Port:               port,
 		LogLevel:           level,
@@ -209,6 +241,7 @@ func Load() (*Config, error) {
 		RedisAddr:          redisAddr,
 		OutboxPollInterval: pollInterval,
 		OutboxBatchSize:    batchSize,
+		OutboxConcurrency:  concurrency,
 		OutboxTickTimeout:  tickTimeout,
 		DBPingTimeout:      pingTimeout,
 		DBMaxOpenConns:     maxOpenConns,

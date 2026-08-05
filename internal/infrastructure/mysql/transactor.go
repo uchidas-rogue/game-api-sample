@@ -40,10 +40,24 @@ func NewTransactor(db *sql.DB, logger *slog.Logger) *Transactor {
 	return &Transactor{db: db, logger: logger}
 }
 
+// toSQLTxOptions は usecase 層の TxOptions を database/sql の *sql.TxOptions へ変換する。
+// デフォルト分離レベルの場合は nil を返し、driver 既定の挙動をそのまま使う。
+func toSQLTxOptions(o shared.TxOptions) *sql.TxOptions {
+	switch o.Isolation {
+	case shared.IsolationReadCommitted:
+		return &sql.TxOptions{Isolation: sql.LevelReadCommitted}
+	case shared.IsolationDefault:
+		return nil
+	default:
+		return nil
+	}
+}
+
 // DoInTx は与えられた fn をトランザクション内で実行する。
 // fn が error を返した場合や panic した場合は ROLLBACK を保証する。
-func (t *Transactor) DoInTx(ctx context.Context, fn func(tx shared.Tx) error) (err error) {
-	tx, beginErr := t.db.BeginTx(ctx, nil)
+// opts で分離レベルを明示できる（省略時は MySQL のデフォルト = REPEATABLE READ）。
+func (t *Transactor) DoInTx(ctx context.Context, fn func(tx shared.Tx) error, opts ...shared.TxOption) (err error) {
+	tx, beginErr := t.db.BeginTx(ctx, toSQLTxOptions(shared.NewTxOptions(opts...)))
 	if beginErr != nil {
 		return fmt.Errorf("failed to begin tx: %w", beginErr)
 	}

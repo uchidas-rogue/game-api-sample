@@ -214,6 +214,51 @@ func TestOutboxRepository_MarkProcessed(t *testing.T) {
 	}
 }
 
+// TestOutboxRepository_MarkProcessedByIDs はバッチ適用経路の一括マークを検証する。
+// 可変長 IN 句は sqlc.slice() が生成するため、repository は ids をそのまま Querier に渡すだけ。
+func TestOutboxRepository_MarkProcessedByIDs(t *testing.T) {
+	t.Parallel()
+
+	errDB := errors.New("bulk update failed")
+
+	t.Run("正常系: ids がそのまま Querier に渡る", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockQ := mocksqlc.NewMockQuerier(ctrl)
+		mockQ.EXPECT().MarkOutboxEventsProcessedByIDs(gomock.Any(), []uint64{1, 2, 3}).Return(nil)
+
+		repo := repository.NewOutboxRepositoryWithQuerier(mockQ)
+		require.NoError(t, repo.MarkProcessedByIDs(context.Background(), dummyTx{}, []uint64{1, 2, 3}))
+	})
+
+	t.Run("正常系: 空スライスは Querier を呼ばず no-op", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockQ := mocksqlc.NewMockQuerier(ctrl)
+		// EXPECT を設定しないため、呼ばれたら gomock が未設定呼び出しとして落とす。
+
+		repo := repository.NewOutboxRepositoryWithQuerier(mockQ)
+		require.NoError(t, repo.MarkProcessedByIDs(context.Background(), dummyTx{}, nil))
+		require.NoError(t, repo.MarkProcessedByIDs(context.Background(), dummyTx{}, []uint64{}))
+	})
+
+	t.Run("異常系: DB エラーはラップして返す", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockQ := mocksqlc.NewMockQuerier(ctrl)
+		mockQ.EXPECT().MarkOutboxEventsProcessedByIDs(gomock.Any(), []uint64{1}).Return(errDB)
+
+		repo := repository.NewOutboxRepositoryWithQuerier(mockQ)
+		err := repo.MarkProcessedByIDs(context.Background(), dummyTx{}, []uint64{1})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errDB)
+	})
+}
+
 func TestOutboxRepository_ClaimByID(t *testing.T) {
 	t.Parallel()
 

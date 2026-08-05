@@ -38,3 +38,8 @@ WHERE id = ?;
 DELETE FROM outbox_events
 WHERE processed_at IS NOT NULL
   AND processed_at < ?;
+
+-- name: MarkOutboxEventsProcessedByIDs :exec
+UPDATE outbox_events
+SET processed_at = NOW(6)
+WHERE id IN (sqlc.slice('ids'));

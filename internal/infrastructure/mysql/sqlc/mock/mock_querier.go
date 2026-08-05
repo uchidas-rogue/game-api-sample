@@ -409,6 +409,20 @@ func (mr *MockQuerierMockRecorder) MarkOutboxEventProcessed(ctx, id any) *gomock
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkOutboxEventProcessed", reflect.TypeOf((*MockQuerier)(nil).MarkOutboxEventProcessed), ctx, id)
 }
 
+// MarkOutboxEventsProcessedByIDs mocks base method.
+func (m *MockQuerier) MarkOutboxEventsProcessedByIDs(ctx context.Context, ids []uint64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkOutboxEventsProcessedByIDs", ctx, ids)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkOutboxEventsProcessedByIDs indicates an expected call of MarkOutboxEventsProcessedByIDs.
+func (mr *MockQuerierMockRecorder) MarkOutboxEventsProcessedByIDs(ctx, ids any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkOutboxEventsProcessedByIDs", reflect.TypeOf((*MockQuerier)(nil).MarkOutboxEventsProcessedByIDs), ctx, ids)
+}
+
 // UpdateUserGems mocks base method.
 func (m *MockQuerier) UpdateUserGems(ctx context.Context, arg sqlc.UpdateUserGemsParams) error {
 	m.ctrl.T.Helper()

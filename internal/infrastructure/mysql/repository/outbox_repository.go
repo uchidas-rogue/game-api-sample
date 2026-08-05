@@ -102,6 +102,22 @@ func (r *OutboxRepository) MarkProcessed(ctx context.Context, tx shared.Tx, id u
 	return nil
 }
 
+// MarkProcessedByIDs は複数イベントを1文で処理済みにマークする。
+// 可変長 IN 句は sqlc.slice() で生成しているため、生 SQL の組み立ては不要。
+func (r *OutboxRepository) MarkProcessedByIDs(ctx context.Context, tx shared.Tx, ids []uint64) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	q, err := r.querier(tx)
+	if err != nil {
+		return fmt.Errorf("MarkProcessedByIDs: %w", err)
+	}
+	if err := q.MarkOutboxEventsProcessedByIDs(ctx, ids); err != nil {
+		return fmt.Errorf("mark outbox events processed (count=%d): %w", len(ids), err)
+	}
+	return nil
+}
+
 // IncrementRetry は retry_count をインクリメントし last_error を記録する。
 func (r *OutboxRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error {
 	q, err := r.querier(tx)

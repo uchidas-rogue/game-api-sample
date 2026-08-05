@@ -72,6 +72,7 @@ func main() {
 		Logger:       log,
 		PollInterval: cfg.OutboxPollInterval,
 		BatchSize:    cfg.OutboxBatchSize,
+		Concurrency:  cfg.OutboxConcurrency,
 		TickTimeout:  cfg.OutboxTickTimeout,
 	})
 

@@ -31,6 +31,11 @@ type Repository interface {
 	// MarkProcessed は指定 ID のイベントを処理済みにマークする。
 	MarkProcessed(ctx context.Context, tx shared.Tx, id uint64) error
 
+	// MarkProcessedByIDs は複数イベントを1文で処理済みにマークする。
+	// worker がバッチ単位トランザクションで適用する際に、イベント件数ぶんの
+	// UPDATE 往復を1回に集約するために使う。ids が空の場合は何もしない。
+	MarkProcessedByIDs(ctx context.Context, tx shared.Tx, ids []uint64) error
+
 	// IncrementRetry は失敗時のリトライ回数を加算し、エラーメッセージを記録する。
 	IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error
 }

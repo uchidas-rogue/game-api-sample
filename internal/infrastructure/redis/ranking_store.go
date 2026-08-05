@@ -113,6 +113,36 @@ func (r *RankingStore) IncrementUserPoints(ctx context.Context, userID int64, po
 	return nil
 }
 
+// ApplyScoreDeltas はユーザー・ギルド双方の加算をパイプラインで1往復にまとめて反映する。
+// outbox-worker がバッチ単位トランザクション内から呼ぶため、往復回数がそのまま
+// MySQL 側のロック保持時間になる。件数ぶん往復すると加算件数に比例して
+// トランザクションが長くなるため、必ず1往復に集約する。
+//
+// パイプラインは各コマンドを個別に評価するため（MULTI/EXEC と違い原子的ではない）、
+// 途中失敗時は一部だけ適用されうる。Redis は元々 at-least-once 前提のキャッシュであり、
+// ずれは RankingSyncer による再構築で回復する。
+func (r *RankingStore) ApplyScoreDeltas(
+	ctx context.Context,
+	users []rankingdomain.UserPointDelta,
+	guilds []rankingdomain.GuildScoreDelta,
+) error {
+	if len(users) == 0 && len(guilds) == 0 {
+		return nil
+	}
+
+	pipe := r.client.Pipeline()
+	for _, u := range users {
+		pipe.ZIncrBy(ctx, rankingdomain.UserRankingKey, float64(u.Points), strconv.FormatInt(u.UserID, 10))
+	}
+	for _, g := range guilds {
+		pipe.ZIncrBy(ctx, rankingdomain.GuildRankingKey, float64(g.Points), strconv.FormatInt(g.GuildID, 10))
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("pipeline zincrby failed (users=%d, guilds=%d): %w", len(users), len(guilds), err)
+	}
+	return nil
+}
+
 // SetUserPoints はユーザーのポイントを上書きする（バッチ同期用）。
 func (r *RankingStore) SetUserPoints(ctx context.Context, userID int64, points int64) error {
 	member := strconv.FormatInt(userID, 10)

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -257,6 +258,170 @@ func TestRankingRepository_InsertGuildScoreHistory(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRankingRepository_BulkIncrementGuildScores は sqlc が生成できない可変行数 upsert を
+// go-sqlmock で検証する。クエリ文字列・引数・引数の順序まで固定する。
+func TestRankingRepository_BulkIncrementGuildScores(t *testing.T) {
+	t.Parallel()
+
+	const wantQueryMulti = "INSERT INTO guild_scores (guild_id, score) VALUES (?, ?),(?, ?),(?, ?)" +
+		" ON DUPLICATE KEY UPDATE score = score + VALUES(score)"
+	const wantQuerySingle = "INSERT INTO guild_scores (guild_id, score) VALUES (?, ?)" +
+		" ON DUPLICATE KEY UPDATE score = score + VALUES(score)"
+	errDB := errors.New("bulk upsert failed")
+
+	// guild_id 昇順ソートは並行バッチ tx 間のデッドロック防止のための必須要件。
+	// 入力を降順で与え、発行時に昇順へ並び替わることを引数順で検証する。
+	t.Run("正常系: guild_id 昇順にソートしてから1文の複数行upsertを発行する（デッドロック防止の必須要件）", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		mock.ExpectExec(wantQueryMulti).
+			WithArgs(int64(1), int64(100), int64(2), int64(200), int64(3), int64(300)).
+			WillReturnResult(sqlmock.NewResult(0, 3))
+
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		err := repo.BulkIncrementGuildScores(context.Background(), nil, []rankingdomain.GuildScoreDelta{
+			{GuildID: 3, Points: 300},
+			{GuildID: 1, Points: 100},
+			{GuildID: 2, Points: 200},
+		})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("正常系: 呼び出し元のスライスはソートで破壊されない", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		mock.ExpectExec(wantQueryMulti).
+			WithArgs(int64(1), int64(100), int64(2), int64(200), int64(3), int64(300)).
+			WillReturnResult(sqlmock.NewResult(0, 3))
+
+		input := []rankingdomain.GuildScoreDelta{
+			{GuildID: 3, Points: 300},
+			{GuildID: 1, Points: 100},
+			{GuildID: 2, Points: 200},
+		}
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		require.NoError(t, repo.BulkIncrementGuildScores(context.Background(), nil, input))
+
+		assert.Equal(t, []rankingdomain.GuildScoreDelta{
+			{GuildID: 3, Points: 300},
+			{GuildID: 1, Points: 100},
+			{GuildID: 2, Points: 200},
+		}, input)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("正常系: 単一件でも正しいプレースホルダ数でupsertされる", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		mock.ExpectExec(wantQuerySingle).
+			WithArgs(int64(7), int64(50)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		err := repo.BulkIncrementGuildScores(context.Background(), nil, []rankingdomain.GuildScoreDelta{
+			{GuildID: 7, Points: 50},
+		})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("正常系: 空スライスの場合はExecを発行せずnilを返す", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		// ExpectExec を設定しないため、Exec が発行されたら ExpectationsWereMet で検知できる
+
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		err := repo.BulkIncrementGuildScores(context.Background(), nil, []rankingdomain.GuildScoreDelta{})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("異常系: Exec失敗時はエラーがラップされて返る", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		mock.ExpectExec(wantQuerySingle).
+			WithArgs(int64(1), int64(100)).
+			WillReturnError(errDB)
+
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		err := repo.BulkIncrementGuildScores(context.Background(), nil, []rankingdomain.GuildScoreDelta{
+			{GuildID: 1, Points: 100},
+		})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errDB)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+// TestRankingRepository_BulkInsertGuildScoreHistories は履歴の一括挿入を検証する。
+// スコア加算と違い履歴は集約もソートもせず、渡された順のままイベント単位で挿入する。
+func TestRankingRepository_BulkInsertGuildScoreHistories(t *testing.T) {
+	t.Parallel()
+
+	const wantQueryMulti = "INSERT INTO guild_score_histories (guild_id, user_id, score) VALUES (?, ?, ?),(?, ?, ?)"
+	const wantQuerySingle = "INSERT INTO guild_score_histories (guild_id, user_id, score) VALUES (?, ?, ?)"
+	errDB := errors.New("bulk insert failed")
+
+	t.Run("正常系: 複数件を1回の複数行INSERTで発行する（入力順を保持する）", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		// 同一 guild_id が並んでも集約されず、guild_id 降順の入力もそのままの順で発行される。
+		mock.ExpectExec(wantQueryMulti).
+			WithArgs(int64(2), int64(20), int64(200), int64(1), int64(10), int64(100)).
+			WillReturnResult(sqlmock.NewResult(0, 2))
+
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		err := repo.BulkInsertGuildScoreHistories(context.Background(), nil, []rankingdomain.GuildScoreHistoryEntry{
+			{GuildID: 2, UserID: 20, Points: 200},
+			{GuildID: 1, UserID: 10, Points: 100},
+		})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("正常系: 空スライスの場合はExecを発行せずnilを返す", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		err := repo.BulkInsertGuildScoreHistories(context.Background(), nil, []rankingdomain.GuildScoreHistoryEntry{})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("異常系: Exec失敗時はエラーがラップされて返る", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		mock.ExpectExec(wantQuerySingle).
+			WithArgs(int64(1), int64(10), int64(100)).
+			WillReturnError(errDB)
+
+		repo := repository.NewRankingRepositoryWithExecer(db)
+		err := repo.BulkInsertGuildScoreHistories(context.Background(), nil, []rankingdomain.GuildScoreHistoryEntry{
+			{GuildID: 1, UserID: 10, Points: 100},
+		})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errDB)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 }
 
 func TestRankingRepository_IsUserInGuild(t *testing.T) {

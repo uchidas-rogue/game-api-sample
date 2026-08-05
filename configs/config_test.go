@@ -30,7 +30,8 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "game:game@tcp(127.0.0.1:3306)/game_db?parseTime=true&loc=Local", cfg.MySQLDSN)
 	assert.Equal(t, "127.0.0.1:6379", cfg.RedisAddr)
 	assert.Equal(t, 10*time.Minute, cfg.OutboxPollInterval)
-	assert.Equal(t, 100, cfg.OutboxBatchSize)
+	assert.Equal(t, 500, cfg.OutboxBatchSize)
+	assert.Equal(t, 8, cfg.OutboxConcurrency)
 	assert.Equal(t, 25, cfg.DBMaxOpenConns)
 	assert.Equal(t, 25, cfg.DBMaxIdleConns)
 	assert.Equal(t, 5*time.Minute, cfg.DBConnMaxLifetime)
@@ -192,6 +193,48 @@ func TestLoad_OutboxPollInterval(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.OutboxPollInterval)
+		})
+	}
+}
+
+// TestLoad_OutboxConcurrency は並列度のパースと、接続プール上限との整合検証を確認する。
+// 並列度は同時トランザクション数と等しいため、DB_MAX_OPEN_CONNS を超える設定は
+// goroutine が接続待ちで滞留するだけなので起動時にエラーにする。
+func TestLoad_OutboxConcurrency(t *testing.T) {
+	tests := []struct {
+		name        string
+		value       string
+		maxOpenConn string
+		wantErr     bool
+		want        int
+	}{
+		{name: "有効: 16", value: "16", want: 16},
+		{name: "有効: プール上限ちょうど", value: "25", want: 25},
+		{name: "有効: プールを広げれば超過も可", value: "50", maxOpenConn: "50", want: 50},
+		{name: "無効: プール上限を超過", value: "26", wantErr: true},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0（0以下）", value: "0", wantErr: true},
+		{name: "無効: -1（負値）", value: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("PORT", "")
+			t.Setenv("LOG_LEVEL", "")
+			t.Setenv("MYSQL_DSN", "")
+			t.Setenv("REDIS_ADDR", "")
+			t.Setenv("OUTBOX_POLL_INTERVAL", "")
+			t.Setenv("OUTBOX_BATCH_SIZE", "")
+			t.Setenv("DB_MAX_OPEN_CONNS", tt.maxOpenConn)
+			t.Setenv("OUTBOX_CONCURRENCY", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.OutboxConcurrency)
 		})
 	}
 }
