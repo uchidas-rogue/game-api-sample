@@ -12,6 +12,7 @@ package mock_outbox
 import (
 	context "context"
 	reflect "reflect"
+	time "time"
 
 	outbox "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
 	shared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
@@ -56,6 +57,21 @@ func (m *MockRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64)
 func (mr *MockRepositoryMockRecorder) ClaimByID(ctx, tx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimByID", reflect.TypeOf((*MockRepository)(nil).ClaimByID), ctx, tx, id)
+}
+
+// DeleteProcessedBefore mocks base method.
+func (m *MockRepository) DeleteProcessedBefore(ctx context.Context, tx shared.Tx, retention time.Duration, limit int32) (int64, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteProcessedBefore", ctx, tx, retention, limit)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// DeleteProcessedBefore indicates an expected call of DeleteProcessedBefore.
+func (mr *MockRepositoryMockRecorder) DeleteProcessedBefore(ctx, tx, retention, limit any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteProcessedBefore", reflect.TypeOf((*MockRepository)(nil).DeleteProcessedBefore), ctx, tx, retention, limit)
 }
 
 // IncrementRetry mocks base method.

@@ -11,7 +11,6 @@ package mock_sqlc
 
 import (
 	context "context"
-	sql "database/sql"
 	reflect "reflect"
 
 	sqlc "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
@@ -58,17 +57,18 @@ func (mr *MockQuerierMockRecorder) ClaimPendingOutboxEventByID(ctx, id any) *gom
 }
 
 // DeleteProcessedOutboxEventsBefore mocks base method.
-func (m *MockQuerier) DeleteProcessedOutboxEventsBefore(ctx context.Context, processedAt sql.NullTime) error {
+func (m *MockQuerier) DeleteProcessedOutboxEventsBefore(ctx context.Context, arg sqlc.DeleteProcessedOutboxEventsBeforeParams) (int64, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteProcessedOutboxEventsBefore", ctx, processedAt)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "DeleteProcessedOutboxEventsBefore", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // DeleteProcessedOutboxEventsBefore indicates an expected call of DeleteProcessedOutboxEventsBefore.
-func (mr *MockQuerierMockRecorder) DeleteProcessedOutboxEventsBefore(ctx, processedAt any) *gomock.Call {
+func (mr *MockQuerierMockRecorder) DeleteProcessedOutboxEventsBefore(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteProcessedOutboxEventsBefore", reflect.TypeOf((*MockQuerier)(nil).DeleteProcessedOutboxEventsBefore), ctx, processedAt)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteProcessedOutboxEventsBefore", reflect.TypeOf((*MockQuerier)(nil).DeleteProcessedOutboxEventsBefore), ctx, arg)
 }
 
 // GetGuild mocks base method.

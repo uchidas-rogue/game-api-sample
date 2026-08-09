@@ -32,6 +32,7 @@ func clearConfigEnv(t *testing.T) {
 		"OUTBOX_BATCH_SIZE",
 		"OUTBOX_CONCURRENCY",
 		"OUTBOX_TICK_TIMEOUT",
+		"OUTBOX_RETENTION",
 		"DB_PING_TIMEOUT",
 		"DB_MAX_OPEN_CONNS",
 		"DB_MAX_IDLE_CONNS",
@@ -57,6 +58,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 500, cfg.OutboxBatchSize)
 	assert.Equal(t, 8, cfg.OutboxConcurrency)
 	assert.Equal(t, 30*time.Second, cfg.OutboxTickTimeout)
+	assert.Equal(t, 72*time.Hour, cfg.OutboxRetention)
 	assert.Equal(t, 5*time.Second, cfg.DBPingTimeout)
 	assert.Equal(t, 25, cfg.DBMaxOpenConns)
 	assert.Equal(t, 25, cfg.DBMaxIdleConns)
@@ -235,10 +237,10 @@ func TestLoad_OutboxBatchSize(t *testing.T) {
 	}
 }
 
-// TestLoad_OutboxTickTimeout / TestLoad_DBPingTimeout は
+// TestLoad_OutboxTickTimeout / TestLoad_OutboxRetention / TestLoad_DBPingTimeout は
 // OUTBOX_POLL_INTERVAL と同じ検証構造を持つ独立したコードブロックを対象にする。
-// 4 ブロックは同じ形だが条件式はそれぞれ別のソース行にあるため、
-// 1 ブロックのテストで他を代表させることはできない。
+// これらは同じ形だが条件式はそれぞれ別のソース行にあるため、
+// 1 ブロックのテストで他を代表させることはできない（AGENTS.md §3 の対称性チェック）。
 //
 // 0s と -1s はどちらも `parsed <= 0` の同一分岐に入るが、別ケースとして残す。
 // 0s は `<=` を `<` と書き誤った場合、-1s は `== 0` と書き誤った場合を検出するため
@@ -268,6 +270,35 @@ func TestLoad_OutboxTickTimeout(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.OutboxTickTimeout)
+		})
+	}
+}
+
+func TestLoad_OutboxRetention(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 24h", value: "24h", want: 24 * time.Hour},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0s（0以下）", value: "0s", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("OUTBOX_RETENTION", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.OutboxRetention)
 		})
 	}
 }

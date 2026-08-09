@@ -21,12 +21,13 @@ import (
 func main() {
 	syncRankings := flag.Bool("sync-rankings", false, "sync rankings from DB to Redis")
 	doSeed := flag.Bool("seed", false, "seed dev/load-test data into MySQL")
+	gcOutbox := flag.Bool("gc-outbox", false, "delete processed outbox events older than OUTBOX_RETENTION")
 	seedUsers := flag.Int("users", seed.DefaultUsers, "number of users to seed (with -seed)")
 	seedGuilds := flag.Int("guilds", seed.DefaultGuilds, "number of guilds to seed (with -seed)")
 	flag.Parse()
 
-	if !*syncRankings && !*doSeed {
-		slog.Error("no batch specified. use -seed or -sync-rankings")
+	if !*syncRankings && !*doSeed && !*gcOutbox {
+		slog.Error("no batch specified. use -seed, -sync-rankings or -gc-outbox")
 		os.Exit(1)
 	}
 
@@ -66,6 +67,21 @@ func main() {
 		seeder := seed.NewSeeder(db, log)
 		if err := seeder.Seed(ctx, seed.Params{Users: *seedUsers, Guilds: *seedGuilds}); err != nil {
 			log.Error("seeding failed", slog.Any("error", err))
+			os.Exit(1)
+		}
+		return
+	}
+
+	// outbox GC は Redis を使わないため、Redis 接続を張る前に処理して抜ける。
+	if *gcOutbox {
+		gc := batch.NewOutboxGC(
+			repository.NewOutboxRepository(db),
+			infraMysql.NewTransactor(db, log),
+			cfg.OutboxRetention,
+			log,
+		)
+		if err := gc.Run(ctx); err != nil {
+			log.Error("outbox gc failed", slog.Any("error", err))
 			os.Exit(1)
 		}
 		return
