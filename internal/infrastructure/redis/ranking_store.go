@@ -24,15 +24,6 @@ func NewRankingStore(client *redis.Client) *RankingStore {
 	return &RankingStore{client: client}
 }
 
-// IncrementGuildScore はギルドのスコアを加算する。
-func (r *RankingStore) IncrementGuildScore(ctx context.Context, guildID int64, score int64) error {
-	member := strconv.FormatInt(guildID, 10)
-	if err := r.client.ZIncrBy(ctx, rankingdomain.GuildRankingKey, float64(score), member).Err(); err != nil {
-		return fmt.Errorf("zincrby guild score failed: %w", err)
-	}
-	return nil
-}
-
 // SetGuildScore はギルドのスコアを上書きする（バッチ同期用）。
 func (r *RankingStore) SetGuildScore(ctx context.Context, guildID int64, score int64) error {
 	member := strconv.FormatInt(guildID, 10)
@@ -103,15 +94,6 @@ func (r *RankingStore) GetGuildTotalCount(ctx context.Context) (int64, error) {
 		return 0, fmt.Errorf("zcard guild failed: %w", err)
 	}
 	return count, nil
-}
-
-// IncrementUserPoints はユーザーのポイントを加算する。
-func (r *RankingStore) IncrementUserPoints(ctx context.Context, userID int64, points int64) error {
-	member := strconv.FormatInt(userID, 10)
-	if err := r.client.ZIncrBy(ctx, rankingdomain.UserRankingKey, float64(points), member).Err(); err != nil {
-		return fmt.Errorf("zincrby user points failed: %w", err)
-	}
-	return nil
 }
 
 // ApplyScoreDeltas はユーザー・ギルド双方の加算をパイプラインで1往復にまとめて反映する。

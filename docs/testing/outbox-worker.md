@@ -21,6 +21,76 @@ MySQL の outbox テーブルに積まれたイベントを読み、**MySQL の�
 一方 `RankingSyncer`（[ranking-sync-batch.md](ranking-sync-batch.md)）はスナップショット
 一貫性が必要なため、意図的に既定のままにしてある。
 
+## 0. 全経路にまたがる2つの不変条件
+
+個々の図に何度も現れるため、先に理由をまとめておく。
+
+### 0-1. Redis 反映は COMMIT の**後**（`applyRedisAfterCommit`）
+
+Redis は MySQL のトランザクションの外側にある。tx の**中**で加算すると
+「Redis 加算済み → `MarkProcessedByIDs` か COMMIT が失敗 → MySQL だけ巻き戻る」が起こり、
+イベントが未マークのまま再取得されて **Redis だけ二重に加算**される。しかも再試行のたびに
+積み増されるため、ずれは1回ぶんに留まらず累積する。
+
+そこで MySQL 側（加算・履歴・処理済みマーク）を COMMIT で確定させてから Redis を反映する。
+これにより誤差は次の性質を持つ側へ倒る。
+
+| | tx 内で反映（旧） | COMMIT 後に反映（現） |
+| --- | --- | --- |
+| 失敗時のずれ | 二重加算（過剰） | 欠落（過小） |
+| ずれの上限 | リトライのたびに累積 | 高々1バッチぶん・累積しない |
+
+COMMIT 後の Redis 失敗は**再試行しない**。MySQL は確定済みでロールバックできず、再適用すると
+今度こそ二重加算になるためで、ERROR ログのみに留める。欠落の復旧は `RankingSyncer`
+（[ranking-sync-batch.md](ranking-sync-batch.md)）の焼き直しに委ねる。
+
+副次的な効果として、Redis の往復が MySQL の tx から外れるぶんロック保持時間が短くなる。
+
+### 0-2. ドレインの枯渇判定は「前進件数」で見る
+
+`runOnce` は候補が枯れるまで `ListPending` を繰り返す（ドレイン）。この打ち切り条件を
+**取得件数**（`ListPending` が返した件数）だけで見てはならない。
+
+`ListPendingOutboxEvents` は `retry_count` を条件に含めず `ORDER BY id ASC` で拾うため、
+デコード不能な恒久失敗イベント（poison）は何度でも取得される。取得件数だけで判定すると、
+poison が `batchSize` 件以上先頭に滞留したときに毎回ちょうど `batchSize` 件が返り続け、
+**ドレインが永久に終わらない**（`tickTimeout` で打ち切られても `drainNow` がスリープなしで
+再入するため、`ListPending` と `IncrementRetry` を連打するビジーループになる）。
+
+そこで各経路は `listed`（取得件数）と `applied`（処理済みマークまで到達した件数）を
+別々に返し、`runOnce` は次の条件で判定する。
+
+| 条件 | 判定 | 理由 |
+| --- | --- | --- |
+| `listed == 0` | 枯渇 | 候補なし |
+| `listed < batchSize` | 枯渇 | 窓に空きがある = 残りがない |
+| `listed == batchSize && applied == 0` | **滞留**（`stalled`）。ドレインを打ち切る | 窓が恒久失敗で埋まっており、読み直しても必ず同じ結果になる |
+| それ以外 | ドレイン継続 | 前進している |
+
+`stalled` を `listed == batchSize` に限定するのが要点。`listed < batchSize`（poison が数件だけ）で
+滞留扱いすると、新規イベントは窓に入るのに処理されず `pollInterval` 待ちになってしまう。
+窓が満杯のときだけ「新規イベントは id 順で窓の外にあり、読み直しても無駄」が保証される。
+
+### 0-3. 滞留中は通知駆動のドレインを抑止する（`Run`）
+
+打ち切っただけでは足りない。`OutboxSubscriber` はバッファ1のチャネルへノンブロッキング送信する
+実装で、API の書き込みが続く限り `Run` の `select` にはほぼ常に通知が入っている。滞留状態で
+通知を受けるたびに再入すると、結局スリープなしで同じ窓を読み直し続けることになる。
+
+そのため `Run` は直近のドレインが滞留で終わったかを保持し、**滞留中は通知を捨てて ticker まで待つ**。
+滞留中は新規イベントも窓の外にあって処理できないため、通知を捨てても失うものはない。
+ticker では必ず再試行するので、運用側で poison を除去すれば `pollInterval` 以内に復帰する。
+
+> **時間ベースのバックオフを採らない理由**: `.golangci.yml` の forbidigo が `time.Now` を禁止しており、Clock インターフェースは未実装。
+> <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal cmd configs --include=*.go --exclude=*_test.go -->
+> バックオフのために Clock を新設すると usecase の interface 追加と infrastructure 実装が
+> 必要になり、変更の範囲が本質から外れる。既存の ticker を再開トリガに使えば
+> 新しい依存を作らずに済む。
+
+**根治ではない。** 窓が poison で埋まると後続イベントが処理されない head-of-line blocking は
+残ったままで、本節が止めるのは「そのあいだ DB を叩き続けること」だけ。根治は
+`ListPending` から `retry_count` 上限超過を除外する max retry / DLQ（§4）。
+
 ## 1. `Run`（ループ）
 
 ```mermaid
@@ -30,45 +100,53 @@ flowchart TD
     B -- Yes --> C2[通知チャネルを取得]
     C --> D[初回 drainNow<br/>ティックを待たない]
     C2 --> D
-    D --> L{select}
+    D --> S[stalled を記録]
+    S --> L{select}
     L -- ctx.Done --> Z([nil を返して終了])
-    L -- ticker --> T[drainNow]
-    L -- 通知あり --> N[drainNow]
+    L -- ticker --> T[drainNow<br/>滞留中でも必ず再試行]
+    L -- 通知あり --> NQ{stalled?}
     L -- 通知チャネルが閉じた --> X[notifyCh = nil<br/>以降ポーリングのみ]
     X --> L
+    NQ -- Yes --> ND[通知を捨てる<br/>読み直しても同じ結果]
+    NQ -- No --> N[drainNow]
+    ND --> L
     T -- err（Canceled 以外） --> TE[ERROR ログ<br/>ループは止めない]
     N -- err（Canceled 以外） --> NE[ERROR ログ<br/>ループは止めない]
-    T --> L
-    N --> L
-    TE --> L
-    NE --> L
+    T --> S
+    N --> S
+    TE --> S
+    NE --> S
 ```
 
 **設計上の要点**:
 
 - `drainNow` の失敗は**ログのみでループを継続する**。一過性の DB/Redis 障害で
-  worker プロセスが落ちてはならない。ticker 経路と通知経路には**独立したエラーログの分岐がある**
-  ので、両方を通す必要がある
+  worker プロセスが落ちてはならない。ticker 経路・通知経路の双方が同じ扱いになることを
+  両方のテストで通す（実装は共通ヘルパー `drainAndLog` に集約してあるが、
+  呼び分けの分岐は経路ごとに独立しているため両方通す必要がある）
 - 各トリガは `runOnce` を1回ではなく **`drainNow`（枯れるまで自走）** で呼ぶ。`runOnce` は
   `tickTimeout` で打ち切られるため1回で枯れるとは限らず、打ち切り時点で次のトリガを待つと
   通知が途切れたタイミングでバックログの消化が `pollInterval`（既定10分）停止する
   （実測で 8,959 件が 440 秒間まったく処理されない状態が発生した）
+- **滞留中（`stalled`）は通知を捨て、ticker でのみ再試行する**（§0-3）。
+  エラーで終わった場合は `stalled` を立てない（次の通知で普通に再試行してよい）
 
-| # | 条件 | 期待結果 | 対応テスト |
-| --- | --- | --- | --- |
-| 1 | `Subscribe` が失敗 | ポーリングのみで継続する | `TestWorker_Run_Subscribe_failure` |
-| 2 | 通知でティックが起きる | `runOnce` が走る | `TestWorker_Run_notify_triggered` |
-| 3 | 通知チャネルが閉じる | 以降ポーリングのみで継続する | `TestWorker_Run_notify_channel_closed` |
-| 4 | ticker でティックが起きる | `runOnce` が走る | `TestWorker_Run_ticker_driven` |
-| 5 | **ticker 経由の `runOnce` が失敗** | エラーを返さずループ継続 | `TestWorker_Run_ティック処理の失敗はループを止めない/ticker 経由で runOnce が失敗しても継続する` |
-| 6 | **通知経由の `runOnce` が失敗** | エラーを返さずループ継続 | `TestWorker_Run_ティック処理の失敗はループを止めない/通知経由で runOnce が失敗しても継続する` |
-| 7 | `ctx` がキャンセルされる | `nil` を返して終了 | 各テストの `stopAndWait` |
-| 8 | **ティック期限切れ後も枯れるまで自走する** | `pollInterval` を待たずに次のティックへ入る | `TestWorker_drainNow_ティック期限切れ後も自走する` |
+| # | 条件 | 図のパス | 期待結果 | 対応テスト |
+| --- | --- | --- | --- | --- |
+| 1 | `Subscribe` が失敗 | `B→C` | ポーリングのみで継続する | `TestWorker_Run_Subscribe_failure` |
+| 2 | 通知チャネルが閉じる | `L→X` | 以降ポーリングのみで継続する | `TestWorker_Run_notify_channel_closed` |
+| 3 | 通知でティックが起きる | `L→NQ→N` | `drainNow` が走る | `TestWorker_Run_notify_triggered` |
+| 4 | ticker でティックが起きる | `L→T` | `drainNow` が走る | `TestWorker_Run_ticker_driven` |
+| 5 | ticker 経由の `drainNow` が失敗 | `T→TE` | エラーを返さずループ継続 | `TestWorker_Run_ティック処理の失敗はループを止めない/ticker 経由で runOnce が失敗しても継続する` |
+| 6 | 通知経由の `drainNow` が失敗 | `N→NE` | エラーを返さずループ継続 | `TestWorker_Run_ティック処理の失敗はループを止めない/通知経由で runOnce が失敗しても継続する` |
+| 7 | **滞留後に通知が来る** | `L→NQ→ND` | 通知を捨てる。`ListPending` を再発行しない | `TestWorker_Run_滞留中は通知を捨てticker で再開する` |
+| 8 | ティック期限切れ後も枯れるまで自走する | `T→S→L` | `pollInterval` を待たずに次のティックへ入る | `TestWorker_drainNow_ティック期限切れ後も自走する` |
+| 9 | `ctx` がキャンセルされる | `L→Z` | `nil` を返して終了 | 各テストの `stopAndWait` |
 
 ## 2. `runOnce`（1ティックぶんの処理）
 
 `runOnce` はバッチ経路を回し、失敗したときだけイベント単位経路へ退避する。
-どちらも `batchSize` 件ずつ処理し、取得件数が `batchSize` 未満になれば「枯れた」と判定する。
+どちらの経路も `(listed, applied)` を返し、判定は §0-2 の表に従う。
 
 ```mermaid
 flowchart TD
@@ -83,11 +161,12 @@ flowchart TD
     B -- ok --> C
 
     P -- err --> E2((absorbTickDeadline を通して返す))
-    P -- ok --> C{処理件数 n}
+    P -- ok --> C{listed / applied}
 
-    C -- n == 0 --> Z([drained=true])
-    C -- n < batchSize --> Z
-    C -- n == batchSize --> B
+    C -- listed == 0 --> Z([drained=true, stalled=false])
+    C -- listed < batchSize --> Z
+    C -- listed == batchSize<br/>かつ applied == 0 --> SW[WARN ログ<br/>drain stalled] --> ZS([drained=true, **stalled=true**])
+    C -- それ以外 --> B
 ```
 
 **設計上の要点**（テストで守る不変条件）:
@@ -98,14 +177,16 @@ flowchart TD
   永久に前進しない head-of-line blocking が発生していた）
 - ティック期限切れは**エラーではなく打ち切り**。`drained=false` で復帰し `drainNow` が続ける。
   per-event / per-batch tx のため打ち切りによる取りこぼしは生じない
-- `n == batchSize` の間はドレインを続ける。`batchSize` 未満で初めて枯渇と判定する
+- **判定に使うのは `applied`（前進件数）であって `listed`（取得件数）ではない**（§0-2）。
+  `listed` だけで判定する実装に戻すと、全件デコード不能なバッチでドレインが終わらなくなる
 
 | # | 条件 | 図のパス | 期待結果 | テスト |
 | --- | --- | --- | --- | --- |
 | 1 | `ListPending` がエラー | `B→E1` 相当 | ティックを中断（MySQL/Redis に到達しない） | `TestWorker_runOnce_ListPendingエラー` |
-| 2 | 候補が `batchSize` ちょうど続く | `C→B` のループ | 枯れるまで繰り返す | `TestWorker_runOnce_候補が枯れるまでドレインする` |
-| 3 | バッチ適用が失敗 | `B→W→P` | フォールバックで同じイベントが前進する | `TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替わり処理が前進する` |
-| 4 | `tickTimeout` の適用 | `A2→A3` | deadline 付き ctx が渡る | `TestWorker_runOnce_appliesTickTimeout` |
+| 2 | `tickTimeout` の適用 | `A2→A3` | deadline 付き ctx が渡る | `TestWorker_runOnce_appliesTickTimeout` |
+| 3 | **窓が全件デコード不能で埋まる** | `C→SW→ZS` | 1巡で打ち切る（`ListPending` は1回だけ） | `TestWorker_runOnce_全件前進しなければドレインを打ち切る` |
+| 4 | 候補が `batchSize` ちょうど続く | `C→B` のループ | 枯れるまで繰り返す | `TestWorker_runOnce_候補が枯れるまでドレインする` |
+| 5 | バッチ適用が失敗 | `B→W→P` | フォールバックで同じイベントが前進する | `TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替わり処理が前進する` |
 
 ### 2-1. バッチ経路（`applyBatch`・通常時）
 
@@ -114,7 +195,7 @@ flowchart TD
     BA[applyBatch 開始] --> B1[[DoInTx: READ COMMITTED]]
     B1 --> B2[repo.ListPending<br/>FOR UPDATE SKIP LOCKED = そのまま claim]
     B2 -- err --> BE1((list pending エラー))
-    B2 -- 0 件 --> BZ([count=0 を返す])
+    B2 -- 0 件 --> BZ([listed=0, applied=0])
     B2 -- ok --> B3[buildBatchWork<br/>ギルド／ユーザー単位に合算]
 
     B3 -- 適用対象が 0 件 --> BC
@@ -122,22 +203,24 @@ flowchart TD
     M1 -- err --> BE2((バッチ全体をロールバック))
     M1 -- ok --> M2[rankingRepo.BulkInsertGuildScoreHistories<br/>MySQL・イベント単位]
     M2 -- err --> BE2
-    M2 -- ok --> R[store.ApplyScoreDeltas<br/>Redis パイプライン1往復]
-    R -- err --> BE2
-    R -- ok --> MK[repo.MarkProcessedByIDs<br/>1文で一括マーク]
+    M2 -- ok --> MK[repo.MarkProcessedByIDs<br/>1文で一括マーク]
     MK -- err --> BE2
     MK -- ok --> BC[[COMMIT]]
 
-    BC --> RT[デコード不能イベントを個別に IncrementRetry<br/>**コミット後**に実行]
-    RT --> BZ2([count を返す])
+    BC --> R[applyRedisAfterCommit<br/>store.ApplyScoreDeltas・**tx の外**]
+    R -- err --> RE[ERROR ログのみ<br/>再試行しない]
+    R -- ok --> RT
+    RE --> RT[デコード不能イベントを個別に IncrementRetry]
+    RT --> BZ2([listed=取得件数, applied=適用件数])
 ```
 
 **設計上の要点**（テストで守る不変条件）:
 
 - **スコアは合算するが履歴は合算しない**。加算は可換なのでギルド／ユーザー単位にまとめて
   DB 往復を減らせるが、履歴は「誰がいつ何点入れたか」を残す必要がある
-- **MySQL 先・Redis 後**。Redis 失敗時にバッチ tx がロールバックされ MySQL も巻き戻り、
-  未マークのまま次ティックで再適用される（exactly-once）
+- **MySQL は tx 内・Redis は COMMIT 後**（§0-1）。tx 内のどのステップで失敗しても
+  `ApplyScoreDeltas` に到達しないことが二重加算を防ぐ要。**逆に Redis の失敗では
+  ロールバックもフォールバックもしない**（MySQL は確定済みで、再適用は二重加算になる）
 - **デコード不能イベントはバッチに混ぜない**。未知の `event_type` / 壊れた payload は
   決定的な失敗なので、適用対象から外して**コミット後に**個別で retry 記録する。
   バッチ tx に混ぜると巻き添えでロールバックされる
@@ -146,13 +229,14 @@ flowchart TD
 
 | # | 条件 | 図のパス | 期待結果 | テスト |
 | --- | --- | --- | --- | --- |
-| 1 | 同一ギルド／ユーザーの複数イベント | `B3→M1→…→BC` | スコアは合算、履歴はイベント件数ぶん、`MarkProcessedByIDs` に全 ID | `TestWorker_applyBatch_同一ギルドは合算され履歴はイベント単位で作られる` |
-| 2 | 正常系の適用順序 | `M1→M2→R→MK` | MySQL 2本 → Redis → マークの順（`gomock.InOrder`） | `TestWorker_applyBatch_適用順序_MySQL2本_Redis_MarkProcessedByIDs` |
-| 3 | デコード不能イベントが混在 | `B3→…→BC→RT` | 正常なイベントだけ適用され、壊れたものは個別 retry | `TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる` |
-| 4 | 全件デコード不能 | `B3→BC→RT` | MySQL も Redis も呼ばれない | `TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない` |
-| 5 | 除外イベントの `IncrementRetry` が失敗 | `RT` | ログのみ。エラーを伝播しない | `TestWorker_applyBatch_IncrementRetry失敗はログのみ` |
-| 6 | `ListPending` が空 | `B2→BZ` | 即座に終了。tx は1回だけ | `TestWorker_applyBatch_pending無しは即座に終了する` |
-| 7 | `M1` / `M2` / `R` / `MK` の各失敗 | `→BE2` | 全副作用が巻き戻り、フォールバック経路へ切り替わる | `TestWorker_applyBatch_各ステップの失敗でフォールバック経路に切り替わる`（4 サブテスト） |
+| 1 | `ListPending` が空 | `B2→BZ` | 即座に終了。tx は1回だけ | `TestWorker_applyBatch_pending無しは即座に終了する` |
+| 2 | 全件デコード不能 | `B3→BC→RT` | MySQL も Redis も呼ばれない。`applied=0` | `TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない` |
+| 3 | 除外イベントの `IncrementRetry` が失敗 | `RT` | ログのみ。エラーを伝播しない | `TestWorker_applyBatch_IncrementRetry失敗はログのみ` |
+| 4 | **COMMIT 後の Redis 反映が失敗** | `R→RE→RT` | ERROR ログのみ。エラーを返さずフォールバックもしない | `TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォールバックしない` |
+| 5 | `M1` / `M2` / `MK` の各失敗 | `→BE2` | 全副作用が巻き戻り、**Redis に到達せず**フォールバック経路へ切り替わる | `TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォールバックする`（3 サブテスト） |
+| 6 | デコード不能イベントが混在 | `B3→…→BC→R→RT` | 正常なイベントだけ適用され、壊れたものは個別 retry | `TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる` |
+| 7 | 正常系の適用順序 | `M1→M2→MK→BC→R` | MySQL 2本 → マーク → COMMIT → Redis の順（`gomock.InOrder`） | `TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後にRedis` |
+| 8 | 同一ギルド／ユーザーの複数イベント | 同上 | スコアは合算、履歴はイベント件数ぶん、`MarkProcessedByIDs` に全 ID | `TestWorker_applyBatch_同一ギルドは合算され履歴はイベント単位で作られる` |
 
 ### 2-2. イベント単位経路（`applyPerEvent`・バッチ失敗時のフォールバック）
 
@@ -162,15 +246,15 @@ flowchart TD
 flowchart TD
     PA[applyPerEvent 開始] --> LC[[listCandidates tx]]
     LC -- err --> PE0((ティックを中断))
-    LC -- 0 件 --> PZ0([count=0。tx を追加で張らない])
+    LC -- 0 件 --> PZ0([listed=0, applied=0。tx を追加で張らない])
     LC -- ok --> PB[processBatch<br/>concurrency 本で並列]
 
     PB --> P1[[イベント単位 tx: DoInTx]]
     P1 --> P2[repo.ClaimByID id<br/>FOR UPDATE SKIP LOCKED]
     P2 -- err --> PE1((claim エラー<br/>ティックを中断))
-    P2 -- found=false --> PS[何もせず COMMIT<br/>処理済み / 他 worker がロック中]
-    PS --> PZ([count を返す])
-    P2 -- found=true --> H{handleEvent}
+    P2 -- found=false --> PS[何もせず COMMIT<br/>処理済み / 他 worker がロック中<br/>**前進として数える**]
+    PS --> PZ([listed / applied を返す])
+    P2 -- found=true --> H{applyEventInTx}
 
     H -- 未知の event_type --> RB
     H -- payload の Unmarshal 失敗 --> RB
@@ -178,15 +262,14 @@ flowchart TD
     M1 -- err --> RB
     M1 -- ok --> M2[rankingRepo.InsertGuildScoreHistory]
     M2 -- err --> RB
-    M2 -- ok --> R1[store.IncrementUserPoints]
-    R1 -- err --> RB
-    R1 -- ok --> R2[store.IncrementGuildScore]
-    R2 -- err --> RB
-    R2 -- ok --> MK[repo.MarkProcessed]
+    M2 -- ok --> MK[repo.MarkProcessed]
 
     MK -- err --> PE2((mark processed エラー<br/>ティックを中断))
     MK -- ok --> CM[[COMMIT]]
-    CM --> PZ
+    CM --> R[applyRedisAfterCommit<br/>store.ApplyScoreDeltas・**tx の外**]
+    R -- err --> RE[ERROR ログのみ<br/>retry 記録もしない]
+    R -- ok --> PZ
+    RE --> PZ
 
     RB[[ROLLBACK<br/>MySQL 副作用を巻き戻す]] --> W[WARN ログ]
     W --> RT[[別 tx: repo.IncrementRetry<br/>last_error 記録]]
@@ -200,29 +283,32 @@ flowchart TD
 - **この経路の存在意義は head-of-line blocking の回避**。バッチは1件でも失敗すると全体が
   ロールバックされるため、恒久失敗イベントが混ざるとそのバッチが永久に前進しない。
   1件ずつ独立した tx にすれば失敗イベントを隔離して残りを前進させられる
-- **MySQL 先・Redis 後**（バッチ経路と同じ理由）
-- `handleEvent` の失敗は**別 tx** で `IncrementRetry` する。同一 tx だと ROLLBACK で
+- **MySQL は tx 内・Redis は COMMIT 後**（§0-1）。バッチ経路と同じ理由で、Redis 反映は
+  `MarkProcessed` の COMMIT が確定してから1回だけ行い、失敗しても retry 記録に回さない
+- `applyEventInTx` の失敗は**別 tx** で `IncrementRetry` する。同一 tx だと ROLLBACK で
   retry 記録も巻き戻る
 - `IncrementRetry` 自体の失敗は**ログのみ**（次ティックで再処理される）。一方
   `ClaimByID` / `MarkProcessed` の失敗は**ティックを中断する**（DB が壊れている）
+- **`applied` に数えるのは「`MarkProcessed` が成功した」か「`found=false`」のときだけ**。
+  `applyEventInTx` が失敗したイベントは前進していないので数えない（§0-2 の判定に使う）
 
 #### テスト仕様表
 
 `TestWorker_applyPerEvent_フォールバック経路_正常系_異常系` のテーブルと 1 対 1 で対応する。
+`listed` / `applied` は `ApplyPerEventForTest` の戻り値。
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
-| 1 | 正常系 | `…→M1→M2→R1→R2→MK→CM` | `MarkProcessed` される | MySQL 2件 → Redis 2件 の**順序**（`gomock.InOrder`） |
-| 2 | 先頭イベントが恒久失敗 | 1件目 `→RB→RT`、2件目 `→MK→CM` | 後続の候補が処理される | 先頭で `IncrementRetry`／後続で `MarkProcessed` |
-| 3 | `ClaimByID` が `found=false` | `P2→PS→PZ` | 何もせず skip | `handleEvent` / `MarkProcessed` / `IncrementRetry` のいずれも呼ばれない |
-| 4 | 候補なし | `LC→PZ0` | 0 件を返す | イベント単位 tx を張らない |
-| 5 | MySQL `IncrementGuildScore` が失敗 | `M1→RB→RT` | retry 記録 | `InsertGuildScoreHistory` 以降に到達しない |
-| 6 | MySQL `InsertGuildScoreHistory` が失敗 | `M2→RB→RT` | retry 記録 | Redis に到達しない |
-| 7 | Redis `IncrementUserPoints` が失敗 | `R1→RB→RT` | retry 記録（MySQL 加算は ROLLBACK） | `store.IncrementGuildScore` に到達しない |
-| 8 | Redis `IncrementGuildScore` が失敗 | `R2→RB→RT` | 同上 | `MarkProcessed` に到達しない |
-| 9 | 未知の `event_type` | `H→RB→RT` | retry 記録 | `last_error` に `ErrUnknownEventType` の文言が残る |
-| 10 | **payload が不正で Unmarshal 失敗** | `H→RB→RT` | retry 記録 | MySQL / Redis の副作用が一切呼ばれない |
-| 11 | `IncrementRetry` が失敗 | `RT→RTE` | **エラーを伝播させない**（ログのみ） | — |
+| 1 | 候補なし | `LC→PZ0` | `listed=0, applied=0` | イベント単位 tx を張らない |
+| 2 | `ClaimByID` が `found=false` | `P2→PS→PZ` | `listed=1, applied=1`（前進扱い） | `applyEventInTx` / `MarkProcessed` / `IncrementRetry` のいずれも呼ばれない |
+| 3 | 未知の `event_type` | `H→RB→RT` | `listed=1, applied=0` | `last_error` に `ErrUnknownEventType` の文言が残る |
+| 4 | payload が不正で Unmarshal 失敗 | `H→RB→RT` | 同上 | MySQL / Redis の副作用が一切呼ばれない |
+| 5 | `IncrementRetry` が失敗 | `RT→RTE` | **エラーを伝播させない**（ログのみ） | — |
+| 6 | MySQL `IncrementGuildScore` が失敗 | `M1→RB→RT` | `listed=1, applied=0` | `InsertGuildScoreHistory` 以降に到達しない |
+| 7 | MySQL `InsertGuildScoreHistory` が失敗 | `M2→RB→RT` | 同上 | `MarkProcessed` / Redis に到達しない |
+| 8 | **COMMIT 後の Redis 反映が失敗** | `R→RE→PZ` | `listed=1, applied=1`。ログのみ | `IncrementRetry` が呼ばれない（再適用しない） |
+| 9 | 正常系 | `…→M1→M2→MK→CM→R` | `listed=1, applied=1` | MySQL 2件 → `MarkProcessed` → Redis の**順序**（`gomock.InOrder`） |
+| 10 | 先頭イベントが恒久失敗 | 1件目 `→RB→RT`、2件目 `→MK→CM→R` | `listed=2, applied=1` | 先頭で `IncrementRetry`／後続で `MarkProcessed` |
 
 手続きが異なるため別テスト関数に切り出しているもの:
 
@@ -239,22 +325,41 @@ flowchart TD
 バッチ経路は1ティック1回、フォールバックに落ちると
 「バッチ適用 1 + `listCandidates` 1 + 候補数 + retry 記録の回数」になり、
 期待回数が仕様表の「どこまで進むか」と対応する。
+`applyRedisAfterCommit` は tx の外なので `DoInTx` の回数を増やさない。
 
 ## 3. 本設計文書の作成で見つかった問題
 
 | 種別 | 内容 | 対応 |
 | --- | --- | --- |
-| **パスの欠落** | **payload が不正で `Unmarshal` に失敗する経路**（§2-2 の表のケース 10）が未検証だった。`handleEvent` の `return err` が一度も実行されていない | 追加 |
-| **パスの欠落** | ticker 経由・通知経由それぞれの「`runOnce` が失敗したときにログのみで継続する」分岐（`Run` の表のケース 5・6）が未検証だった。既存の ticker / notify のテストは**成功パスしか通していなかった** | 追加 |
+| **パスの欠落** | **payload が不正で `Unmarshal` に失敗する経路**（§2-2 の表のケース 4）が未検証だった。`applyEventInTx`（当時は `handleEvent`）の `return err` が一度も実行されていない | 追加 |
+| **パスの欠落** | ticker 経由・通知経由それぞれの「`runOnce` が失敗したときにログのみで継続する」分岐（§1 の表のケース 5・6）が未検証だった。既存の ticker / notify のテストは**成功パスしか通していなかった** | 追加 |
+| **不変条件の誤り** | Redis 反映を tx 内に置いていたため、`MarkProcessedByIDs` / COMMIT の失敗で **Redis だけ二重加算**される窓があった（§0-1）。旧実装（イベント単位）にも同じ窓があったが、バッチ化で一度に最大 `batchSize` 件へ影響が拡大していた | COMMIT 後へ移動 |
+| **回帰** | ドレインの枯渇判定を**取得件数**で行っていたため、全件デコード不能なバッチでループが終わらなかった（§0-2）。1ティック1回だった旧実装には無く、ドレイン導入で生じた回帰 | 前進件数での判定 + 滞留時の通知抑止 |
 | **テーブル駆動の形** | dispatch テーブルの各ケースが `setup func(t, ctrl) *workeroutbox.Worker` を持ち、モックの組み立て手順をテーブル側に書いていた | 一度データのみのテーブルへ寄せたが、ギルド集計の非同期化とバッチ経路の追加で1ケースあたりの組み立てが分岐込みで長くなり、`setup` 形式へ戻している。**データのみのテーブルに戻すのは別タスク**（[README.md](README.md) の縮約の罠に該当するため、縮約でカバレッジが落ちないことを確認してから行う） |
 
-### 【要対応】ポイズンメッセージ
+## 4. 未対応（本実装の範囲外）
 
-§2-2 の表のケース 10 で明らかになったとおり、**payload が壊れたイベントは `IncrementRetry` され続ける**。
-現状 max retry の上限も DLQ（Dead Letter Queue）も無いため、
+### 【要対応】ポイズンメッセージ — max retry / DLQ（優先度: 高）
+
+§2-2 の表のケース 4 で明らかになったとおり、**payload が壊れたイベントは `IncrementRetry` され
+続ける**。`ListPendingOutboxEvents` が `retry_count` を条件に含めないため、
 `FOR UPDATE SKIP LOCKED` で毎回拾われては失敗し、outbox に永久に残り続ける。
-バッチ経路では決定的な失敗として適用対象から除外され、フォールバック経路でも id 指定 claim により
-**後続イベントは巻き添えにならない**（§2-2 の表のケース 2）が、壊れたイベント自身が消えるわけではない。
 
-これは**テストで検証できる範囲の外にある設計上の課題**なので、
-テストを足すのではなく仕様として対応を決める必要がある（優先度: 高）。
+§0-2 / §0-3 で入れたのは「そのあいだ DB を叩き続けないための歯止め」であって根治ではない。
+残っている問題は次の2つ。
+
+| 未対応の穴 | 現状 | 根治策 |
+| --- | --- | --- |
+| **head-of-line blocking** | poison が `batchSize` 件以上先頭を占めると、後続の正常なイベントが永久に処理されない（滞留と判定して打ち切るだけ） | `ListPending` から `retry_count >= 上限` を除外する |
+| **retry 記録の再実行** | poison が窓に残る限り、ドレインのたびに poison 件数ぶんの `IncrementRetry` tx が発行される | 同上（除外されれば拾われなくなる） |
+
+いずれも `ListPendingOutboxEvents` へ `retry_count` 上限フィルタを足し、上限超過を DLQ 相当の
+扱いにすれば同時に解消する。クエリ・sqlc 生成物・設定値・`Repository` インターフェースに
+またがるため別タスクとして扱う。
+
+### Redis 欠落の自動復旧
+
+§0-1 のとおり COMMIT 後の Redis 失敗はイベントを再処理せず ERROR ログのみに留めるため、
+その差分は `RankingSyncer` を実行するまで残る。`RankingSyncer` は現状バッチの手動起動であり、
+Redis 揮発・欠落の**検知と自動再構築は未実装**（`SyncAll` の呼び出し元は `cmd/batch` の手動実行のみ）。
+<!-- ssot-assert: manual '「欠落を検知して自動で再構築する仕組みが無い」ことは、特定の呼び出しの有無では判定できない（cmd/batch からの手動実行は存在する）。スケジューラ導入時に人手で更新する' -->

@@ -436,34 +436,6 @@ func (mr *MockRankingStoreMockRecorder) GetUserTotalCount(ctx any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserTotalCount", reflect.TypeOf((*MockRankingStore)(nil).GetUserTotalCount), ctx)
 }
 
-// IncrementGuildScore mocks base method.
-func (m *MockRankingStore) IncrementGuildScore(ctx context.Context, guildID, score int64) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IncrementGuildScore", ctx, guildID, score)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// IncrementGuildScore indicates an expected call of IncrementGuildScore.
-func (mr *MockRankingStoreMockRecorder) IncrementGuildScore(ctx, guildID, score any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IncrementGuildScore", reflect.TypeOf((*MockRankingStore)(nil).IncrementGuildScore), ctx, guildID, score)
-}
-
-// IncrementUserPoints mocks base method.
-func (m *MockRankingStore) IncrementUserPoints(ctx context.Context, userID, points int64) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IncrementUserPoints", ctx, userID, points)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// IncrementUserPoints indicates an expected call of IncrementUserPoints.
-func (mr *MockRankingStoreMockRecorder) IncrementUserPoints(ctx, userID, points any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IncrementUserPoints", reflect.TypeOf((*MockRankingStore)(nil).IncrementUserPoints), ctx, userID, points)
-}
-
 // SetGuildScore mocks base method.
 func (m *MockRankingStore) SetGuildScore(ctx context.Context, guildID, score int64) error {
 	m.ctrl.T.Helper()

@@ -67,9 +67,6 @@ type Repository interface {
 
 // RankingStore は Redis 操作のインターフェース。
 type RankingStore interface {
-	// IncrementGuildScore はギルドのスコアを加算する。
-	IncrementGuildScore(ctx context.Context, guildID int64, score int64) error
-
 	// SetGuildScore はギルドのスコアを上書きする（バッチ同期用）。
 	SetGuildScore(ctx context.Context, guildID int64, score int64) error
 
@@ -84,9 +81,6 @@ type RankingStore interface {
 
 	// GetGuildTotalCount はランキング登録済みのギルド総数を取得する。
 	GetGuildTotalCount(ctx context.Context) (int64, error)
-
-	// IncrementUserPoints はユーザーのポイントを加算する。
-	IncrementUserPoints(ctx context.Context, userID int64, points int64) error
 
 	// ApplyScoreDeltas はユーザー・ギルド双方の加算をまとめて反映する。
 	// 実装はパイプラインで1往復に集約すること（イベント単位に往復すると

@@ -12,21 +12,6 @@ import (
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
 )
 
-func TestRankingStore_IncrementGuildScore_スコア累積(t *testing.T) {
-	t.Parallel()
-
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	require.NoError(t, store.IncrementGuildScore(ctx, 1, 100))
-	require.NoError(t, store.IncrementGuildScore(ctx, 1, 200))
-
-	score, found, err := store.GetGuildScore(ctx, 1)
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, int64(300), score)
-}
-
 func TestRankingStore_SetGuildScore_スコア上書き(t *testing.T) {
 	t.Parallel()
 
@@ -129,21 +114,6 @@ func TestRankingStore_GetGuildTotalCount(t *testing.T) {
 	count, err = store.GetGuildTotalCount(ctx)
 	require.NoError(t, err)
 	assert.Equal(t, int64(2), count)
-}
-
-func TestRankingStore_IncrementUserPoints_ポイント累積(t *testing.T) {
-	t.Parallel()
-
-	store, _ := newTestStore(t)
-	ctx := context.Background()
-
-	require.NoError(t, store.IncrementUserPoints(ctx, 10, 50))
-	require.NoError(t, store.IncrementUserPoints(ctx, 10, 75))
-
-	points, found, err := store.GetUserPoints(ctx, 10)
-	require.NoError(t, err)
-	assert.True(t, found)
-	assert.Equal(t, int64(125), points)
 }
 
 // TestRankingStore_ApplyScoreDeltas_ユーザーとギルド双方が1往復で反映される は
@@ -363,18 +333,6 @@ func TestRankingStore_GetUserTotalCount(t *testing.T) {
 	assert.Equal(t, int64(2), count)
 }
 
-func TestRankingStore_IncrementGuildScore_エラー伝播(t *testing.T) {
-	t.Parallel()
-
-	store, s := newTestStore(t)
-	ctx := context.Background()
-
-	s.SetError("ERR forced error")
-	err := store.IncrementGuildScore(ctx, 1, 100)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "zincrby guild score failed")
-}
-
 func TestRankingStore_SetGuildScore_エラー伝播(t *testing.T) {
 	t.Parallel()
 
@@ -397,18 +355,6 @@ func TestRankingStore_GetGuildTotalCount_エラー伝播(t *testing.T) {
 	_, err := store.GetGuildTotalCount(ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "zcard guild failed")
-}
-
-func TestRankingStore_IncrementUserPoints_エラー伝播(t *testing.T) {
-	t.Parallel()
-
-	store, s := newTestStore(t)
-	ctx := context.Background()
-
-	s.SetError("ERR forced error")
-	err := store.IncrementUserPoints(ctx, 1, 100)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "zincrby user points failed")
 }
 
 func TestRankingStore_SetUserPoints_エラー伝播(t *testing.T) {
