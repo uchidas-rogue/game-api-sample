@@ -48,6 +48,11 @@
 # 正規表現はシングルクォート必須（eval を使わずに安全に切り出すため）。
 # glob はクォートせずに書く（例: --exclude=*_test.go）。
 #
+# コードブロック（``` / ~~~）とインラインコード（`...`）の中に書いたものは
+# 「記法の説明」とみなし、評価しない（検査 3a）。記法を解説する指示書のために必要な除外だが、
+# 裏返すと **例示のつもりでコード表記に入れたディレクティブは黙って無視される**。
+# 実際に効かせたいディレクティブはコード表記の外に置くこと。
+#
 # 例:
 #   - `testcontainers-go` による実 DB/Redis テストは未導入。
 #     <!-- ssot-assert: absent-grep 'testcontainers' go.mod -->
@@ -315,8 +320,27 @@ eval_assert() {
 }
 
 # 3a. ssot-assert ディレクティブの評価
+#
+# 【コード表記の中の ssot-assert: は「記法の説明」であって指示ではない】
+# 指示書は記法そのものを説明する場所でもあるため、コードブロック（``` / ~~~）と
+# インラインコード（`...`）に囲まれた ssot-assert: は評価対象から外す。
+# 除外しないと、記法を説明した瞬間に「書式が壊れている」と報告される。
+#
+# 捕捉していた誤検出の実例:
+#   - .claude/commands/docs-ssot.md の WARN 振り分け表に
+#     「| 原理的に照合できない | `ssot-assert: manual '<理由>'` で理由を残す |」という行があり、
+#     HTML コメントではないため ERROR になっていた
+#
+# 【意図的に除外しないもの】
+# HTML コメントとして正しく切り出せた場合は、コード表記の判定に入る前に評価する。
+# 書き損じた実ディレクティブ（`<!--` を付け忘れた等）は従来どおり ERROR になる。
 for f in $ALL_DOCS; do
-  hits=$(grep -n 'ssot-assert:' "$f" || true)
+  # コードブロック内の行は最初から候補にしない（フェンス行自体も対象外）
+  hits=$(awk '
+    /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
+    fence { next }
+    /ssot-assert:/ { printf "%d:%s\n", NR, $0 }
+  ' "$f")
   [ -z "$hits" ] && continue
   while IFS= read -r line; do
     [ -z "$line" ] && continue
@@ -324,11 +348,15 @@ for f in $ALL_DOCS; do
     directive=$(printf '%s' "$body" \
       | sed -n 's/.*<!--[[:space:]]*ssot-assert:[[:space:]]*\(.*\)-->.*/\1/p' \
       | sed 's/[[:space:]]*$//')
-    if [ -z "$directive" ]; then
-      err "$f:$n ssot-assert の書式が壊れている（<!-- ssot-assert: 動詞 引数... --> の形にする）"
+    if [ -n "$directive" ]; then
+      eval_assert "$f" "$n" "$directive"
       continue
     fi
-    eval_assert "$f" "$n" "$directive"
+    # HTML コメントとして切り出せなかった。インラインコードを剥がしてなお
+    # ssot-assert: が残るなら、記法の説明ではなく書き損じたディレクティブとみなす。
+    if printf '%s' "$body" | sed 's/`[^`]*`//g' | grep -q 'ssot-assert:'; then
+      err "$f:$n ssot-assert の書式が壊れている（<!-- ssot-assert: 動詞 引数... --> の形にする）"
+    fi
   done <<EOF
 $hits
 EOF
