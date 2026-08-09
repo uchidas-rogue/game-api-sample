@@ -346,12 +346,12 @@ func TestRankingRepository_ListGuildsByIDs(t *testing.T) {
 	now := time.Now()
 
 	tests := []struct {
-		name      string
-		guildIDs  []int64
+		name       string
+		guildIDs   []int64
 		stubGuilds []sqlc.Guild
-		stubErr   error
-		wantCount int
-		wantErr   bool
+		stubErr    error
+		wantCount  int
+		wantErr    bool
 	}{
 		{
 			name:     "正常系: 複数ギルド取得",
@@ -363,10 +363,10 @@ func TestRankingRepository_ListGuildsByIDs(t *testing.T) {
 			wantCount: 2,
 		},
 		{
-			name:      "正常系: 空リスト",
-			guildIDs:  []int64{},
+			name:       "正常系: 空リスト",
+			guildIDs:   []int64{},
 			stubGuilds: []sqlc.Guild{},
-			wantCount: 0,
+			wantCount:  0,
 		},
 		{
 			name:     "異常系: DB エラーはラップして返す",

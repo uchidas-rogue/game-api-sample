@@ -17,9 +17,9 @@ import (
 // Worker は outbox_events をポーリングし、event_type に応じて副作用を実行する。
 //
 // 1ティックの処理は単一の DB トランザクション内で行う:
-//   1. ListPending で未処理イベントを FOR UPDATE SKIP LOCKED で取得（複数 worker 並行安全）
-//   2. event_type ごとに dispatch して Redis 反映等を実行
-//   3. 成功したイベントは MarkProcessed、失敗したものは IncrementRetry + last_error 記録
+//  1. ListPending で未処理イベントを FOR UPDATE SKIP LOCKED で取得（複数 worker 並行安全）
+//  2. event_type ごとに dispatch して Redis 反映等を実行
+//  3. 成功したイベントは MarkProcessed、失敗したものは IncrementRetry + last_error 記録
 //
 // max retry 上限・DLQ・処理済みレコードの GC は本実装では未対応（後続課題）。
 type Worker struct {

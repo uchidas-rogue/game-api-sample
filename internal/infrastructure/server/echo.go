@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,11 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 )
+
+// shutdownTimeout はグレースフルシャットダウンで処理中リクエストの完了を待つ上限。
+// この層固有の運用値なので server パッケージで定義する（AGENTS.md §2）。
+// 環境ごとに変える必要が出たら configs へ移す。
+const shutdownTimeout = 10 * time.Second
 
 // New はミドルウェア設定済みのEchoインスタンスを生成する。
 // アクセスログはslogへ流す。
@@ -67,7 +73,7 @@ func Run(ctx context.Context, e *echo.Echo, port int, logger *slog.Logger) error
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("starting http server", slog.String("addr", addr))
-		if err := e.Start(addr); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("failed to start server: %w", err)
 			return
 		}
@@ -76,7 +82,7 @@ func Run(ctx context.Context, e *echo.Echo, port int, logger *slog.Logger) error
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		logger.Info("shutting down http server")
 		if err := e.Shutdown(shutdownCtx); err != nil {

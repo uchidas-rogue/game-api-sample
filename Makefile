@@ -35,4 +35,5 @@ help:
 include make/app.mk
 include make/db.mk
 include make/docker.mk
+include make/docs.mk
 include make/terraform.mk

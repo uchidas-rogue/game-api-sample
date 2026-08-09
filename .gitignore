@@ -25,3 +25,5 @@
 crash.log
 crash.*.log
 # .terraform.lock.hcl は コミット対象（プロバイダのバージョン固定）
+
+.vscode
