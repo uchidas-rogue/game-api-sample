@@ -1,7 +1,7 @@
 # 負荷試験系（k6 + seed）。ROADMAP フェーズ3。
 # 詳細は loadtest/README.md を参照。
 
-.PHONY: load/seed load/warm load/smoke load/gacha load/points load/ranking
+.PHONY: load/seed load/warm load/smoke load/gacha load/points load/ranking load/watch
 
 K6           ?= k6
 LOADTEST_DIR ?= loadtest
@@ -35,3 +35,12 @@ load/points:
 ## ranking 負荷（読み取り系: Redis ZSet 参照）
 load/ranking:
 	$(K6_ENV) $(K6) run $(LOADTEST_DIR)/ranking.js
+
+# outbox バックログ計測。負荷シナリオと別ターミナルで併走させる。
+WATCH_OUT      ?= outbox_metrics.csv
+WATCH_DURATION ?= 900
+WATCH_INTERVAL ?= 1
+
+## outbox バックログ推移を CSV 記録（負荷シナリオと併走させる）
+load/watch:
+	$(LOADTEST_DIR)/watch_outbox.sh $(WATCH_OUT) $(WATCH_DURATION) $(WATCH_INTERVAL)

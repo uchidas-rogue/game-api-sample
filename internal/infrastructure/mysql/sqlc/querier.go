@@ -46,6 +46,7 @@ type Querier interface {
 	ListPendingOutboxEvents(ctx context.Context, limit int32) ([]ListPendingOutboxEventsRow, error)
 	ListUsersByIDs(ctx context.Context, ids []int64) ([]User, error)
 	MarkOutboxEventProcessed(ctx context.Context, id uint64) error
+	MarkOutboxEventsProcessedByIDs(ctx context.Context, ids []uint64) error
 	// 指定ユーザーの石残高を更新する。トランザクション内から呼び出す前提。
 	UpdateUserGems(ctx context.Context, arg UpdateUserGemsParams) error
 	UpsertGuildScore(ctx context.Context, arg UpsertGuildScoreParams) error

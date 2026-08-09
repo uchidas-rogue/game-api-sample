@@ -78,15 +78,20 @@ func (m *MockTransactor) EXPECT() *MockTransactorMockRecorder {
 }
 
 // DoInTx mocks base method.
-func (m *MockTransactor) DoInTx(ctx context.Context, fn func(shared.Tx) error) error {
+func (m *MockTransactor) DoInTx(ctx context.Context, fn func(shared.Tx) error, opts ...shared.TxOption) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DoInTx", ctx, fn)
+	varargs := []any{ctx, fn}
+	for _, a := range opts {
+		varargs = append(varargs, a)
+	}
+	ret := m.ctrl.Call(m, "DoInTx", varargs...)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // DoInTx indicates an expected call of DoInTx.
-func (mr *MockTransactorMockRecorder) DoInTx(ctx, fn any) *gomock.Call {
+func (mr *MockTransactorMockRecorder) DoInTx(ctx, fn any, opts ...any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DoInTx", reflect.TypeOf((*MockTransactor)(nil).DoInTx), ctx, fn)
+	varargs := append([]any{ctx, fn}, opts...)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DoInTx", reflect.TypeOf((*MockTransactor)(nil).DoInTx), varargs...)
 }

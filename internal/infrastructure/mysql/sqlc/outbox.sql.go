@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"strings"
 )
 
 const claimPendingOutboxEventByID = `-- name: ClaimPendingOutboxEventByID :one
@@ -142,5 +143,26 @@ WHERE id = ?
 
 func (q *Queries) MarkOutboxEventProcessed(ctx context.Context, id uint64) error {
 	_, err := q.db.ExecContext(ctx, markOutboxEventProcessed, id)
+	return err
+}
+
+const markOutboxEventsProcessedByIDs = `-- name: MarkOutboxEventsProcessedByIDs :exec
+UPDATE outbox_events
+SET processed_at = NOW(6)
+WHERE id IN (/*SLICE:ids*/?)
+`
+
+func (q *Queries) MarkOutboxEventsProcessedByIDs(ctx context.Context, ids []uint64) error {
+	query := markOutboxEventsProcessedByIDs
+	var queryParams []interface{}
+	if len(ids) > 0 {
+		for _, v := range ids {
+			queryParams = append(queryParams, v)
+		}
+		query = strings.Replace(query, "/*SLICE:ids*/?", strings.Repeat(",?", len(ids))[1:], 1)
+	} else {
+		query = strings.Replace(query, "/*SLICE:ids*/?", "NULL", 1)
+	}
+	_, err := q.db.ExecContext(ctx, query, queryParams...)
 	return err
 }

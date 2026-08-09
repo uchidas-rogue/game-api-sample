@@ -284,7 +284,7 @@ func expectMultiCalls(tc multiCase, repo *mockuc.MockRepository, tx *mockshared.
 	}
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error) error {
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
 			return fn(nil)
 		})
 
@@ -386,7 +386,7 @@ func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で渡され�
 	gems := gachadomain.GemCostFor(pullCount) + 100
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error) error { return fn(nil) })
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error { return fn(nil) })
 	repo.EXPECT().GetUserForUpdate(gomock.Any(), gomock.Any(), testUserID).
 		Return(gachadomain.User{ID: testUserID, GemNum: gems}, nil)
 	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
@@ -426,7 +426,7 @@ func TestNewUsecase_Randomizerがnilなら既定実装を使う(t *testing.T) {
 
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error) error { return fn(nil) })
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error { return fn(nil) })
 	repo.EXPECT().GetUserForUpdate(gomock.Any(), gomock.Any(), testUserID).
 		Return(gachadomain.User{ID: testUserID, GemNum: gems}, nil)
 	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)

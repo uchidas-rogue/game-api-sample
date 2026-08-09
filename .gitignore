@@ -14,6 +14,9 @@
 # カバレッジ出力（make test/race の生成物）
 /coverage.out
 
+# 負荷試験の計測出力（make load/watch の生成物。ルート直下に出力される）
+/*.csv
+
 # macOS
 .DS_Store
 

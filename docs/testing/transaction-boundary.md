@@ -27,6 +27,23 @@
 | 6 | 境界内で panic する | ROLLBACK してから**元の panic を再送出する** | `異常系_panic時にROLLBACKして再panic` |
 | 7 | ROLLBACK が `sql.ErrTxDone` を返す | 既にコミット済みの正常な状態なのでログに出さない。元の失敗原因は返す | `ROLLBACK_ErrTxDoneはloggerに出力されない` |
 | 8 | `fn` に渡される `Tx` の実体 | `*SQLTx` が渡り、`IsTx()` / `Raw()` が呼べる | `正常系_fnにSQLTxが渡される`<br>`SQLTx_Raw_内部のsqlTxを返す` |
+| 9 | 分離レベルを明示する | オプション無し／`IsolationDefault` は driver 既定（`*sql.TxOptions` が `nil`）、`IsolationReadCommitted` は `sql.LevelReadCommitted` で BEGIN する | `分離レベル`（3 サブテスト） |
+
+**シナリオ 9 の検証方法について**: go-sqlmock は `BeginTx` に渡る `*sql.TxOptions` を
+検証できないため、疎通だけを見ると「常に nil を返す」実装でも通ってしまう。
+変換関数 `toSQLTxOptions` を `export_test.go` 経由で直接呼んで戻り値を検証し、
+併せてオプション付きでも BEGIN/COMMIT が通常どおり行われることを確認している。
+
+## 分離レベルの使い分け
+
+既定は DB のデフォルト（MySQL では REPEATABLE READ）。変更が必要な箇所だけ
+トランザクション開始時に `shared.WithIsolation` で明示する（AGENTS.md §4）。
+
+| 利用箇所 | 分離レベル | 理由 |
+| --- | --- | --- |
+| outbox worker の全 tx | READ COMMITTED | REPEATABLE READ だと `ListPending` の `SELECT ... FOR UPDATE` がギャップロックを取り、API 側の outbox INSERT を `INSERT_INTENTION` 待ちでブロックする（[outbox-worker.md](outbox-worker.md)）。worker は同一 tx 内の読み取り一貫性に依存しない |
+| `RankingSyncer` | 既定（REPEATABLE READ） | `guild_scores` と `user_points` のスナップショットが互いに整合している必要がある（[ranking-sync-batch.md](ranking-sync-batch.md)） |
+| API リクエスト経路 | 既定 | 明示が必要な事情が無い |
 
 ## 境界の外でやること
 

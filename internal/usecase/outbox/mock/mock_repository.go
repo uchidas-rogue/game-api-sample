@@ -115,3 +115,17 @@ func (mr *MockRepositoryMockRecorder) MarkProcessed(ctx, tx, id any) *gomock.Cal
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessed", reflect.TypeOf((*MockRepository)(nil).MarkProcessed), ctx, tx, id)
 }
+
+// MarkProcessedByIDs mocks base method.
+func (m *MockRepository) MarkProcessedByIDs(ctx context.Context, tx shared.Tx, ids []uint64) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkProcessedByIDs", ctx, tx, ids)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkProcessedByIDs indicates an expected call of MarkProcessedByIDs.
+func (mr *MockRepositoryMockRecorder) MarkProcessedByIDs(ctx, tx, ids any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkProcessedByIDs", reflect.TypeOf((*MockRepository)(nil).MarkProcessedByIDs), ctx, tx, ids)
+}

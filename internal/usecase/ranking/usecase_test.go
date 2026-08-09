@@ -71,7 +71,7 @@ func (m *mocks) usecaseWithLogger(logger *slog.Logger) ranking.Usecase {
 func expectDoInTxRunsFn(tx *mockshared.MockTransactor) {
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error) error {
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
 			return fn(nil)
 		})
 }

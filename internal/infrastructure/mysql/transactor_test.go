@@ -42,6 +42,69 @@ func TestTransactor_DoInTx_正常系_fnがnilを返すとCOMMITされる(t *test
 	require.NoError(t, mock.ExpectationsWereMet())
 }
 
+// TestTransactor_DoInTx_分離レベル は WithIsolation で指定した分離レベルが
+// BeginTx へ伝わることを検証する。
+//
+// outbox-worker は READ COMMITTED を明示することで、ListPending の SELECT ... FOR UPDATE が
+// ギャップロックを取得して API の InsertOutboxEvent をブロックする問題を回避している。
+// ここが既定（REPEATABLE READ）に戻ると性能劣化として再発するため、テストで固定する。
+func TestTransactor_DoInTx_分離レベル(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		opts []shared.TxOption
+		want sql.IsolationLevel
+	}{
+		{
+			name: "オプション無しは driver 既定（LevelDefault）",
+			opts: nil,
+			want: sql.LevelDefault,
+		},
+		{
+			name: "IsolationDefault の明示も driver 既定",
+			opts: []shared.TxOption{shared.WithIsolation(shared.IsolationDefault)},
+			want: sql.LevelDefault,
+		},
+		{
+			name: "IsolationReadCommitted は READ COMMITTED で開始する",
+			opts: []shared.TxOption{shared.WithIsolation(shared.IsolationReadCommitted)},
+			want: sql.LevelReadCommitted,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// 変換ロジックを直接検証する。go-sqlmock は BeginTx に渡る *sql.TxOptions を
+			// 検証できず、疎通だけ見るテストでは「常に nil を返す」実装でも通ってしまうため。
+			got := infraMysql.ToSQLTxOptionsForTest(shared.NewTxOptions(tt.opts...))
+			if tt.want == sql.LevelDefault {
+				assert.Nil(t, got, "driver 既定を使うため nil であること")
+			} else {
+				require.NotNil(t, got)
+				assert.Equal(t, tt.want, got.Isolation)
+				assert.False(t, got.ReadOnly)
+			}
+
+			// 併せて、オプション付きでも BEGIN/COMMIT が通常どおり行われることを確認する。
+			db, mock, err := sqlmock.New()
+			require.NoError(t, err)
+			defer db.Close()
+			mock.ExpectBegin()
+			mock.ExpectCommit()
+
+			tr := newTransactor(t, db)
+			err = tr.DoInTx(context.Background(), func(_ shared.Tx) error {
+				return nil
+			}, tt.opts...)
+			require.NoError(t, err)
+			require.NoError(t, mock.ExpectationsWereMet())
+		})
+	}
+}
+
 func TestTransactor_DoInTx_異常系_fnがerrorを返すとROLLBACKされる(t *testing.T) {
 	t.Parallel()
 

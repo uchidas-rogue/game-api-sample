@@ -33,6 +33,28 @@ type RankEntry struct {
 	Score int64
 }
 
+// GuildScoreDelta はギルドスコアへの加算差分。
+// outbox-worker が複数イベントをギルド単位に集約して一括適用する際に用いる。
+type GuildScoreDelta struct {
+	GuildID int64
+	Points  int64
+}
+
+// UserPointDelta はユーザーポイントへの加算差分。
+// outbox-worker が Redis へ一括反映する際に用いる。
+type UserPointDelta struct {
+	UserID int64
+	Points int64
+}
+
+// GuildScoreHistoryEntry はギルドスコア履歴の1行ぶん。
+// 集約されるスコア加算と違い、履歴はイベント単位で残す必要があるため個別に保持する。
+type GuildScoreHistoryEntry struct {
+	GuildID int64
+	UserID  int64
+	Points  int64
+}
+
 // UserPointAddResult は個人ポイント加算の結果。
 // MySQL 側の累計更新の結果のみ返す。順位（Rank/GuildRank）は worker による
 // Redis 反映を待つ必要があるため本結果には含めず、別 API で取得する。

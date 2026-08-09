@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
@@ -17,12 +19,14 @@ var _ rankingusecase.Repository = (*RankingRepository)(nil)
 // RankingRepository は rankingusecase.Repository の sqlc/MySQL 実装。
 type RankingRepository struct {
 	querier querierFactory
+	execer  execerFactory
 }
 
 // NewRankingRepository は RankingRepository を生成する。
 func NewRankingRepository(db sqlc.DBTX) *RankingRepository {
 	return &RankingRepository{
 		querier: newQuerierFactory(db),
+		execer:  newExecerFactory(db),
 	}
 }
 
@@ -90,6 +94,72 @@ func (r *RankingRepository) IncrementGuildScore(ctx context.Context, tx shared.T
 		Score:   score,
 	}); err != nil {
 		return fmt.Errorf("increment guild score: %w", err)
+	}
+	return nil
+}
+
+// 複数行 INSERT の1行あたりのプレースホルダ数。args のキャパシティ計算に使う。
+const (
+	// guildScoreColumns は guild_scores の (guild_id, score)。
+	guildScoreColumns = 2
+	// guildScoreHistoryColumns は guild_score_histories の (guild_id, user_id, score)。
+	guildScoreHistoryColumns = 3
+)
+
+// BulkIncrementGuildScores は複数ギルドのスコアを1文の複数行 upsert で一括加算する。
+// sqlc は可変行数の複数行 INSERT を生成できないため、プレースホルダを組み立てた
+// パラメータ化生 SQL を execer 経由で発行する（値の文字列連結はしない）。
+//
+// deltas は GuildID 昇順にソートしてから発行する。並行するバッチトランザクションが
+// 同じ順序で guild_scores の行ロックを取得するようにし、デッドロックを防ぐため。
+// この順序保証は必須要件であり、外すと同時実行時にデッドロックが発生しうる。
+func (r *RankingRepository) BulkIncrementGuildScores(ctx context.Context, tx shared.Tx, deltas []rankingdomain.GuildScoreDelta) error {
+	if len(deltas) == 0 {
+		return nil
+	}
+	ex, err := r.execer(tx)
+	if err != nil {
+		return fmt.Errorf("BulkIncrementGuildScores: %w", err)
+	}
+
+	// 呼び出し元のスライスを書き換えないようコピーしてからソートする。
+	sorted := make([]rankingdomain.GuildScoreDelta, len(deltas))
+	copy(sorted, deltas)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].GuildID < sorted[j].GuildID })
+
+	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?),", len(sorted)), ",")
+	query := "INSERT INTO guild_scores (guild_id, score) VALUES " + valuesClause +
+		" ON DUPLICATE KEY UPDATE score = score + VALUES(score)"
+	args := make([]any, 0, len(sorted)*guildScoreColumns)
+	for _, d := range sorted {
+		args = append(args, d.GuildID, d.Points)
+	}
+	if _, err := ex.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("failed to bulk increment guild scores (count=%d): %w", len(sorted), err)
+	}
+	return nil
+}
+
+// BulkInsertGuildScoreHistories はスコア履歴を1文の複数行 INSERT で一括記録する。
+// スコア加算はギルド単位に集約できるが、履歴は誰がいつ何点入れたかを残す必要があるため
+// イベント単位の行をそのまま挿入する。
+func (r *RankingRepository) BulkInsertGuildScoreHistories(ctx context.Context, tx shared.Tx, entries []rankingdomain.GuildScoreHistoryEntry) error {
+	if len(entries) == 0 {
+		return nil
+	}
+	ex, err := r.execer(tx)
+	if err != nil {
+		return fmt.Errorf("BulkInsertGuildScoreHistories: %w", err)
+	}
+
+	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?, ?),", len(entries)), ",")
+	query := "INSERT INTO guild_score_histories (guild_id, user_id, score) VALUES " + valuesClause
+	args := make([]any, 0, len(entries)*guildScoreHistoryColumns)
+	for _, e := range entries {
+		args = append(args, e.GuildID, e.UserID, e.Points)
+	}
+	if _, err := ex.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("failed to bulk insert guild score histories (count=%d): %w", len(entries), err)
 	}
 	return nil
 }
