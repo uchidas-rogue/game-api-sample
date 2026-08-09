@@ -37,6 +37,7 @@
 - インターフェース実装検証: 実装型の定義直前に `var _ Iface = (*Type)(nil)` を記述する（値レシーバのみは `Type{}` 可）
 - 時刻: `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
   - 現時点で Clock インターフェースの実装は存在しない（`time.Now()` を使う機能がまだ無いため）。時刻依存の機能を追加する際に、`usecase` 層へ interface を定義し `infrastructure` 層に実装を置いて DI する
+    <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal cmd configs --include=*.go --exclude=*_test.go -->
 - 設定管理: 環境変数のパースは `configs/config.go` の `Config` に集約する。環境変数のキー名と既定値は同パッケージで `const` 定義し、各層には `*Config` を DI して渡す。新規の設定値追加時は `Config` 構造体・既定値・`Load()` の3箇所を更新する
 
 # 3. Testing Rules (規約)
@@ -67,6 +68,7 @@
   - `usecase` 層: 正常系・異常系・エッジケースを網羅。カバレッジ **90% 以上** を維持
   - `infrastructure` 層: 実リソースを起動しない単体テストを基本方針とする。MySQL repository は sqlc 生成の `Querier` インターフェースのモックを `export_test.go` のテスト専用コンストラクタ経由で注入、Redis は `miniredis`、`Transactor` は `go-sqlmock` を使う。検証対象は sqlc 型 ⇄ domain 型の変換、エラー変換（`sql.ErrNoRows` → `domain.ErrNotFound` 等）、クエリ構築引数（`FOR UPDATE` の有無・絞り込み条件）、`Transactor` のコミット/ロールバック挙動。カバレッジ **80% 以上**
     - `testcontainers-go` による実 DB/Redis テストは未導入。導入する場合は依存追加を含めて別タスクとして扱い、実装前にユーザーへ確認する
+      <!-- ssot-assert: absent-grep 'testcontainers' go.mod -->
   - `configs`: 環境変数のパースのみで外部依存が無い。カバレッジ **90% 以上**。設定値を追加したら、既定値・パース失敗・値域違反（`0`・負値）の各分岐にテストを足す。同型の検証ブロックが並ぶため、**片方だけテストがある状態にしない**（対称性チェック）
     - 環境変数をクリアするリストは `configs/config_test.go` の `clearConfigEnv` 1箇所に集約してある。設定値を追加したらここにも追加する（漏れると実行環境の環境変数に結果が左右される）
 - Race / 競合テスト:
@@ -76,7 +78,7 @@
 - Flaky 防止:
   - 時刻: SUT と test で `time.Now()` を二重呼出しない (Clock DI または SUT 記録値を export_test.go 経由参照)。日付/月境界を assertion に含めない
   - 同期: `time.Sleep` ポーリングは最終手段。channel/sync・ライブラリ getter (内部ロック付き) 優先。`time.After(N)` は CI 高負荷時の余裕を考慮し N = ローカル想定 x 2~3
-  - 並行: `t.Parallel()` 配下で pkg-global 書換禁止 (serial 分離)
+  - 並行: テストコードでパッケージスコープの変数を**書き換えない**（要素への書込みを含む）。`make lint` の ruleguard が検出する。`t.Parallel()` の有無を条件にしていないのは、今は無くても後から付けた瞬間に競合が生まれるため。違反したら `//nolint` で抜けず、フィクスチャを関数化する／`t.Setenv`・`t.Chdir` を使う／serial に分離する のいずれかを取る。宣言そのものは対象外（読み取り専用フィクスチャは可）
 
 # 4. Database Rules (sqlc + golang-migrate)
 - クエリ生成: `sqlc`。型安全・コンパイル時検証のため ORM (GORM 等) は使用しない
@@ -96,6 +98,10 @@
 
 # 5. Makefile Rules (開発コマンドの統一)
 - 日常的な開発操作は `make` 経由で実行する。デバッグ目的のピンポイント実行（`go test -run` 等）は許容
+- 指示書の整合チェックは `make docs/check`（CI 必須）。規約の正本が1箇所に保たれているか、記述が実態と乖離していないかを判定する。判定の実体は `scripts/docs-ssot-check.sh`。`make docs/ssot` で本ファイル §3 の正本表を一覧できる
+  - 検査を追加するときは、必ず「その検査が捕捉する既知の実例」をスクリプトのコメントに書く。実例を伴わない検査は誤検出源になり、いずれ無効化されるため
+  - 「現時点では〜が無い」のような時点依存の記述には、実態を照合する `ssot-assert` ディレクティブを同じ行か直後の行に添える（記法の正本は `scripts/docs-ssot-check.sh` 冒頭のコメント）。機械照合が原理的に不可能な場合は `manual '<理由>'` で理由を残す。添えないと `make docs/check` が WARN を出す
+  - ERROR は実態と矛盾している記述（必ず直す）。WARN は将来腐る形をしている記述（放置するなら、なぜ機械照合できないかを該当箇所に残す）
 - 静的解析は `make lint`（golangci-lint、全件）。`make lint/diff` は `origin/main` からの差分のみ、`make lint/fix` は自動修正可能な指摘の修正。golangci-lint のバージョンは `.golangci-version` の1箇所で管理し、`make lint` が同じ版を `./bin` へ導入する（ローカルと CI で同一の判定になるようにするため。この2つを別々に指定しない）
 - AWS インフラの初回構築は `make tf/bootstrap`（state 保管先の S3/DynamoDB 作成）→ `make tf/init` → `terraform plan`/`apply` の順。詳細は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md)
 - 利用可能なコマンドは `make help` で確認する（Makefile の `##` コメントが説明として表示される）
@@ -122,6 +128,7 @@
   - ブロック内容: 「何が想定外か」「当初の想定との差分」「影響と次の選択肢」を簡潔に記す
   - 既存のエスカレーション規約に該当する場合は作業を止めて確認する。該当しない場合も、検知した事実は本ルールに従い必ず明示してから作業を続行する
 - タスク完了時の確認: コード変更を伴うタスクの完了前に `make lint` / `make gen/check` / `make test` を1回ずつ実行する（変更ごとの逐次実行は不要）
+  - 指示書（本ファイル・`CLAUDE.md`・`ROADMAP.md`・`docs/**`・`.claude/**`）を変更した場合は `make docs/check` も実行する
   - `deployments/mysql/**` または `sqlc.yaml` を変更した場合は `make db/gen/check` も実行する
   - テストまたはテスト対象コードを追加・変更した場合は `make test/race` → `make test/cover/check` も実行する（`test/cover/check` は `test/race` が生成する `coverage.out` を判定するため、この順序で実行する）
 - インターフェース変更時: `make mock/gen` でモックを再生成してからテストを実行する。再生成忘れは `make gen/check` が CI で検知する

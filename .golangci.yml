@@ -263,9 +263,10 @@ linters:
       # pkg-global 書換禁止」を別途定めているが、gochecknoglobals は「宣言」を見るだけで
       # 「書換」を判別できないため、読み取り専用フィクスチャまで落ちてしまう。
       #
-      # 【未回収の課題】この除外により、テストの pkg-global 書換は機械検証されない。
-      # 現在の該当箇所は internal/usecase/gacha/usecase_test.go の testItems 1件のみ
-      # （読み取り専用）。同ファイルのテスト再構成時に関数化して除外を外すか再検討する。
+      # 【書換の検証は別ルールが担当】この除外で漏れる「テストの pkg-global 書換」は
+      # scripts/ruleguard/rules.go の testGlobalWrite が検出する（gocritic 経由）。
+      # 宣言 = gochecknoglobals（本番コードのみ）／書換 = ruleguard（テストのみ）で
+      # 役割が分かれている。片方だけ変えると穴が空くので、除外を外す際は両方を見直すこと。
       - path: _test\.go
         linters: [gochecknoglobals]
 

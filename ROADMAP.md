@@ -20,7 +20,8 @@
 * **Phase 2（完了）:** 生成物（mockgen / sqlc / `schema.sql`）の再生成漏れを `make gen/check` / `make db/gen/check` で CI 検知
 * **Phase 3（完了）:** 層別カバレッジ目標（§3）を CI での閾値判定へ格上げ。`make test/cover/check`（判定の実体は `scripts/coverage-check.sh`）
 * **Phase 4（完了）:** `docs/testing/` に設計図（mermaid フローチャート）とテスト仕様表を導入し、Go では計測できない分岐カバレッジをパスカバレッジで代替
-* **次の候補:** 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に `.golangci.yml` / `scripts/` へ移す（[docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) §1）
+* **Phase 5（完了）:** 指示書（AGENTS.md / `docs/**` / `.claude/**`）の SSoT 崩れと実態との乖離を `make docs/check` で CI 検知。判定の実体は `scripts/docs-ssot-check.sh`、記述側に置く照合条件は `ssot-assert` ディレクティブ。テスト設計原則を `docs/testing/principles/` へ移し、全 AI エージェントが同じ正本を読める配置にした（`.claude/**` は Claude 専用なので正本を置かない）
+* **次の候補:** 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に `.golangci.yml` / `scripts/` へ移す（[docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) §1）。現在の最有力は AGENTS.md §3「`t.Parallel()` 配下で pkg-global 書換禁止」——`gochecknoglobals` が `_test.go` を除外しているため人手のみで守られており、違反は flaky test という検出しにくい形で出る
 
 ---
 
