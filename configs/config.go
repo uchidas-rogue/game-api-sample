@@ -49,8 +49,8 @@ const (
 	// defaultDBMaxIdleConns はプールに保持するアイドルコネクション数。
 	// 既定(2)のままだと高頻度に接続の開閉が発生しオーバーヘッドになるため、
 	// MaxOpenConns と同値にして再利用性を高める。
-	defaultDBMaxIdleConns    = 25
-	envDBConnMaxLifetime     = "DB_CONN_MAX_LIFETIME"
+	defaultDBMaxIdleConns = 25
+	envDBConnMaxLifetime  = "DB_CONN_MAX_LIFETIME"
 	// defaultDBConnMaxLifetime はコネクションの最大生存時間。
 	// LB/Aurora フェイルオーバ後の古い接続の滞留を防ぐため有限にする。
 	defaultDBConnMaxLifetime = 5 * time.Minute

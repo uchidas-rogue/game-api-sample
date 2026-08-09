@@ -342,6 +342,30 @@ func TestWorker_processOne_正常系_異常系(t *testing.T) {
 			wantSignals: 3,
 		},
 		{
+			// payload が JSON として壊れているケース（ポイズンメッセージの入口）。
+			// Unmarshal 失敗も handleEvent のエラーとして tx をロールバックし retry を記録する。
+			name: "異常系: payload が不正で Unmarshal 失敗すると IncrementRetry",
+			setup: func(t *testing.T, ctrl *gomock.Controller) (*workeroutbox.Worker, chan struct{}) {
+				t.Helper()
+				d := newDeps(ctrl)
+				called := make(chan struct{}, 16)
+				invokeDoInTxAndSignal(d.tx, called)
+
+				ev := outboxdomain.Event{
+					ID:      51,
+					Type:    outboxdomain.EventTypeRankingScoreAdded,
+					Payload: []byte("{ this is not json"),
+				}
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).Return([]outboxdomain.Event{ev}, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(51)).Return(ev, true, nil)
+				// MySQL / Redis 副作用は一切呼ばれない
+				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(51), gomock.Any()).Return(nil)
+
+				return d.newWorker(t, 100), called
+			},
+			wantSignals: 3,
+		},
+		{
 			name: "異常系: 未知の event_type は ErrUnknownEventType で IncrementRetry",
 			setup: func(t *testing.T, ctrl *gomock.Controller) (*workeroutbox.Worker, chan struct{}) {
 				t.Helper()
@@ -377,6 +401,7 @@ func TestWorker_processOne_正常系_異常系(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			ctrl := gomock.NewController(t)
 			w, called := tt.setup(t, ctrl)
 
@@ -667,4 +692,75 @@ func TestWorker_runOnce_appliesTickTimeout(t *testing.T) {
 		t.Fatal("DoInTx が呼ばれなかった")
 	}
 	stopAndWait(t, cancel, done)
+}
+
+// TestWorker_Run_ティック処理の失敗はループを止めない は、runOnce が失敗しても
+// Run がエラーを返さずポーリングを継続することを確認する。
+//
+// 一過性の DB/Redis 障害で worker プロセスが落ちてはならない、という運用上の要件。
+// ticker 経路と notify 経路それぞれに独立したエラーログの分岐があるため、両方を通す。
+func TestWorker_Run_ティック処理の失敗はループを止めない(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// notifyDriven が true なら通知チャネル経由でティックを起こす。
+		notifyDriven bool
+	}{
+		{name: "ticker 経由で runOnce が失敗しても継続する"},
+		{name: "通知経由で runOnce が失敗しても継続する", notifyDriven: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			repo := mockoutbox.NewMockRepository(ctrl)
+			store := mockranking.NewMockRankingStore(ctrl)
+			tx := mockshared.NewMockTransactor(ctrl)
+
+			called := make(chan struct{}, 16)
+			invokeDoInTxAndSignal(tx, called)
+			// 毎ティック失敗させる。Run はエラーを返さずログのみで継続するはず。
+			repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(nil, errors.New("db down")).
+				AnyTimes()
+
+			cfg := workeroutbox.Config{
+				Repo: repo, RankingStore: store, Tx: tx,
+				Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
+			}
+
+			notifyCh := make(chan struct{}, 8)
+			if tt.notifyDriven {
+				sub := mockoutbox.NewMockSubscriber(ctrl)
+				sub.EXPECT().Subscribe(gomock.Any()).Return((<-chan struct{})(notifyCh), nil)
+				cfg.Subscriber = sub
+				// ticker 待ちではなく通知でティックを起こす。
+				cfg.PollInterval = time.Hour
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			w := workeroutbox.New(cfg)
+
+			done := make(chan struct{})
+			go func() {
+				_ = w.Run(ctx)
+				close(done)
+			}()
+
+			if tt.notifyDriven {
+				// 初回実行ぶんを消費してから通知でもう1回起こす。
+				waitForCalls(t, called, 1, 2*time.Second)
+				notifyCh <- struct{}{}
+				waitForCalls(t, called, 1, 2*time.Second)
+			} else {
+				// 初回 + ticker 駆動で最低 2 回。
+				waitForCalls(t, called, 2, 2*time.Second)
+			}
+
+			stopAndWait(t, cancel, done)
+		})
+	}
 }

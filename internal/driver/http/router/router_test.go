@@ -13,8 +13,8 @@ import (
 	rankinghandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/ranking"
 	"github.com/uchidas-rogue/game-api-sample/internal/driver/http/router"
 	"github.com/uchidas-rogue/game-api-sample/internal/testutil/slogtest"
-	mock_health "github.com/uchidas-rogue/game-api-sample/internal/usecase/health/mock"
 	mock_gacha "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha/mock"
+	mock_health "github.com/uchidas-rogue/game-api-sample/internal/usecase/health/mock"
 	mock_ranking "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking/mock"
 )
 

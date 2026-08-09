@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -48,7 +49,7 @@ func (r *RankingStore) SetGuildScore(ctx context.Context, guildID int64, score i
 func (r *RankingStore) GetGuildRank(ctx context.Context, guildID int64) (int64, error) {
 	member := strconv.FormatInt(guildID, 10)
 	rank, err := r.client.ZRevRank(ctx, rankingdomain.GuildRankingKey, member).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return 0, nil
 	}
 	if err != nil {
@@ -61,7 +62,7 @@ func (r *RankingStore) GetGuildRank(ctx context.Context, guildID int64) (int64, 
 func (r *RankingStore) GetGuildScore(ctx context.Context, guildID int64) (int64, bool, error) {
 	member := strconv.FormatInt(guildID, 10)
 	score, err := r.client.ZScore(ctx, rankingdomain.GuildRankingKey, member).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return 0, false, nil
 	}
 	if err != nil {
@@ -129,7 +130,7 @@ func (r *RankingStore) SetUserPoints(ctx context.Context, userID int64, points i
 func (r *RankingStore) GetUserRank(ctx context.Context, userID int64) (int64, error) {
 	member := strconv.FormatInt(userID, 10)
 	rank, err := r.client.ZRevRank(ctx, rankingdomain.UserRankingKey, member).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return 0, nil
 	}
 	if err != nil {
@@ -142,7 +143,7 @@ func (r *RankingStore) GetUserRank(ctx context.Context, userID int64) (int64, er
 func (r *RankingStore) GetUserPoints(ctx context.Context, userID int64) (int64, bool, error) {
 	member := strconv.FormatInt(userID, 10)
 	score, err := r.client.ZScore(ctx, rankingdomain.UserRankingKey, member).Result()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return 0, false, nil
 	}
 	if err != nil {

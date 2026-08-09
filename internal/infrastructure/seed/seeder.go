@@ -79,24 +79,29 @@ type catalogItem struct {
 	weight int
 }
 
-// itemCatalog は投入するアイテムマスタの固定カタログ。
+// itemCatalog は投入するアイテムマスタの固定カタログを返す。
 // weight はレアリティが上がるほど小さく（排出されにくく）設定している。
-var itemCatalog = []catalogItem{
-	{"かけらの石", gachadomain.RarityN, 300},
-	{"やくそう", gachadomain.RarityN, 300},
-	{"どうのつるぎ", gachadomain.RarityN, 250},
-	{"きぬのローブ", gachadomain.RarityN, 250},
-	{"てつのたて", gachadomain.RarityR, 120},
-	{"はがねのつるぎ", gachadomain.RarityR, 120},
-	{"まほうのぼうし", gachadomain.RarityR, 100},
-	{"ちからのゆびわ", gachadomain.RarityR, 100},
-	{"ほのおの剣", gachadomain.RaritySR, 40},
-	{"こおりの杖", gachadomain.RaritySR, 40},
-	{"いかずちの槍", gachadomain.RaritySR, 30},
-	{"せいなるたて", gachadomain.RaritySR, 30},
-	{"でんせつの剣", gachadomain.RaritySSR, 8},
-	{"りゅうおうの杖", gachadomain.RaritySSR, 6},
-	{"ゆうしゃのよろい", gachadomain.RaritySSR, 6},
+//
+// パッケージスコープの変数ではなく関数にしているのは、呼び出し側が
+// 要素を書き換えても他の呼び出しに波及させないため（AGENTS.md §2 / gochecknoglobals）。
+func itemCatalog() []catalogItem {
+	return []catalogItem{
+		{"かけらの石", gachadomain.RarityN, 300},
+		{"やくそう", gachadomain.RarityN, 300},
+		{"どうのつるぎ", gachadomain.RarityN, 250},
+		{"きぬのローブ", gachadomain.RarityN, 250},
+		{"てつのたて", gachadomain.RarityR, 120},
+		{"はがねのつるぎ", gachadomain.RarityR, 120},
+		{"まほうのぼうし", gachadomain.RarityR, 100},
+		{"ちからのゆびわ", gachadomain.RarityR, 100},
+		{"ほのおの剣", gachadomain.RaritySR, 40},
+		{"こおりの杖", gachadomain.RaritySR, 40},
+		{"いかずちの槍", gachadomain.RaritySR, 30},
+		{"せいなるたて", gachadomain.RaritySR, 30},
+		{"でんせつの剣", gachadomain.RaritySSR, 8},
+		{"りゅうおうの杖", gachadomain.RaritySSR, 6},
+		{"ゆうしゃのよろい", gachadomain.RaritySSR, 6},
+	}
 }
 
 // Seed はアイテム/ギルド/ユーザー/ギルドメンバー/初期スコアを投入する。
@@ -130,7 +135,7 @@ func (s *Seeder) Seed(ctx context.Context, p Params) error {
 	}
 
 	s.logger.InfoContext(ctx, "seeding completed",
-		slog.Int("items", len(itemCatalog)),
+		slog.Int("items", len(itemCatalog())),
 		slog.Int("users", p.Users),
 		slog.Int("guilds", p.Guilds),
 	)
@@ -138,8 +143,9 @@ func (s *Seeder) Seed(ctx context.Context, p Params) error {
 }
 
 func (s *Seeder) seedItems(ctx context.Context) error {
-	rows := make([][]any, 0, len(itemCatalog))
-	for i, it := range itemCatalog {
+	catalog := itemCatalog()
+	rows := make([][]any, 0, len(catalog))
+	for i, it := range catalog {
 		rows = append(rows, []any{int64(i + 1), it.name, it.rarity, it.weight})
 	}
 	return s.bulkUpsert(ctx, "items",

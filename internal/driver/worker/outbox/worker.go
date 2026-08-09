@@ -18,12 +18,12 @@ import (
 //
 // 1ティックで最大 batchSize 件を処理する。まず ListPending で未処理イベントの候補を取得し、
 // 各候補を**イベント単位トランザクション**で処理する:
-//   1. ClaimByID で候補を id 指定で FOR UPDATE SKIP LOCKED 確保（複数 worker 並行安全）。
-//      既に処理済み / 他 worker がロック中なら skip。
-//   2. handleEvent で MySQL 副作用（guild_scores 加算・guild_score_histories 挿入）と
-//      Redis 反映を実行
-//   3. 成功なら同一 tx で MarkProcessed → COMMIT（MySQL は exactly-once）
-//   4. handleEvent 失敗なら tx を ROLLBACK し、別 tx で IncrementRetry + last_error 記録
+//  1. ClaimByID で候補を id 指定で FOR UPDATE SKIP LOCKED 確保（複数 worker 並行安全）。
+//     既に処理済み / 他 worker がロック中なら skip。
+//  2. handleEvent で MySQL 副作用（guild_scores 加算・guild_score_histories 挿入）と
+//     Redis 反映を実行
+//  3. 成功なら同一 tx で MarkProcessed → COMMIT（MySQL は exactly-once）
+//  4. handleEvent 失敗なら tx を ROLLBACK し、別 tx で IncrementRetry + last_error 記録
 //
 // イベント単位 tx にする理由: handleEvent が MySQL guild_scores を加算した後に Redis 反映が
 // 失敗した場合、その MySQL 加算はロールバックされ（未マークのまま）、再試行で1回だけ適用される。
