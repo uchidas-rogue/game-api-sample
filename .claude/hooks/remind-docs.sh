@@ -27,15 +27,19 @@ docs_changed=$(printf '%s\n' "$changed" \
   | grep -E '(AGENTS|CLAUDE|ARCHITECTURE|ROADMAP)\.md|docs/testing/.*\.md' || true)
 
 # usecase / driver の実装変更は、対応する設計図（docs/testing/）の更新要否を必ず確認させる。
-# 分岐・下位層への呼び出し・戻り値が変わったら図の更新は必須（AGENTS.md §3）。
+# 更新が必須になる4トリガの正本は docs/testing/README.md §5。
 flow_code_changed=$(printf '%s\n' "$changed" \
   | grep -E 'internal/(usecase|driver)/.*\.go$' | grep -v '_test\.go$' || true)
-testing_docs_changed=$(printf '%s\n' "$changed" | grep -E 'docs/testing/.*\.md' || true)
+# 「設計図」として数えるのは docs/testing/ 直下の機能別ファイルのみ。
+# principles/（原則）と README.md（運用ルール）は設計図ではないので、
+# これらを触っただけでブロックが解除されないようにする。
+testing_docs_changed=$(printf '%s\n' "$changed" \
+  | grep -E 'docs/testing/[^/]+\.md$' | grep -v 'docs/testing/README\.md' || true)
 
 if [ -n "$flow_code_changed" ] && [ -z "$testing_docs_changed" ]; then
   jq -n '{
     decision: "block",
-    reason: "usecase / driver の実装を変更していますが docs/testing/ の設計図・テスト仕様表が未更新です。処理ノードの追加削除・分岐条件の変更・下位層への呼び出し内容の変更・戻り値の変更のいずれかに該当する場合、図とテスト仕様表の更新は必須です（AGENTS.md §3 / docs/testing/README.md）。該当しない変更であれば、その旨を一言述べて終了してください。"
+    reason: "usecase / driver の実装を変更していますが docs/testing/ の設計図・テスト仕様表が未更新です。処理ノードの追加削除・分岐条件の変更・下位層への呼び出し内容の変更・戻り値の変更のいずれかに該当する場合、図とテスト仕様表の更新は必須です（docs/testing/README.md §5）。該当しない変更であれば、その旨を一言述べて終了してください。"
   }'
   exit 0
 fi

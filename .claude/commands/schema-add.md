@@ -1,9 +1,9 @@
 ---
-description: DB スキーマを追加する（migration → schema.sql → query → sqlc → repository → DI）
+description: DB スキーマを追加する（migration → schema.sql → query → sqlc → repository → DI）。テーブル・カラム・インデックスを新設または変更する、新しい SQL クエリを足す、repository を実装する、といった場面で使う。生成物の再生成順序を飛ばして sqlc / schema.sql が食い違うのを防ぐための手順書。
 argument-hint: <テーブル名と目的（例: user_stamina スタミナ管理）>
 ---
 
-DB スキーマ「$ARGUMENTS」を追加する。AGENTS.md §4 の手順を守る。**順序を入れ替えない。**
+DB スキーマ「$ARGUMENTS」を追加する。**AGENTS.md §4 が規約の正本。本ファイルは実行順序だけを定める。順序を入れ替えない。**
 
 ## 0. 前提の確認
 
@@ -25,8 +25,6 @@ make db/migrate/new name=<snake_case_name>
 make db/schema/dump
 ```
 
-`deployments/mysql/schema.sql` は生成物。**手動編集しない**。
-
 ## 3. クエリを追加
 
 `deployments/mysql/queries/<機能>.sql` に `-- name: XxxYyy :one|:many|:exec` 形式で書く。
@@ -40,9 +38,6 @@ make db/schema/dump
 make db/sqlc/gen
 ```
 
-`sqlc generate` を直接叩かない（PATH 上の別バージョンで生成結果が変わる）。
-バージョンは `.sqlc-version` で固定されている。
-
 ## 5. マイグレーション適用
 
 ```
@@ -51,13 +46,11 @@ make db/migrate/up
 
 ## 6. repository 実装
 
-`internal/infrastructure/mysql/repository/` に実装する。
+`internal/infrastructure/mysql/repository/` に実装する。規約は AGENTS.md §1・§2・§4
+（interface は `usecase` 層に定義 / `var _ Iface = (*Type)(nil)` / sqlc 型 ⇄ domain 型の変換 /
+`sql.ErrNoRows` → domain エラーへの変換）。
 
-- interface は **`usecase` 層に定義する**（`infrastructure` ではない）
-- 実装型の定義直前に `var _ <Iface> = (*<Type>)(nil)` を書く
-- sqlc 型 ⇄ domain 型の変換は infrastructure 層で行う
-- `sql.ErrNoRows` 等の DB 固有エラーは domain のエラー（`ErrNotFound` 等）へ変換する
-- interface を新設したら `//go:generate mockgen` を interface 定義ファイルに書き `make mock/gen`
+interface を新設したら `//go:generate mockgen` を interface 定義ファイルに書き `make mock/gen`。
 
 ## 7. DI 登録
 
@@ -66,15 +59,12 @@ make db/migrate/up
 
 ## 8. テスト
 
-repository のテストは実リソースを起動しない。
-`export_test.go` のテスト専用コンストラクタ経由で `sqlc.Querier` のモックを注入する。
+方針（実リソースを起動しない・`export_test.go` 経由で `sqlc.Querier` モックを注入）と
+検証対象は **AGENTS.md §3 の `infrastructure` 層の項**が正本。
 
-検証対象は次の4つ。
-
-1. sqlc 型 ⇄ domain 型の変換
-2. エラー変換（`sql.ErrNoRows` → domain エラー）
-3. **クエリ構築引数**（`FOR UPDATE` の有無、絞り込み条件）— 基底のテストでは代替できない
-4. レコードあり / なし の両方
+このコマンド固有の注意は1点のみ:
+**クエリ構築引数**（`FOR UPDATE` の有無・絞り込み条件）の検証を省略しない。
+ここは他のどのテストでも代替できない（`go-testing-qa` スキル §5）。
 
 ## 9. 検証
 
@@ -90,7 +80,7 @@ make test/cover/check
 ## 10. 資料の更新
 
 - 新しい設定値（接続プール等）を足したなら `configs/config.go` の3箇所と
-  `config_test.go` の `clearConfigEnv` を更新する
+  `config_test.go` の `clearConfigEnv` を更新する（AGENTS.md §2）
 - スキーマ構成が ROADMAP や `terraform/ARCHITECTURE.md` の記述と矛盾しないか確認する
 
 commit / push はユーザーの明示指示があるまで行わない。

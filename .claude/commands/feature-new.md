@@ -1,5 +1,5 @@
 ---
-description: 新機能を「設計図 → 失敗するテスト → 実装」の順で追加する
+description: 新機能を「設計図 → 失敗するテスト → 実装」の順で追加する。API エンドポイント・ユースケース・バッチ/ワーカー処理を新設する、既存の usecase / driver に分岐や処理ノードを足す、といった場面で使う。実装を先に書いてから図とテストを後付けするのを防ぐための手順書。
 argument-hint: <機能名と概要（例: ユーザーのスタミナ回復API）>
 ---
 
@@ -8,29 +8,27 @@ argument-hint: <機能名と概要（例: ユーザーのスタミナ回復API�
 
 ## 0. 前提の確認
 
-- `go-testing-qa` スキルの `references/tdd-workflow.md` と `references/layered-architecture-testing.md` を読む
-- [docs/testing/README.md](../../docs/testing/README.md) で図の使い分けを確認する
+- [docs/testing/README.md](../../docs/testing/README.md) を読む（図の使い分け・仕様表の形・チェックリストの正本）
+- 対象層のテスト観点を [docs/testing/principles/layered-architecture-testing.md](../../docs/testing/principles/layered-architecture-testing.md) **§12 の逆引き表**から引く
 - 新規パッケージ追加・ディレクトリ構造変更を伴うなら、着手前にユーザーへ確認する（AGENTS.md §6）
 
 ## 1. 設計図とテスト仕様表（実装より先）
 
 `usecase` / `driver` に手を入れるなら `docs/testing/<機能>.md` を作る。
+**作り方・仕様表の列・並び順・重複排除のルールは
+[docs/testing/README.md](../../docs/testing/README.md) §1〜§3 に従う**（ここには写さない）。
 
-- フローチャート（mermaid）を描き、**すべての終端ノード**（正常終了・各エラー）に ID を振る
-- テスト仕様表を作る。列は `# | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し`
-- 並び順は**図のパスが短い順**。同一パスのケースは統合する
-- **契約表・決定表は作らない**
-
-`domain` の純粋関数・値オブジェクトは図を作らない。テストケース配列自体が正本になる。
+フローチャートでは**すべての終端ノード**（正常終了・各エラー）に ID を振ること。
+テスト仕様表の「図のパス」列がその ID を参照する。
 
 ## 2. 失敗するテスト（RED）
 
 依存の少ない層から書く: `domain` → `usecase`（モック）→ `infrastructure` → `driver`。
 
 - テーブルは**データのみ**を持つ。テスト対象の生成やモックの組み立てをケース構造体の
-  関数フィールドに入れない。組み立てはランナー1本に集約する
+  関数フィールドに入れない。組み立てはランナー1本に集約する（`go-testing-qa` スキル §2）
 - モックするのは `usecase` が定義した interface だけ。`domain` の値・sentinel error は実物を使う
-- interface を新設・変更したら `make mock/gen`
+- interface を新設・変更したら `make mock/gen`（再生成要否の判断は不要。AGENTS.md §3）
 
 この時点でテストが**失敗すること**を確認してから次へ進む。
 
@@ -45,7 +43,7 @@ argument-hint: <機能名と概要（例: ユーザーのスタミナ回復API�
 
 ## 4. 検証
 
-以下を順に実行し、すべて通ること。
+以下を順に実行し、すべて通ること（実行条件の詳細は AGENTS.md §6）。
 
 ```
 make lint
@@ -59,16 +57,7 @@ make test/cover/check
 
 ## 5. 仕上げの突き合わせ
 
-[docs/testing/README.md](../../docs/testing/README.md) §6 のチェックリストを回す。
-
-- [ ] テスト仕様表のケース番号とテストコードのケース順が一致している
-- [ ] 図中のすべての終端ノードに対応するケースが最低1件ある
-- [ ] 同一パスの重複ケースが排除されている
-- [ ] ケースが「パスが短い順」に並んでいる
-
-カバレッジが閾値未達なら、未カバー箇所を
-「通常の分岐 / エントリポイント / デッドコード / 外部要因依存」に分類し、
-**到達可能なものだけ**テストを足す。未カバー行を通すためだけの不自然なモックは作らない。
-試行が続くようなら打ち切り、内訳（行・分類・理由）を報告する。
+- [docs/testing/README.md](../../docs/testing/README.md) §6 のレビューゲート用チェックリスト（6項目）を回す
+- カバレッジ閾値が未達なら **AGENTS.md §6「カバレッジ未達時の改善ループ」**に従う
 
 commit / push はユーザーの明示指示があるまで行わない。

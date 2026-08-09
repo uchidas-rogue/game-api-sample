@@ -2,8 +2,9 @@
 # 層別カバレッジ（文カバレッジ）が閾値を満たすかを判定する。
 #
 # AGENTS.md §3 の層別カバレッジ目標を「表示するだけ」から「未達で CI が落ちる」へ格上げする
-# ためのスクリプト。未達時は、そのまま改善ループ（go-testing-qa スキルの
-# references/tdd-workflow.md §11）に入れるよう、未カバー箇所の一覧と分類の観点を出力する。
+# ためのスクリプト。未達時は、そのまま改善ループ（規約の正本は AGENTS.md §6、
+# 一般原則は docs/testing/principles/tdd-workflow.md §11）に入れるよう、
+# 未カバー箇所の一覧と分類の観点を出力する。
 #
 # 使い方:
 #   scripts/coverage-check.sh [coverage.out のパス]
@@ -35,7 +36,7 @@ PROFILE="${1:-coverage.out}"
 #
 # 引き上げるときは AGENTS.md §3 と併せて更新し、ここに日付と理由を追記すること。
 # 下げる場合は、目標を下げたのか責務の置き場所を変えたのかを明記する
-# （references/layered-architecture-testing.md §11）。
+# （docs/testing/principles/layered-architecture-testing.md §11）。
 # 区切りは ";"（macOS の awk は -v の値に改行を含められないため）
 THRESHOLDS="internal/domain=100;internal/usecase=90;internal/driver=90;internal/infrastructure=80;configs=90"
 
@@ -155,7 +156,7 @@ END {
     printf "\n  [%s]\n%s", l, uncovered[l]
   }
 
-  printf "\n改善の進め方（go-testing-qa スキル references/tdd-workflow.md §11）:\n"
+  printf "\n改善の進め方（正本: AGENTS.md §6）:\n"
   printf "  1. 上の未カバー箇所を次の4つに分類する\n"
   printf "       (a) 通常の分岐（到達可能）        → テストケースを追加する\n"
   printf "       (b) エントリポイント関数本体等     → スキップ（設計上テスト対象外）\n"

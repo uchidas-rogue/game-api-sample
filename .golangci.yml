@@ -1,6 +1,6 @@
 # golangci-lint 設定。AGENTS.md の規約のうち機械判定できるものをここに集約する。
 #
-# 設計方針は `go-testing-qa` スキルの references/deterministic-verification.md に従う:
+# 設計方針は docs/testing/principles/deterministic-verification.md に従う:
 #   §1 レビューで毎回同じ指摘をしている規約は機械検証へ回す
 #   §3 可能な限り AST ベースで判定する（文字列マッチは誤検出・検出漏れを起こす）
 #   §4 ホワイトリスト方式（原則禁止・許可されたものだけ例外）で書き、許可理由を併記する

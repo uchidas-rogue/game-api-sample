@@ -3,6 +3,13 @@
 - アーキテクチャ: Clean Architecture
 - AWS インフラ構成・Terraform モジュール分割・CI/CD ワークフローの安全装置は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md) を参照
 
+# 指示書の読み手と置き場
+**本ファイルが全 AI エージェント共通の入口。** 規約の正本はすべて本ファイルか、本ファイルからリンクされた `docs/` 配下にある。
+
+- `AGENTS.md`（本ファイル）・`docs/**` — **全エージェント共通**。ここに正本を置く
+- `CLAUDE.md`・`.claude/**`（skills / commands / agents / hooks） — **Claude Code 専用**。他のエージェントからは読めないので、**ここに規約の正本を置かない**。置いてよいのは Claude 固有の動作（発火条件・サブエージェント手順・hook）と、共通の正本への索引だけ
+- 規約を追加するときは、まず「全エージェントが従うべきか」を判断する。従うべきなら本ファイルか `docs/` 配下に書き、`.claude/**` からはリンクする
+
 # Infrastructure Change Rules
 - Terraform 関連の変更時は **影響範囲を terraform/ 配下に限定せず**、必ず以下を併せて確認・更新する:
   - `terraform/**`（モジュール・環境定義）
@@ -33,29 +40,28 @@
 - 設定管理: 環境変数のパースは `configs/config.go` の `Config` に集約する。環境変数のキー名と既定値は同パッケージで `const` 定義し、各層には `*Config` を DI して渡す。新規の設定値追加時は `Config` 構造体・既定値・`Load()` の3箇所を更新する
 
 # 3. Testing Rules (規約)
-- **テスト設計の考え方の正本は `go-testing-qa` スキル**（`.claude/skills/go-testing-qa/`）。テーブル駆動テストの正しい形、モック対象の選択基準、境界値ケースの取捨、カバレッジ指標の重み付け、設計図とテスト仕様表の作り方はそちらを参照する。本節は Go 固有の閾値・配置・命名規約を定める
-- テスト設計文書: `usecase` / `driver` の新規実装・分岐変更は、**実装より先に** `docs/testing/<機能>.md` にフローチャートとテスト仕様表を作る（順序は 図 → 失敗するテスト → 実装）。運用ルールは [docs/testing/README.md](docs/testing/README.md)
-  - `domain` の純粋関数・値オブジェクトは図を作らない。テストケース配列自体が正本
-  - **契約表・決定表は作らない**（テストと同じ情報を2箇所に持つとドリフトするため）
-  - 実装変更時に「ノードの追加削除／分岐条件の変更／下位層への呼び出し内容の変更／戻り値の変更」が起きたら図の更新は必須
+本節が定めるのは **Go 固有の閾値・配置・命名規約** のみ。設計の考え方と運用手順は他ファイルが正本なので、下表から**直接**引く（`go-testing-qa` スキルの `SKILL.md` を中継させない）。
+
+| 問い | 正本 |
+| --- | --- |
+| 良いテストとは何か（テーブル駆動の形・モック対象の選択・境界値の取捨・カバレッジ指標の重み付け） | [docs/testing/principles/testing-principles.md](docs/testing/principles/testing-principles.md) |
+| どの順で書き、いつ完了とみなすか（図→テスト→実装・改善ループ・縮約の罠） | [docs/testing/principles/tdd-workflow.md](docs/testing/principles/tdd-workflow.md) |
+| 層別のテスト観点（Domain / UseCase / Repository / Driver / DI） | [docs/testing/principles/layered-architecture-testing.md](docs/testing/principles/layered-architecture-testing.md) §12 の逆引き表 |
+| 静的検証（lint ルール）を足すときの設計原則 | [docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) |
+| `docs/testing/` に何をどう書くか（作成対象の判定・仕様表の列・並び順・保守トリガ・チェックリスト） | [docs/testing/README.md](docs/testing/README.md) |
+| 層別カバレッジ閾値 | 本節（実行可能な写しが `scripts/coverage-check.sh`） |
+| Go / 本リポジトリ固有の差分（言語機能による代替・分岐カバレッジが取れない制約） | `.claude/skills/go-testing-qa/SKILL.md`（**Claude Code 専用**。他エージェントは上の原則ファイルを直接読む） |
+
+- テスト設計文書: `usecase` / `driver` の新規実装・分岐変更は、**実装より先に** `docs/testing/<機能>.md` にフローチャートとテスト仕様表を作る（順序は 図 → 失敗するテスト → 実装）。`domain` の純粋関数・値オブジェクトは図を作らない。作成対象の判定・仕様表の形・図の保守トリガ・レビューチェックリストは [docs/testing/README.md](docs/testing/README.md) が正本
 - API レスポンス契約: `driver/http` のレスポンス構造は `internal/driver/http/testdata/contracts/*.json` を正本とし、`internal/testutil/apicontract` で**構造のみ**を検証する（値の妥当性はハンドラのテストの責務）。json タグの追加・削除・リネームをしたら同じ PR で契約ファイルも更新する。これはレスポンスを解釈する側（k6 シナリオ等）の変更が必要になるサイン
 - アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する
-  - 生成物は手動編集しない。更新は `make mock/gen` の再実行のみ。再生成忘れ・手動編集は `make gen/check` が検知する（CI 必須）
+  - 生成物は手動編集しない。更新は `make mock/gen` の再実行のみ。**再生成が必要かを事前に判断しなくてよい**（判断を誤っても `make gen/check` が再生成 + 差分検知で捕まえる。CI 必須）。interface を触ったら迷わず `make mock/gen` を実行する
   - mockgen のバージョンは go.mod の `go.uber.org/mock` から導出され、`make mock/gen` が `./bin` へ同じ版を導入する。`//go:generate` は裸の `mockgen` を呼ぶため、PATH 上の別バージョンを使うと生成結果が変わる。`go generate ./...` を直接叩かず必ず `make mock/gen` を使うこと
-  - 再生成が必要かどうかの判断:
-
-    | 変更内容 | 再生成 |
-    | --- | --- |
-    | interface のメソッド追加・削除・リネーム | 必要 |
-    | interface のメソッドのシグネチャ変更（引数・戻り値の型や数） | 必要 |
-    | interface のコメント・並び順の変更 | 必要（生成物にコメントが転記されるため） |
-    | interface が参照する型の**定義**の変更（フィールド追加等） | 不要（生成物は型名しか持たない） |
-    | 実装側（`infrastructure` 等）の内部ロジックのみの変更 | 不要 |
-    | `//go:generate` の `-destination` / `-package` の変更 | 必要。併せて `make/app.mk` の `GEN_ARTIFACT_PATHS` と `.golangci.yml` の除外パス、`.testignore` も更新する |
+  - `//go:generate` の `-destination` / `-package` を変更した場合のみ、`make/app.mk` の `GEN_ARTIFACT_PATHS` と `.golangci.yml` の除外パス、`.testignore` も併せて更新する（この連動は `gen/check` では検知できない）
 - 層別カバレッジ・テスト方針:
   - 指標は **文（statement）カバレッジ**。閾値は `make test/cover/check` が判定し、CI で必須（未達なら失敗）。閾値の実体は `scripts/coverage-check.sh` にあり、本節がその正本。**片方だけ変えない**
-  - Go には分岐カバレッジを出す標準手段が無い。分岐の網羅は `docs/testing/` の設計図に対する**パスカバレッジ**で担保する方針（`go-testing-qa` スキル参照）
+  - Go には分岐カバレッジを出す標準手段が無い。分岐の網羅は `docs/testing/` の設計図に対する**パスカバレッジ**で代替する（[docs/testing/README.md](docs/testing/README.md) §4）
   - `driver` 層: 変換とエラー経路の網羅。カバレッジ **90% 以上**
   - `domain` 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ **100%**（外部依存が無く達成可能なため。スラックが無いので、未カバーが出たらテストを足すか、テスト対象外である理由を明記して `.testignore` で除外する）
   - `usecase` 層: 正常系・異常系・エッジケースを網羅。カバレッジ **90% 以上** を維持
@@ -103,7 +109,7 @@
   - 公開インターフェース・ドメインモデルの変更
   - 同一のテスト失敗・コンパイルエラーが3回連続で再発した場合
   - DB の初期化、マイグレーションの down 適用、ファイルの大量削除など後戻りできない操作
-- カバレッジ未達時の改善ループ: `make test/cover/check` が閾値未達で落ちた場合、未カバー箇所を埋めることを自己目的化しない
+- カバレッジ未達時の改善ループ（**本項がプロジェクト規約としての正本**。他の指示書は本項を参照するだけにする。一般原則は [docs/testing/principles/tdd-workflow.md](docs/testing/principles/tdd-workflow.md) §11）: `make test/cover/check` が閾値未達で落ちた場合、未カバー箇所を埋めることを自己目的化しない
   - 未カバー箇所をまず「通常の分岐（到達可能）／エントリポイント等の設計上テスト対象外／デッドコード（到達不可能）／外部要因依存で再現困難」に分類し、**到達可能なものだけ**テストを追加する
   - **過剰モック禁止**: 未カバー行を実行させるためだけの不自然なモック・テストケースを追加しない。デッドコードや設計上の制約をテストで無理にカバーしない
   - デッドコードと判定したものはリファクタ候補として報告する

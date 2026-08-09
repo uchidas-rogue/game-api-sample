@@ -15,11 +15,12 @@
 
 方針は「ガードレールはコンテキスト（助言）ではなく実行される仕組み（判定）に置く」。フェーズ2の前提作業で整備した CI 品質ゲート（`make lint` / `make test/race` / カバレッジ計測）を、以下の段階で深化させる。
 
-* **Phase 0（完了）:** テスト設計原則を `.claude/skills/go-testing-qa/` としてスキル化。指示書間の参照ずれ・実態との乖離を解消
-* **Phase 1:** `.golangci.yml` を新設し、Clean Architecture の層間 import 規約（AGENTS.md §1）と Go コーディング規約（§2）を `depguard`（ホワイトリスト方式）・`gochecknoglobals`・`forbidigo` で静的強制する。現状 `make lint` は `go vet` のみ
-* **Phase 2:** 生成物（mockgen / sqlc / `schema.sql`）の再生成漏れを `git diff --exit-code` で CI 検知する
-* **Phase 3:** 層別カバレッジ目標（§3）を、サマリ表示のみから CI での閾値判定へ格上げする（ラチェット方式で段階的に引き上げ）
-* **Phase 4:** `docs/testing/` に設計図（mermaid フローチャート）とテスト仕様表を導入し、Go では計測できない分岐カバレッジをパスカバレッジで代替する
+* **Phase 0（完了）:** テスト設計原則を `docs/testing/principles/` に集約し、`go-testing-qa` スキルからは索引のみ参照する形へ。指示書間の参照ずれ・実態との乖離を解消し、全 AI エージェントが同じ原則を読めるようにした
+* **Phase 1（完了）:** `.golangci.yml` を新設し、Clean Architecture の層間 import 規約（AGENTS.md §1）と Go コーディング規約（§2）を `depguard`（ホワイトリスト方式）・`gochecknoglobals`・`forbidigo`・`mnd`・`gocritic`(ruleguard) で静的強制。`make lint`
+* **Phase 2（完了）:** 生成物（mockgen / sqlc / `schema.sql`）の再生成漏れを `make gen/check` / `make db/gen/check` で CI 検知
+* **Phase 3（完了）:** 層別カバレッジ目標（§3）を CI での閾値判定へ格上げ。`make test/cover/check`（判定の実体は `scripts/coverage-check.sh`）
+* **Phase 4（完了）:** `docs/testing/` に設計図（mermaid フローチャート）とテスト仕様表を導入し、Go では計測できない分岐カバレッジをパスカバレッジで代替
+* **次の候補:** 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に `.golangci.yml` / `scripts/` へ移す（[docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) §1）
 
 ---
 
@@ -37,11 +38,7 @@
      - **設計方針:** 書き込み（個人スコア・ギルド集計）と読み取り（ランキング参照）の責務を分離し、参照負荷が書き込みDBを圧迫しない構成とする
 * **テスト戦略 (TDDの徹底):**
   - 標準 `testing` パッケージによる Table-Driven Tests
-  - テスト設計の考え方の正本は `go-testing-qa` スキル、Go 固有の規約は AGENTS.md §3
-  - 層別方針（詳細は AGENTS.md §3）:
-    - `domain`: 純粋関数・ビジネスルールの単体テスト（外部依存なし、カバレッジ 90% 以上）
-    - `usecase`: `uber-go/mock` による網羅的テスト（カバレッジ 85% 以上）
-    - `infrastructure`: sqlc `Querier` モック注入 / `miniredis` / `go-sqlmock` による単体テスト（カバレッジ 80% 以上）。`testcontainers-go` による実体テストは未導入
+  - 層別のテスト方針とカバレッジ閾値は **AGENTS.md §3 が正本**（値をここに写さない。判定は `make test/cover/check`）
   - 競合状態（Race Condition）: 更新系には `t.Parallel()` + goroutine 並行ケースを最低1件含め、`make test/race` で検出する
   - Claudeは必ずローカルでテストを実行し、パスするまで実装を修正すること
 
