@@ -110,20 +110,16 @@ flowchart TD
     D -- ok --> F[repo.GetUserGuildID]
 
     F -- err --> E4((ErrUserNotInGuild 等))
-    F -- ok --> G[repo.GetUserPoints]
+    F -- ok --> K[repo.InsertUserPointHistory]
 
-    G -- ErrPointsNotFound --> H[previousTotal = 0<br/>初回ユーザー]
-    G -- その他の err --> E5((予期せぬエラー))
-    G -- ok --> H2[previousTotal = 現在値]
-    H --> K[repo.InsertUserPointHistory]
-    H2 --> K
-
-    K -- err --> E6((repo のエラー))
+    K -- err --> E5((repo のエラー))
     K -- ok --> M[repo.IncrementUserPoints]
-    M -- err --> E7((repo のエラー))
-    M -- ok --> O[outboxRepo.InsertEvent]
+    M -- err --> E6((repo のエラー))
+    M -- ok --> N[repo.GetUserPoints<br/>**加算後**の累計を同一 tx で再読]
+    N -- err --> E7((repo のエラー))
+    N -- ok --> O[outboxRepo.InsertEvent]
     O -- err --> E8((insert outbox event エラー))
-    O -- ok --> P[Result 構築・コミット]
+    O -- ok --> P[Result 構築・コミット<br/>NewTotal = 再読値<br/>PreviousTotal = NewTotal - Points]
 
     P --> Q[outboxNotifier.Notify<br/>**コミット後**に実行]
     Q -- err --> R[WARN ログのみ<br/>リクエストは成功させる]
@@ -140,6 +136,14 @@ flowchart TD
   同期レスポンスも `GuildID` のみを返し、ギルドの previous/new total は返さない
 - `Notify` は**コミット後**に呼ぶ。コミット前だと worker が空振りする
 - `Notify` の失敗はリクエストを失敗させない。worker のポーリングがフォールバックになる
+- **累計値は加算の「後」に読む**（`N`）。加算前に読んだ値へアプリ側で加算すると、
+  同一ユーザーへの同時リクエストが同じ `previous_total` を読み、双方が同じ
+  `new_total` を返す（MySQL の値は `points = points + ?` なので正しいまま、
+  **レスポンスだけが誤る**）。加算後に同一 tx で読み直せば、後発のトランザクションは
+  先行のコミット結果を含んだ値を得る。`PreviousTotal` は `NewTotal - Points` で導出する
+- `N` は `ErrPointsNotFound` を**正常扱いしない**。`IncrementUserPoints` は
+  `INSERT ... ON DUPLICATE KEY UPDATE` なので、成功直後に行が存在しないのは異常であり、
+  そのままエラーとして返す（初回ユーザーもこの時点では必ず行がある）
 
 ### テスト仕様表
 
@@ -148,18 +152,33 @@ flowchart TD
 | 1 | `IsValidScore` が false | `A→B→E1` | `ErrInvalidPoints` | **`DoInTx` が呼ばれない** |
 | 2 | `GetUser` がエラー（ユーザー不在） | `A→B→C→D→E3` | repo のエラーをそのまま返す | 以降の repo が呼ばれない |
 | 3 | `GetUserGuildID` がエラー（ギルド未所属） | `…→D→F→E4` | `ErrUserNotInGuild` | 同上 |
-| 4 | `GetUserPoints` が予期せぬエラー | `…→F→G→E5` | エラーを返す | 同上 |
-| 5 | `InsertUserPointHistory` がエラー | `…→G→K→E6` | エラーを返す | 同上 |
-| 6 | `IncrementUserPoints` がエラー | `…→K→M→E7` | エラーを返す | 同上 |
-| 7 | `InsertEvent` がエラー | `…→M→O→E8` | エラーを返す | `Notify` が呼ばれない |
-| 8 | 正常系: 既存ポイントあり | `…→H2→…→Q→Z` | `PreviousTotal` に現在値、`NewTotal` は加算後 | outbox に `RankingScoreAdded` が積まれる／`Notify` が呼ばれる／**ギルド集計の repo が呼ばれない** |
-| 9 | 正常系: 初回ユーザー | `…→H→…→Z` | `PreviousTotal=0` | 同上 |
-| 10 | `Notify` が失敗 | `…→Q→R→Z` | **リクエストは成功する**（エラーを返さない） | WARN ログが出る |
+| 4 | `InsertUserPointHistory` がエラー | `…→F→K→E5` | エラーを返す | 同上 |
+| 5 | `IncrementUserPoints` がエラー | `…→K→M→E6` | エラーを返す | 同上 |
+| 6 | 加算後の `GetUserPoints` がエラー | `…→M→N→E7` | エラーを返す | `InsertEvent` が呼ばれない |
+| 7 | `InsertEvent` がエラー | `…→N→O→E8` | エラーを返す | `Notify` が呼ばれない |
+| 8 | 正常系 | `…→O→P→Q→Z` | `NewTotal` は再読値、`PreviousTotal` は `NewTotal - Points` | outbox に `RankingScoreAdded` が積まれる／`Notify` が呼ばれる／**ギルド集計の repo が呼ばれない** |
+| 9 | `Notify` が失敗 | `…→Q→R→Z` | **リクエストは成功する**（エラーを返さない） | WARN ログが出る |
 
 **`DoInTx` 自体のエラー（`E2`）について**: トランザクション境界の契約は
 [transaction-boundary.md](transaction-boundary.md) が `Transactor` 自身のテストで担保する。
 usecase 側は境界をモックしてよく、契約の検証を重複させない。
 ただし「不正入力で境界に入らないこと」（ケース 1）は usecase 固有の責務なので、ここで検証する。
+
+**「初回ユーザー」のケースが無い理由**: 累計を加算後に読む設計では、初回ユーザーも
+既存ユーザーも `…→M→N→O→…` という**同一のパス**を通る（`IncrementUserPoints` の
+upsert により、`N` の時点では必ず行が存在する）。同一パスのケースは統合するという
+[README §3](README.md) の方針に従い、ケース 8 に一本化した。
+
+**同時実行による誤りは、この表では検知できない**: ケース 8 が守るのは「再読した値を
+`NewTotal` に使う」という結線までで、「同一トランザクション内の再読が自身の書き込みを
+見る」という InnoDB の性質はモックでは検証できない。ここは実 DB でしか確かめられない。
+なお [points.js](../../loadtest/points.js) は `randUserID()` で対象を全ユーザーに散らすため、
+同一ユーザーの同時加算はほぼ起きない。この経路を実地で踏むには対象ユーザーを絞る必要がある。
+<!-- ssot-assert: present-grep 'randUserID' loadtest/points.js -->
+
+**なぜギルド側に同じ問題が無いか**: ギルドスコアの previous/new total は
+[guild-score-async.md](../plans/guild-score-async.md) の設計でレスポンスから削除済みで、
+そもそも同期経路が値を返さない。読み直しが要るのは個人ポイントだけ。
 
 ---
 

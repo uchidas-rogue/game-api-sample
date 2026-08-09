@@ -41,7 +41,7 @@ func TestRegister_HealthOnly(t *testing.T) {
 
 	mockHealth := mock_health.NewMockUsecase(ctrl)
 	h := router.Handlers{
-		Health:  healthhandler.NewHandler(mockHealth),
+		Health:  healthhandler.NewHandler(mockHealth, slogtest.NewLogger(t, nil)),
 		Gacha:   nil,
 		Ranking: nil,
 	}
@@ -67,7 +67,7 @@ func TestRegister_AllHandlers(t *testing.T) {
 	logger := slogtest.NewLogger(t, nil)
 
 	h := router.Handlers{
-		Health:  healthhandler.NewHandler(mock_health.NewMockUsecase(ctrl)),
+		Health:  healthhandler.NewHandler(mock_health.NewMockUsecase(ctrl), logger),
 		Gacha:   gachahandler.NewHandler(mock_gacha.NewMockUsecase(ctrl), logger),
 		Ranking: rankinghandler.NewHandler(mock_ranking.NewMockUsecase(ctrl), logger),
 	}

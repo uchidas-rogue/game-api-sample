@@ -43,7 +43,7 @@ type Container struct {
 // 機能追加時はここで各層のコンストラクタを呼び出して注入する。
 func Build(db *sql.DB, redisClient *infraRedis.Client, logger *slog.Logger) Container {
 	healthUC := healthusecase.NewUsecase()
-	healthH := healthhandler.NewHandler(healthUC)
+	healthH := healthhandler.NewHandler(healthUC, logger)
 
 	tx := infraMysql.NewTransactor(db, logger)
 

@@ -60,7 +60,7 @@ const (
 	syncStepListGuildScores
 	syncStepListUserPoints
 	// syncStepRedisSet は COMMIT 後の Redis 反映が一部失敗する経路。
-	// ログのみで処理を継続し、エラーは返さない。
+	// ループは継続する（残り全件を反映する）が、最後にエラーを返す。
 	syncStepRedisSet
 )
 
@@ -73,13 +73,15 @@ type syncCase struct {
 
 	failAt syncStep
 
-	wantErr bool
+	// wantErrIs は期待するエラーの原因。nil なら正常終了を期待する。
+	wantErrIs error
 }
 
 func TestRankingSyncer_SyncAll(t *testing.T) {
 	t.Parallel()
 
 	errDB := errors.New("connection refused")
+	errRedis := errors.New("redis error")
 
 	guildScores := []rankingdomain.GuildScore{
 		{GuildID: 1, Score: 100},
@@ -95,40 +97,41 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 	tests := []syncCase{
 		{
 			// #1 A→B→E1
-			name:    "DoInTx 自体が失敗: 内部処理も Redis SET も呼ばれない",
-			failAt:  syncStepBeginTx,
-			wantErr: true,
+			name:      "DoInTx 自体が失敗: 内部処理も Redis SET も呼ばれない",
+			failAt:    syncStepBeginTx,
+			wantErrIs: errDB,
 		},
 		{
 			// #2 A→B→C→E2
-			name:    "ListAllGuildScores が失敗: Redis SET が呼ばれない",
-			failAt:  syncStepListGuildScores,
-			wantErr: true,
+			name:      "ListAllGuildScores が失敗: Redis SET が呼ばれない",
+			failAt:    syncStepListGuildScores,
+			wantErrIs: errDB,
 		},
 		{
 			// #3 …→C→D→E3
-			name:    "ListAllUserPoints が失敗: Redis SET が呼ばれない",
-			failAt:  syncStepListUserPoints,
-			wantErr: true,
+			name:      "ListAllUserPoints が失敗: Redis SET が呼ばれない",
+			failAt:    syncStepListUserPoints,
+			wantErrIs: errDB,
 		},
 		{
-			// #4 …→D→E→F→Z（対象0件）
+			// #4 …→D→E→F→H→Z（対象0件）
 			name:        "正常系: 空テーブルでも完了する",
 			guildScores: []rankingdomain.GuildScore{},
 			userPoints:  []rankingdomain.UserPoint{},
 		},
 		{
-			// #5 …→E→F→Z
+			// #5 …→E→F→H→Z
 			name:        "正常系: スナップショットが Redis に反映される",
 			guildScores: guildScores,
 			userPoints:  userPoints,
 		},
 		{
-			// #6 …→F→G→F→Z（Redis SET の一部が失敗）
-			name:        "Redis SET の一部失敗はログのみで処理を継続しエラーを返さない",
+			// #6 …→F→G→F→H→E4（Redis SET の一部が失敗）
+			name:        "Redis SET の一部が失敗: 残り全件を反映したうえでエラーを返す",
 			guildScores: guildScores,
 			userPoints:  userPoints,
 			failAt:      syncStepRedisSet,
+			wantErrIs:   errRedis,
 		},
 	}
 
@@ -138,13 +141,13 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			d := newSyncerDeps(ctrl)
-			expectSyncCalls(d, tt, errDB)
+			expectSyncCalls(d, tt, errDB, errRedis)
 
 			err := d.build(t).SyncAll(context.Background())
 
-			if tt.wantErr {
+			if tt.wantErrIs != nil {
 				require.Error(t, err)
-				assert.ErrorIs(t, err, errDB, "原因のエラーを errors.Is で辿れること")
+				assert.ErrorIs(t, err, tt.wantErrIs, "原因のエラーを errors.Is で辿れること")
 				return
 			}
 			require.NoError(t, err)
@@ -155,7 +158,7 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 // expectSyncCalls は tc の「どこで失敗するか」に応じて、そこまでの呼び出しだけを期待に登録する。
 // 期待していない呼び出しが起きれば gomock が失敗させるため、
 // 「Redis SET が呼ばれないこと」の検証はここに含まれている。
-func expectSyncCalls(d syncerDeps, tc syncCase, errDB error) {
+func expectSyncCalls(d syncerDeps, tc syncCase, errDB, errRedis error) {
 	// B: トランザクション境界
 	if tc.failAt == syncStepBeginTx {
 		d.tx.EXPECT().DoInTx(gomock.Any(), gomock.Any()).Return(errDB)
@@ -178,8 +181,8 @@ func expectSyncCalls(d syncerDeps, tc syncCase, errDB error) {
 	d.repo.EXPECT().ListAllUserPoints(gomock.Any(), gomock.Any()).Return(tc.userPoints, nil)
 
 	// E / F: COMMIT 後の Redis 反映。
-	// 個別 SET の失敗はログのみで継続するため、1件目を失敗させても全件が呼ばれる。
-	errRedis := errors.New("redis error")
+	// 個別 SET が失敗してもループは継続するため、1件目を失敗させても全件が呼ばれる。
+	// 「打ち切らない」ことの検証は、全件ぶんの EXPECT が消化されるかで担保している。
 	for i, gs := range tc.guildScores {
 		call := d.store.EXPECT().SetGuildScore(gomock.Any(), gs.GuildID, gs.Score)
 		if tc.failAt == syncStepRedisSet && i == 0 {

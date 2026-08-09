@@ -1,44 +1,65 @@
+// Package health_test はヘルスチェック HTTP ハンドラの外部テストパッケージ。
+//
+// テスト設計（フロー図・テスト仕様表）は docs/testing/http-health.md にある。
+// 分岐を追加・変更したら、まず図と表を更新してからここを直す。
 package health_test
 
 import (
+	"bytes"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/labstack/echo/v4"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	healthdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/health"
 	healthhandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/health"
-	mock_health "github.com/uchidas-rogue/game-api-sample/internal/usecase/health/mock"
+	"github.com/uchidas-rogue/game-api-sample/internal/testutil/apicontract"
+	"github.com/uchidas-rogue/game-api-sample/internal/testutil/slogtest"
+	mockhealth "github.com/uchidas-rogue/game-api-sample/internal/usecase/health/mock"
 )
 
+// checkCase は Check のテストケース1件。データのみを持つ。
+type checkCase struct {
+	name string
+
+	// ---- usecase の戻り値 ----
+	mockStatus healthdomain.HealthStatus
+	mockErr    error
+
+	// ---- 期待結果 ----
+	wantStatusCode int
+	wantBody       string
+}
+
 // TestHandler_Check はヘルスチェックハンドラの振る舞いを検証する。
+// docs/testing/http-health.md「1-2. テスト仕様表」と 1 対 1 で対応する。
 func TestHandler_Check(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name           string
-		mockStatus     healthdomain.HealthStatus
-		mockErr        error
-		wantStatusCode int
-		wantBody       string
-	}{
+	// leakedDetail は異常系でレスポンスに漏れてはならない文字列。
+	// 実運用では接続文字列などがここに入りうる。
+	const leakedDetail = "dial tcp 10.0.0.1:3306: connection refused"
+
+	tests := []checkCase{
 		{
-			name:           "正常系: usecaseがStatusOKを返した場合は200/okを返す",
-			mockStatus:     healthdomain.StatusOK,
-			mockErr:        nil,
-			wantStatusCode: http.StatusOK,
-			wantBody:       `{"status":"ok"}`,
+			// #1 A→B→E1
+			name:           "usecase がエラー: 503 を返し、エラー詳細をレスポンスに載せない",
+			mockErr:        errors.New(leakedDetail),
+			wantStatusCode: http.StatusServiceUnavailable,
+			wantBody:       `{"status":"down"}`,
 		},
 		{
-			name:           "異常系: usecaseがエラーを返した場合は503を返す",
-			mockStatus:     "",
-			mockErr:        errors.New("dependency check failed"),
-			wantStatusCode: http.StatusServiceUnavailable,
-			wantBody:       `{"status":"dependency check failed"}`,
+			// #2 A→B→Z
+			name:           "正常系: 200 と稼働状態を返す",
+			mockStatus:     healthdomain.StatusOK,
+			wantStatusCode: http.StatusOK,
+			wantBody:       `{"status":"ok"}`,
 		},
 	}
 
@@ -47,28 +68,78 @@ func TestHandler_Check(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
+			uc := mockhealth.NewMockUsecase(ctrl)
+			uc.EXPECT().Check(gomock.Any()).Return(tt.mockStatus, tt.mockErr).Times(1)
 
-			mockUsecase := mock_health.NewMockUsecase(ctrl)
-			mockUsecase.EXPECT().Check(gomock.Any()).Return(tt.mockStatus, tt.mockErr).Times(1)
+			// エラー詳細が「レスポンスには出ないが、ログには出る」ことを見るため、
+			// ログを捕捉できる logger を渡す。
+			var logBuf bytes.Buffer
+			h := healthhandler.NewHandler(uc,
+				slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelError})))
 
-			e := echo.New()
-			req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-			rec := httptest.NewRecorder()
-			c := e.NewContext(req, rec)
+			rec := recordCheck(t, h)
 
-			h := healthhandler.NewHandler(mockUsecase)
-			if err := h.Check(c); err != nil {
-				t.Fatalf("Check() unexpected error = %v", err)
+			assert.Equal(t, tt.wantStatusCode, rec.Code)
+			assert.JSONEq(t, tt.wantBody, rec.Body.String())
+
+			if tt.mockErr == nil {
+				return
 			}
-
-			if rec.Code != tt.wantStatusCode {
-				t.Errorf("status code got = %d, want %d", rec.Code, tt.wantStatusCode)
-			}
-			gotBody := strings.TrimSpace(rec.Body.String())
-			if gotBody != tt.wantBody {
-				t.Errorf("body got = %q, want %q", gotBody, tt.wantBody)
-			}
+			// 情報漏えい防止がこの分岐の存在理由なので、そこを検証する。
+			assert.NotContains(t, rec.Body.String(), leakedDetail,
+				"エラー詳細をレスポンスに載せないこと")
+			assert.Contains(t, logBuf.String(), leakedDetail,
+				"エラー詳細はログには残すこと（握り潰さない）")
 		})
 	}
+}
+
+// TestResponseContract はレスポンスの **構造** が契約ファイルと一致することを検証する。
+// 値の妥当性は TestHandler_Check の責務なので、ここでは見ない。
+//
+// 正常系と異常系で構造が同一（status 1 キー）のため、契約ファイルは 1 つで足りる。
+func TestResponseContract(t *testing.T) {
+	t.Parallel()
+
+	const contractHealth = "../testdata/contracts/health.json"
+
+	tests := []struct {
+		name       string
+		mockStatus healthdomain.HealthStatus
+		mockErr    error
+	}{
+		// #3
+		{name: "正常系のレスポンス構造", mockStatus: healthdomain.StatusOK},
+		{name: "異常系のレスポンス構造", mockErr: errors.New("boom")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			uc := mockhealth.NewMockUsecase(ctrl)
+			uc.EXPECT().Check(gomock.Any()).Return(tt.mockStatus, tt.mockErr)
+
+			h := healthhandler.NewHandler(uc, slogtest.NewLogger(t, nil))
+			rec := recordCheck(t, h)
+
+			apicontract.AssertStructure(t, contractHealth, rec.Body.Bytes())
+		})
+	}
+}
+
+// recordCheck は GET /healthz を1回実行し、記録したレスポンスを返す。
+// ハンドラが error を返さないこと（Echo の既定エラーハンドラに委ねないこと）も
+// ここで一律に検証する。
+func recordCheck(t *testing.T, h *healthhandler.Handler) *httptest.ResponseRecorder {
+	t.Helper()
+
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	require.NoError(t, h.Check(c), "ハンドラは error を返さず、自身でレスポンスを組み立てる")
+	return rec
 }
