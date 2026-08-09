@@ -86,6 +86,14 @@ func (r *GachaRepository) ListItems(ctx context.Context, tx shared.Tx) ([]gachad
 	return items, nil
 }
 
+// 複数行 INSERT の1行あたりのプレースホルダ数。args のキャパシティ計算に使う。
+const (
+	// userItemColumns は user_items の (user_id, item_id, num)。
+	userItemColumns = 3
+	// gachaHistoryColumns は gacha_histories の (user_id, item_id)。
+	gachaHistoryColumns = 2
+)
+
 // UpsertUserItems はユーザー所持アイテムを複数行 INSERT で一括追加（既存は加算）する。
 // sqlc は可変行数の複数行 INSERT を生成できないため、execer で生 SQL を発行する。
 // items は呼び出し側で item_id 昇順に並べてある前提（行ロック取得順を揃えデッドロックを回避）。
@@ -100,7 +108,7 @@ func (r *GachaRepository) UpsertUserItems(ctx context.Context, tx shared.Tx, use
 	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?, ?),", len(items)), ",")
 	query := "INSERT INTO user_items (user_id, item_id, num) VALUES " + valuesClause +
 		" ON DUPLICATE KEY UPDATE num = num + VALUES(num)"
-	args := make([]any, 0, len(items)*3)
+	args := make([]any, 0, len(items)*userItemColumns)
 	for _, it := range items {
 		args = append(args, userID, it.ItemID, int32(it.Num))
 	}
@@ -121,7 +129,7 @@ func (r *GachaRepository) InsertGachaHistories(ctx context.Context, tx shared.Tx
 	}
 	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?),", len(itemIDs)), ",")
 	query := "INSERT INTO gacha_histories (user_id, item_id) VALUES " + valuesClause
-	args := make([]any, 0, len(itemIDs)*2)
+	args := make([]any, 0, len(itemIDs)*gachaHistoryColumns)
 	for _, itemID := range itemIDs {
 		args = append(args, userID, itemID)
 	}

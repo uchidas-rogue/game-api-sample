@@ -98,6 +98,14 @@ func (r *RankingRepository) IncrementGuildScore(ctx context.Context, tx shared.T
 	return nil
 }
 
+// 複数行 INSERT の1行あたりのプレースホルダ数。args のキャパシティ計算に使う。
+const (
+	// guildScoreColumns は guild_scores の (guild_id, score)。
+	guildScoreColumns = 2
+	// guildScoreHistoryColumns は guild_score_histories の (guild_id, user_id, score)。
+	guildScoreHistoryColumns = 3
+)
+
 // BulkIncrementGuildScores は複数ギルドのスコアを1文の複数行 upsert で一括加算する。
 // sqlc は可変行数の複数行 INSERT を生成できないため、プレースホルダを組み立てた
 // パラメータ化生 SQL を execer 経由で発行する（値の文字列連結はしない）。
@@ -122,7 +130,7 @@ func (r *RankingRepository) BulkIncrementGuildScores(ctx context.Context, tx sha
 	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?),", len(sorted)), ",")
 	query := "INSERT INTO guild_scores (guild_id, score) VALUES " + valuesClause +
 		" ON DUPLICATE KEY UPDATE score = score + VALUES(score)"
-	args := make([]any, 0, len(sorted)*2)
+	args := make([]any, 0, len(sorted)*guildScoreColumns)
 	for _, d := range sorted {
 		args = append(args, d.GuildID, d.Points)
 	}
@@ -146,7 +154,7 @@ func (r *RankingRepository) BulkInsertGuildScoreHistories(ctx context.Context, t
 
 	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?, ?),", len(entries)), ",")
 	query := "INSERT INTO guild_score_histories (guild_id, user_id, score) VALUES " + valuesClause
-	args := make([]any, 0, len(entries)*3)
+	args := make([]any, 0, len(entries)*guildScoreHistoryColumns)
 	for _, e := range entries {
 		args = append(args, e.GuildID, e.UserID, e.Points)
 	}

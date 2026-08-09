@@ -927,6 +927,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
+
 			ctrl := gomock.NewController(t)
 			w := tt.setup(t, ctrl)
 
@@ -1250,4 +1251,75 @@ func TestWorker_runOnce_appliesTickTimeout(t *testing.T) {
 		t.Fatal("DoInTx が呼ばれなかった")
 	}
 	stopAndWait(t, cancel, done)
+}
+
+// TestWorker_Run_ティック処理の失敗はループを止めない は、runOnce が失敗しても
+// Run がエラーを返さずポーリングを継続することを確認する。
+//
+// 一過性の DB/Redis 障害で worker プロセスが落ちてはならない、という運用上の要件。
+// ticker 経路と notify 経路それぞれに独立したエラーログの分岐があるため、両方を通す。
+func TestWorker_Run_ティック処理の失敗はループを止めない(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// notifyDriven が true なら通知チャネル経由でティックを起こす。
+		notifyDriven bool
+	}{
+		{name: "ticker 経由で runOnce が失敗しても継続する"},
+		{name: "通知経由で runOnce が失敗しても継続する", notifyDriven: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			repo := mockoutbox.NewMockRepository(ctrl)
+			store := mockranking.NewMockRankingStore(ctrl)
+			tx := mockshared.NewMockTransactor(ctrl)
+
+			called := make(chan struct{}, 16)
+			invokeDoInTxAndSignal(tx, called)
+			// 毎ティック失敗させる。Run はエラーを返さずログのみで継続するはず。
+			repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
+				Return(nil, errors.New("db down")).
+				AnyTimes()
+
+			cfg := workeroutbox.Config{
+				Repo: repo, RankingStore: store, Tx: tx,
+				Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
+			}
+
+			notifyCh := make(chan struct{}, 8)
+			if tt.notifyDriven {
+				sub := mockoutbox.NewMockSubscriber(ctrl)
+				sub.EXPECT().Subscribe(gomock.Any()).Return((<-chan struct{})(notifyCh), nil)
+				cfg.Subscriber = sub
+				// ticker 待ちではなく通知でティックを起こす。
+				cfg.PollInterval = time.Hour
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			w := workeroutbox.New(cfg)
+
+			done := make(chan struct{})
+			go func() {
+				_ = w.Run(ctx)
+				close(done)
+			}()
+
+			if tt.notifyDriven {
+				// 初回実行ぶんを消費してから通知でもう1回起こす。
+				waitForCalls(t, called, 1, 2*time.Second)
+				notifyCh <- struct{}{}
+				waitForCalls(t, called, 1, 2*time.Second)
+			} else {
+				// 初回 + ticker 駆動で最低 2 回。
+				waitForCalls(t, called, 2, 2*time.Second)
+			}
+
+			stopAndWait(t, cancel, done)
+		})
+	}
 }

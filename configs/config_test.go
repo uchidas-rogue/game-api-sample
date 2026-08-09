@@ -12,15 +12,39 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/configs"
 )
 
+// clearConfigEnv は Load が参照する全ての環境変数を空にする。
+//
+// 各テストが個別に列挙すると、設定値を追加したときに一部のテストだけ更新漏れが起き、
+// 実行環境の環境変数に結果が左右される（= flaky）。列挙はここ1箇所に集約する。
+// AGENTS.md §2 の「新規の設定値追加時は Config 構造体・既定値・Load() の3箇所を更新する」
+// に該当する変更をしたら、このリストにも追加すること。
+//
+// t.Setenv を使うため、呼び出し元のテストは t.Parallel() を付けられない。
+func clearConfigEnv(t *testing.T) {
+	t.Helper()
+
+	for _, key := range []string{
+		"PORT",
+		"LOG_LEVEL",
+		"MYSQL_DSN",
+		"REDIS_ADDR",
+		"OUTBOX_POLL_INTERVAL",
+		"OUTBOX_BATCH_SIZE",
+		"OUTBOX_CONCURRENCY",
+		"OUTBOX_TICK_TIMEOUT",
+		"DB_PING_TIMEOUT",
+		"DB_MAX_OPEN_CONNS",
+		"DB_MAX_IDLE_CONNS",
+		"DB_CONN_MAX_LIFETIME",
+		"DB_CONN_MAX_IDLE_TIME",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 // TestLoad_Defaults は全環境変数未設定時に既定値が返ることを検証する。
-// env 干渉回避のため各テストで t.Setenv を使用し、t.Parallel() は付けない。
 func TestLoad_Defaults(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("LOG_LEVEL", "")
-	t.Setenv("MYSQL_DSN", "")
-	t.Setenv("REDIS_ADDR", "")
-	t.Setenv("OUTBOX_POLL_INTERVAL", "")
-	t.Setenv("OUTBOX_BATCH_SIZE", "")
+	clearConfigEnv(t)
 
 	cfg, err := configs.Load()
 	require.NoError(t, err)
@@ -32,44 +56,12 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 10*time.Minute, cfg.OutboxPollInterval)
 	assert.Equal(t, 500, cfg.OutboxBatchSize)
 	assert.Equal(t, 8, cfg.OutboxConcurrency)
+	assert.Equal(t, 30*time.Second, cfg.OutboxTickTimeout)
+	assert.Equal(t, 5*time.Second, cfg.DBPingTimeout)
 	assert.Equal(t, 25, cfg.DBMaxOpenConns)
 	assert.Equal(t, 25, cfg.DBMaxIdleConns)
 	assert.Equal(t, 5*time.Minute, cfg.DBConnMaxLifetime)
 	assert.Equal(t, 5*time.Minute, cfg.DBConnMaxIdleTime)
-}
-
-func TestLoad_DBPool(t *testing.T) {
-	t.Run("override", func(t *testing.T) {
-		t.Setenv("DB_MAX_OPEN_CONNS", "100")
-		t.Setenv("DB_MAX_IDLE_CONNS", "0")
-		t.Setenv("DB_CONN_MAX_LIFETIME", "1m")
-		t.Setenv("DB_CONN_MAX_IDLE_TIME", "30s")
-
-		cfg, err := configs.Load()
-		require.NoError(t, err)
-		assert.Equal(t, 100, cfg.DBMaxOpenConns)
-		assert.Equal(t, 0, cfg.DBMaxIdleConns)
-		assert.Equal(t, time.Minute, cfg.DBConnMaxLifetime)
-		assert.Equal(t, 30*time.Second, cfg.DBConnMaxIdleTime)
-	})
-
-	t.Run("MaxOpenConns must be positive", func(t *testing.T) {
-		t.Setenv("DB_MAX_OPEN_CONNS", "0")
-		_, err := configs.Load()
-		require.Error(t, err)
-	})
-
-	t.Run("MaxOpenConns rejects non-numeric", func(t *testing.T) {
-		t.Setenv("DB_MAX_OPEN_CONNS", "abc")
-		_, err := configs.Load()
-		require.Error(t, err)
-	})
-
-	t.Run("ConnMaxLifetime rejects negative", func(t *testing.T) {
-		t.Setenv("DB_CONN_MAX_LIFETIME", "-1s")
-		_, err := configs.Load()
-		require.Error(t, err)
-	})
 }
 
 func TestLoad_PORT(t *testing.T) {
@@ -85,12 +77,8 @@ func TestLoad_PORT(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
 			t.Setenv("PORT", tt.value)
-			t.Setenv("LOG_LEVEL", "")
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
-			t.Setenv("OUTBOX_POLL_INTERVAL", "")
-			t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 			cfg, err := configs.Load()
 			if tt.wantErr {
@@ -119,12 +107,8 @@ func TestLoad_LogLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PORT", "")
+			clearConfigEnv(t)
 			t.Setenv("LOG_LEVEL", tt.value)
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
-			t.Setenv("OUTBOX_POLL_INTERVAL", "")
-			t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 			cfg, err := configs.Load()
 			if tt.wantErr {
@@ -138,12 +122,8 @@ func TestLoad_LogLevel(t *testing.T) {
 }
 
 func TestLoad_MySQLDSN(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("LOG_LEVEL", "")
+	clearConfigEnv(t)
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(db:3306)/mydb")
-	t.Setenv("REDIS_ADDR", "")
-	t.Setenv("OUTBOX_POLL_INTERVAL", "")
-	t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 	cfg, err := configs.Load()
 	require.NoError(t, err)
@@ -151,12 +131,8 @@ func TestLoad_MySQLDSN(t *testing.T) {
 }
 
 func TestLoad_RedisAddr(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("LOG_LEVEL", "")
-	t.Setenv("MYSQL_DSN", "")
+	clearConfigEnv(t)
 	t.Setenv("REDIS_ADDR", "redis:6379")
-	t.Setenv("OUTBOX_POLL_INTERVAL", "")
-	t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 	cfg, err := configs.Load()
 	require.NoError(t, err)
@@ -179,12 +155,8 @@ func TestLoad_OutboxPollInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PORT", "")
-			t.Setenv("LOG_LEVEL", "")
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
+			clearConfigEnv(t)
 			t.Setenv("OUTBOX_POLL_INTERVAL", tt.value)
-			t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 			cfg, err := configs.Load()
 			if tt.wantErr {
@@ -219,12 +191,7 @@ func TestLoad_OutboxConcurrency(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PORT", "")
-			t.Setenv("LOG_LEVEL", "")
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
-			t.Setenv("OUTBOX_POLL_INTERVAL", "")
-			t.Setenv("OUTBOX_BATCH_SIZE", "")
+			clearConfigEnv(t)
 			t.Setenv("DB_MAX_OPEN_CONNS", tt.maxOpenConn)
 			t.Setenv("OUTBOX_CONCURRENCY", tt.value)
 
@@ -254,11 +221,7 @@ func TestLoad_OutboxBatchSize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PORT", "")
-			t.Setenv("LOG_LEVEL", "")
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
-			t.Setenv("OUTBOX_POLL_INTERVAL", "")
+			clearConfigEnv(t)
 			t.Setenv("OUTBOX_BATCH_SIZE", tt.value)
 
 			cfg, err := configs.Load()
@@ -268,6 +231,191 @@ func TestLoad_OutboxBatchSize(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.OutboxBatchSize)
+		})
+	}
+}
+
+// TestLoad_OutboxTickTimeout / TestLoad_DBPingTimeout は
+// OUTBOX_POLL_INTERVAL と同じ検証構造を持つ独立したコードブロックを対象にする。
+// 4 ブロックは同じ形だが条件式はそれぞれ別のソース行にあるため、
+// 1 ブロックのテストで他を代表させることはできない。
+//
+// 0s と -1s はどちらも `parsed <= 0` の同一分岐に入るが、別ケースとして残す。
+// 0s は `<=` を `<` と書き誤った場合、-1s は `== 0` と書き誤った場合を検出するため
+// （境界値を独立ケースにする3基準のうち「片方だけが検出できる実装ミスがある」に該当）。
+func TestLoad_OutboxTickTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 10s", value: "10s", want: 10 * time.Second},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0s（0以下）", value: "0s", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("OUTBOX_TICK_TIMEOUT", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.OutboxTickTimeout)
+		})
+	}
+}
+
+func TestLoad_DBPingTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 3s", value: "3s", want: 3 * time.Second},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0s（0以下）", value: "0s", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_PING_TIMEOUT", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBPingTimeout)
+		})
+	}
+}
+
+// DB プール設定4件は同型の検証ブロックが並ぶ（AGENTS.md §3 の対称性チェック）。
+// MaxOpenConns だけが `<= 0` を拒否し、他の3つは 0 を許容する（`< 0` を拒否）ため、
+// 各ブロックの境界値ケースは意図的に非対称にしてある。
+func TestLoad_DBMaxOpenConns(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    int
+	}{
+		{name: "有効: 100", value: "100", want: 100},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0（0以下）", value: "0", wantErr: true},
+		{name: "無効: -1（負値）", value: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_MAX_OPEN_CONNS", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBMaxOpenConns)
+		})
+	}
+}
+
+func TestLoad_DBMaxIdleConns(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    int
+	}{
+		{name: "有効: 50", value: "50", want: 50},
+		{name: "有効: 0（アイドル接続を保持しない）", value: "0", want: 0},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: -1（負値）", value: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_MAX_IDLE_CONNS", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBMaxIdleConns)
+		})
+	}
+}
+
+func TestLoad_DBConnMaxLifetime(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 1m", value: "1m", want: time.Minute},
+		{name: "有効: 0s（無制限）", value: "0s", want: 0},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_CONN_MAX_LIFETIME", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBConnMaxLifetime)
+		})
+	}
+}
+
+func TestLoad_DBConnMaxIdleTime(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 30s", value: "30s", want: 30 * time.Second},
+		{name: "有効: 0s（無制限）", value: "0s", want: 0},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_CONN_MAX_IDLE_TIME", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBConnMaxIdleTime)
 		})
 	}
 }

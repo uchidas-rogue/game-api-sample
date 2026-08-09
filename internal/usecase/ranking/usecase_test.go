@@ -1,10 +1,19 @@
 // Package ranking_test は ranking ユースケースの外部テストパッケージ。
 // 公開 API のみを対象とし、モックを用いてデータベース・Redis 接続をバイパスする。
+//
+// テスト設計（フロー図・テスト仕様表）は docs/testing/ranking.md にある。
+// 分岐を追加・変更したら、まず図と表を更新してからここを直す。
+//
+// 境界値（Points の範囲・limit/offset の正規化）は domain の責務であり、
+// internal/domain/ranking/constants_test.go が正本。ここでは重ねて検証しない。
 package ranking_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -21,8 +30,45 @@ import (
 	mockshared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared/mock"
 )
 
-// newDoInTxCaller は MockTransactor.DoInTx を実際に fn(nil) を呼び出す DoAndReturn として設定するヘルパー。
-func newDoInTxCaller(tx *mockshared.MockTransactor) {
+const (
+	testUserID  = int64(1)
+	testGuildID = int64(10)
+)
+
+// mocks は Usecase の依存一式。組み立て手続きをテーブルから追い出すための入れ物。
+type mocks struct {
+	tx       *mockshared.MockTransactor
+	repo     *mockranking.MockRepository
+	store    *mockranking.MockRankingStore
+	outbox   *mockoutbox.MockRepository
+	notifier *mockoutbox.MockNotifier
+}
+
+func newMocks(ctrl *gomock.Controller) *mocks {
+	return &mocks{
+		tx:       mockshared.NewMockTransactor(ctrl),
+		repo:     mockranking.NewMockRepository(ctrl),
+		store:    mockranking.NewMockRankingStore(ctrl),
+		outbox:   mockoutbox.NewMockRepository(ctrl),
+		notifier: mockoutbox.NewMockNotifier(ctrl),
+	}
+}
+
+func (m *mocks) usecase(t *testing.T) ranking.Usecase {
+	t.Helper()
+	return m.usecaseWithLogger(slogtest.NewLogger(t, nil))
+}
+
+// usecaseWithLogger はログ出力そのものを検証したいケース用。
+// 通常は usecase(t) を使い、ログは t.Log へ流す。
+func (m *mocks) usecaseWithLogger(logger *slog.Logger) ranking.Usecase {
+	return ranking.NewUsecase(m.tx, m.repo, m.store, m.outbox, m.notifier, logger)
+}
+
+// expectDoInTxRunsFn は DoInTx が fn を実際に実行する設定にする。
+// トランザクション境界そのものの契約は docs/testing/transaction-boundary.md が
+// Transactor 自身のテストで担保しているため、ここでは境界をモックしてよい。
+func expectDoInTxRunsFn(tx *mockshared.MockTransactor) {
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any()).
 		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
@@ -30,1124 +76,660 @@ func newDoInTxCaller(tx *mockshared.MockTransactor) {
 		})
 }
 
-// TestGetGuildRankings_正常系_異常系 はギルドランキング取得のユースケースを検証する。
-func TestGetGuildRankings_正常系_異常系(t *testing.T) {
+// ---------------------------------------------------------------------------
+// 1. 読み取り系: GetGuildRankings / GetUserRankings
+// ---------------------------------------------------------------------------
+
+// rankingKind はギルド版・ユーザー版の区別。
+// 2 メソッドは構造が同一なので **同じケース表を両方に流す**。
+// これにより「片方にだけケースがある」非対称な状態が構造的に起きなくなる。
+type rankingKind int
+
+const (
+	kindGuild rankingKind = iota
+	kindUser
+)
+
+func (k rankingKind) String() string {
+	if k == kindGuild {
+		return "guild"
+	}
+	return "user"
+}
+
+// rankStep は読み取り系フローで失敗させる地点。
+type rankStep int
+
+const (
+	rankStepNone rankStep = iota
+	rankStepGetRankings
+	rankStepListNames
+	rankStepTotalCount
+)
+
+// rankingsCase は GetXxxRankings のテストケース1件。データのみを持つ。
+type rankingsCase struct {
+	name  string
+	input ranking.GetRankingsInput
+	// entries は store が返すランキング。空スライスなら名前解決をスキップする経路になる。
+	entries    []rankingdomain.RankEntry
+	totalCount int64
+	failAt     rankStep
+	// wantNames は名前解決後に期待する Name の並び（正常系のみ）。
+	wantNames []string
+	// wantStoreArgs が true のとき、store に渡る offset/limit が正規化後の値であることを検証する。
+	wantNormalizedArgs bool
+	// nameMissingForLastID が true のとき、名前解決の戻り値から最後の entry の ID を落とす。
+	// Redis の ZSet と MySQL がずれた状態（削除済みユーザー/ギルドが ZSet に残っている等）を模す。
+	nameMissingForLastID bool
+}
+
+func TestUsecase_GetRankings(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name        string
-		input       ranking.GetRankingsInput
-		setup       func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase
-		wantErr     bool
-		checkResult func(t *testing.T, r ranking.RankingsResult)
-	}{
+	errStore := errors.New("store error")
+
+	entries := []rankingdomain.RankEntry{
+		{Rank: 1, ID: 100, Score: 500},
+		{Rank: 2, ID: 200, Score: 300},
+	}
+
+	// docs/testing/ranking.md「1. 読み取り系」のテスト仕様表と 1 対 1 で対応する。
+	// 並び順は図のパスが短い順。
+	tests := []rankingsCase{
 		{
-			name:  "正常系: ランキング取得成功",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				entries := []rankingdomain.RankEntry{
-					{Rank: 1, ID: 1, Score: 9000},
-					{Rank: 2, ID: 2, Score: 7000},
-				}
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, 10).Return(entries, nil)
-				repo.EXPECT().ListGuildsByIDs(gomock.Any(), gomock.Any(), []int64{1, 2}).
-					Return(map[int64]rankingdomain.Guild{
-						1: {ID: 1, Name: "ギルドA"},
-						2: {ID: 2, Name: "ギルドB"},
-					}, nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(2), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r ranking.RankingsResult) {
-				t.Helper()
-				assert.Equal(t, int64(2), r.TotalCount)
-				require.Len(t, r.Rankings, 2)
-				assert.Equal(t, "ギルドA", r.Rankings[0].Name)
-				assert.Equal(t, "ギルドB", r.Rankings[1].Name)
-			},
+			// #1 A→B→C→E1
+			name:    "store の取得がエラー: 名前解決も total count も呼ばれない",
+			entries: entries,
+			failAt:  rankStepGetRankings,
 		},
 		{
-			name:  "正常系: エントリーが空の場合は ListGuildsByIDs を呼ばない",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, 10).Return([]rankingdomain.RankEntry{}, nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(0), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r ranking.RankingsResult) {
-				t.Helper()
-				assert.Equal(t, int64(0), r.TotalCount)
-				assert.Empty(t, r.Rankings)
-			},
+			// #2 A→B→C→D→F→Z
+			name:       "entries が空: 名前解決を呼ばない",
+			entries:    []rankingdomain.RankEntry{},
+			totalCount: 0,
+			wantNames:  []string{},
 		},
 		{
-			name:  "エッジケース: limit=0 は DefaultRankingLimit に正規化される",
-			input: ranking.GetRankingsInput{Limit: 0, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				// NormalizeLimit(0) = 10 (DefaultRankingLimit)
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, rankingdomain.DefaultRankingLimit).
-					Return([]rankingdomain.RankEntry{}, nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(0), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
+			// #3 …→D→G→E2
+			name:    "名前解決がエラー: total count が呼ばれない",
+			entries: entries,
+			failAt:  rankStepListNames,
 		},
 		{
-			name:  "エッジケース: limit が MaxRankingLimit を超える場合は上限に丸められる",
-			input: ranking.GetRankingsInput{Limit: 9999, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, rankingdomain.MaxRankingLimit).
-					Return([]rankingdomain.RankEntry{}, nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(0), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
+			// #4 …→G→H→H2→F→E3
+			name:    "total count がエラー",
+			entries: entries,
+			failAt:  rankStepTotalCount,
 		},
 		{
-			name:  "エッジケース: offset が負数の場合は 0 に丸められる",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: -5},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, 10).
-					Return([]rankingdomain.RankEntry{}, nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(0), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
+			// #5 …→H→H2→F→Z
+			name:       "正常系: 名前がマージされる",
+			entries:    entries,
+			totalCount: 42,
+			wantNames:  []string{"名前100", "名前200"},
 		},
 		{
-			name:  "異常系: GetGuildRankings(store) がエラー",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, 10).Return(nil, errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
+			// #6 5 と同一パス。正規化後の値が store へ渡る「結線」だけを検証する。
+			// 正規化そのものの正しさは domain の NormalizeLimit / NormalizeOffset が担保する。
+			name:               "正規化した offset/limit が store に渡る",
+			input:              ranking.GetRankingsInput{Limit: 0, Offset: -5},
+			entries:            entries,
+			totalCount:         42,
+			wantNames:          []string{"名前100", "名前200"},
+			wantNormalizedArgs: true,
 		},
 		{
-			name:  "異常系: ListGuildsByIDs がエラー",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errDB := errors.New("db error")
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, 10).
-					Return([]rankingdomain.RankEntry{{Rank: 1, ID: 1}}, nil)
-				repo.EXPECT().ListGuildsByIDs(gomock.Any(), gomock.Any(), gomock.Any()).
-					Return(nil, errDB)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:  "異常系: GetGuildTotalCount がエラー",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				store.EXPECT().GetGuildRankings(gomock.Any(), 0, 10).Return([]rankingdomain.RankEntry{}, nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(0), errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
+			// #7 …→H→H3→F→Z
+			// 名前が引けなくてもエントリを落とさない（順位と件数が食い違わないため）。
+			name:                 "名前マップに ID が無い: Name は空のままエントリは除外しない",
+			entries:              entries,
+			totalCount:           42,
+			wantNames:            []string{"名前100", ""},
+			nameMissingForLastID: true,
 		},
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			uc := tt.setup(t, ctrl)
-
-			result, err := uc.GetGuildRankings(context.Background(), tt.input)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Equal(t, ranking.RankingsResult{}, result)
-			} else {
-				require.NoError(t, err)
-				if tt.checkResult != nil {
-					tt.checkResult(t, result)
-				}
-			}
-		})
+	for _, kind := range []rankingKind{kindGuild, kindUser} {
+		for _, tt := range tests {
+			t.Run(kind.String()+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				runRankingsCase(t, kind, tt, errStore)
+			})
+		}
 	}
 }
 
-// TestGetGuildRank_正常系_異常系 はギルド個別順位取得のユースケースを検証する。
-func TestGetGuildRank_正常系_異常系(t *testing.T) {
-	t.Parallel()
-
-	const guildID = int64(1)
-
-	tests := []struct {
-		name        string
-		guildID     int64
-		setup       func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase
-		wantErr     bool
-		checkErr    func(t *testing.T, err error)
-		checkResult func(t *testing.T, r rankingdomain.GuildRankResult)
-	}{
-		{
-			name:    "正常系: ギルド順位取得成功",
-			guildID: guildID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				repo.EXPECT().GetGuild(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.Guild{ID: guildID, Name: "テストギルド"}, nil)
-				store.EXPECT().GetGuildScore(gomock.Any(), guildID).
-					Return(int64(9000), true, nil)
-				store.EXPECT().GetGuildRank(gomock.Any(), guildID).
-					Return(int64(1), nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).
-					Return(int64(10), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r rankingdomain.GuildRankResult) {
-				t.Helper()
-				assert.Equal(t, guildID, r.GuildID)
-				assert.Equal(t, "テストギルド", r.GuildName)
-				assert.Equal(t, int64(9000), r.Score)
-				assert.Equal(t, int64(1), r.Rank)
-				assert.Equal(t, int64(10), r.TotalGuilds)
-			},
-		},
-		{
-			name:    "異常系: GetGuild がエラー",
-			guildID: guildID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				repo.EXPECT().GetGuild(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.Guild{}, rankingdomain.ErrGuildNotFound)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrGuildNotFound)
-			},
-		},
-		{
-			name:    "異常系: スコア未登録で ErrScoreNotFound",
-			guildID: guildID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				repo.EXPECT().GetGuild(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.Guild{ID: guildID}, nil)
-				store.EXPECT().GetGuildScore(gomock.Any(), guildID).
-					Return(int64(0), false, nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrScoreNotFound)
-			},
-		},
-		{
-			name:    "異常系: GetGuildScore(store) がエラー",
-			guildID: guildID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				repo.EXPECT().GetGuild(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.Guild{ID: guildID}, nil)
-				store.EXPECT().GetGuildScore(gomock.Any(), guildID).
-					Return(int64(0), false, errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:    "異常系: GetGuildRank(store) がエラー",
-			guildID: guildID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				repo.EXPECT().GetGuild(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.Guild{ID: guildID}, nil)
-				store.EXPECT().GetGuildScore(gomock.Any(), guildID).
-					Return(int64(9000), true, nil)
-				store.EXPECT().GetGuildRank(gomock.Any(), guildID).
-					Return(int64(0), errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:    "異常系: GetGuildTotalCount がエラー",
-			guildID: guildID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				repo.EXPECT().GetGuild(gomock.Any(), gomock.Any(), guildID).
-					Return(rankingdomain.Guild{ID: guildID}, nil)
-				store.EXPECT().GetGuildScore(gomock.Any(), guildID).
-					Return(int64(9000), true, nil)
-				store.EXPECT().GetGuildRank(gomock.Any(), guildID).
-					Return(int64(1), nil)
-				store.EXPECT().GetGuildTotalCount(gomock.Any()).
-					Return(int64(0), errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			uc := tt.setup(t, ctrl)
-
-			result, err := uc.GetGuildRank(context.Background(), tt.guildID)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.checkErr != nil {
-					tt.checkErr(t, err)
-				}
-				assert.Equal(t, rankingdomain.GuildRankResult{}, result)
-			} else {
-				require.NoError(t, err)
-				if tt.checkResult != nil {
-					tt.checkResult(t, result)
-				}
-			}
-		})
-	}
-}
-
-// expectOutboxRankingScoreAdded は AddUserPoints 成功経路で発行される outbox InsertEvent
-// 呼び出しを検証する EXPECT を登録する。payload は JSON でシリアライズされた
-// RankingScoreAddedPayload と一致することを確認する。
-func expectOutboxRankingScoreAdded(t *testing.T, repo *mockoutbox.MockRepository, userID, guildID, points int64) {
+func runRankingsCase(t *testing.T, kind rankingKind, tc rankingsCase, errStore error) {
 	t.Helper()
-	repo.EXPECT().
-		InsertEvent(gomock.Any(), gomock.Any(), outboxdomain.EventTypeRankingScoreAdded, gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ shared.Tx, _ outboxdomain.EventType, payload []byte) (uint64, error) {
-			p, err := outboxdomain.UnmarshalRankingScoreAddedPayload(payload)
-			require.NoError(t, err)
-			assert.Equal(t, userID, p.UserID)
-			assert.Equal(t, guildID, p.GuildID)
-			assert.Equal(t, points, p.Points)
-			return 1, nil
-		})
+
+	ctrl := gomock.NewController(t)
+	m := newMocks(ctrl)
+
+	wantOffset := rankingdomain.NormalizeOffset(tc.input.Offset)
+	wantLimit := rankingdomain.NormalizeLimit(tc.input.Limit)
+	if tc.wantNormalizedArgs {
+		// 正規化されていなければ生値が渡るので、この2つは必ず異なる値になっている。
+		require.NotEqual(t, tc.input.Limit, wantLimit, "テストの前提: 生値と正規化後が異なること")
+		require.NotEqual(t, tc.input.Offset, wantOffset, "テストの前提: 生値と正規化後が異なること")
+	}
+
+	expectRankingsCalls(kind, m, tc, errStore, wantOffset, wantLimit)
+
+	uc := m.usecase(t)
+	var (
+		res ranking.RankingsResult
+		err error
+	)
+	if kind == kindGuild {
+		res, err = uc.GetGuildRankings(context.Background(), tc.input)
+	} else {
+		res, err = uc.GetUserRankings(context.Background(), tc.input)
+	}
+
+	if tc.failAt != rankStepNone {
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errStore)
+		assert.Equal(t, ranking.RankingsResult{}, res, "エラー時はゼロ値を返す")
+		return
+	}
+
+	require.NoError(t, err)
+	assert.Equal(t, tc.totalCount, res.TotalCount)
+	require.Len(t, res.Rankings, len(tc.wantNames))
+	for i, want := range tc.wantNames {
+		assert.Equal(t, want, res.Rankings[i].Name, "%d 件目の名前", i+1)
+	}
 }
 
-// TestAddUserPoints_正常系_異常系 はユーザーポイント加算のユースケースを検証する。
-// MySQL 更新と outbox 登録を同一トランザクション内で実行することを確認する。
-// Redis 反映は worker が非同期に行うため、本テストでは rankingStore への書き込みは
-// 一切呼び出されないことを暗黙的に検証する（モックに EXPECT を仕掛けないことで担保）。
-func TestAddUserPoints_正常系_異常系(t *testing.T) {
+func expectRankingsCalls(kind rankingKind, m *mocks, tc rankingsCase, errStore error, wantOffset, wantLimit int) {
+	// C: ランキング取得
+	if tc.failAt == rankStepGetRankings {
+		if kind == kindGuild {
+			m.store.EXPECT().GetGuildRankings(gomock.Any(), wantOffset, wantLimit).Return(nil, errStore)
+		} else {
+			m.store.EXPECT().GetUserRankings(gomock.Any(), wantOffset, wantLimit).Return(nil, errStore)
+		}
+		return
+	}
+	// entries はケース間で共有しないようコピーを渡す（usecase が Name を書き換えるため）。
+	entries := make([]rankingdomain.RankEntry, len(tc.entries))
+	copy(entries, tc.entries)
+	if kind == kindGuild {
+		m.store.EXPECT().GetGuildRankings(gomock.Any(), wantOffset, wantLimit).Return(entries, nil)
+	} else {
+		m.store.EXPECT().GetUserRankings(gomock.Any(), wantOffset, wantLimit).Return(entries, nil)
+	}
+
+	// D: entries が空なら名前解決はスキップされる
+	if len(entries) > 0 {
+		ids := make([]int64, len(entries))
+		for i, e := range entries {
+			ids[i] = e.ID
+		}
+		if tc.failAt == rankStepListNames {
+			if kind == kindGuild {
+				m.repo.EXPECT().ListGuildsByIDs(gomock.Any(), nil, ids).Return(nil, errStore)
+			} else {
+				m.repo.EXPECT().ListUsersByIDs(gomock.Any(), nil, ids).Return(nil, errStore)
+			}
+			return
+		}
+		// H: 名前マップに ID が無い分岐を通すため、指定時は末尾の ID を落とす。
+		resolved := ids
+		if tc.nameMissingForLastID {
+			resolved = ids[:len(ids)-1]
+		}
+		if kind == kindGuild {
+			guilds := make(map[int64]rankingdomain.Guild, len(resolved))
+			for _, id := range resolved {
+				guilds[id] = rankingdomain.Guild{ID: id, Name: fmt.Sprintf("名前%d", id)}
+			}
+			m.repo.EXPECT().ListGuildsByIDs(gomock.Any(), nil, ids).Return(guilds, nil)
+		} else {
+			users := make(map[int64]string, len(resolved))
+			for _, id := range resolved {
+				users[id] = fmt.Sprintf("名前%d", id)
+			}
+			m.repo.EXPECT().ListUsersByIDs(gomock.Any(), nil, ids).Return(users, nil)
+		}
+	}
+
+	// F: 総数取得
+	if tc.failAt == rankStepTotalCount {
+		if kind == kindGuild {
+			m.store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(0), errStore)
+		} else {
+			m.store.EXPECT().GetUserTotalCount(gomock.Any()).Return(int64(0), errStore)
+		}
+		return
+	}
+	if kind == kindGuild {
+		m.store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(tc.totalCount, nil)
+	} else {
+		m.store.EXPECT().GetUserTotalCount(gomock.Any()).Return(tc.totalCount, nil)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 2. 単一順位取得: GetGuildRank / GetUserRank
+// ---------------------------------------------------------------------------
+
+// singleRankStep は単一順位取得フローで失敗させる地点。
+type singleRankStep int
+
+const (
+	singleStepNone         singleRankStep = iota
+	singleStepGetEntity                   // repo.GetGuild / GetUser
+	singleStepGetScore                    // store.GetGuildScore / GetUserPoints
+	singleStepScoreMissing                // exists = false
+	singleStepGetRank
+	singleStepTotalCount
+)
+
+type singleRankCase struct {
+	name      string
+	failAt    singleRankStep
+	wantErrIs error
+}
+
+func TestUsecase_GetRank(t *testing.T) {
 	t.Parallel()
+
+	errStore := errors.New("store error")
+	errRepo := errors.New("repo error")
+
+	// docs/testing/ranking.md「2. 単一順位取得」の仕様表と 1 対 1。
+	// 並び順は図のパスが短い順。
+	tests := []singleRankCase{
+		// #1 A→B→E1
+		{name: "repo の取得がエラー: store が一切呼ばれない", failAt: singleStepGetEntity, wantErrIs: errRepo},
+		// #2 A→B→C→E2
+		{name: "スコア/ポイント取得がエラー", failAt: singleStepGetScore, wantErrIs: errStore},
+		// #3 …→C→D→E3。wantErrIs は kind ごとに異なるためランナーで決める。
+		{name: "スコア/ポイント未登録", failAt: singleStepScoreMissing},
+		// #4 …→D→F→E4
+		{name: "rank 取得がエラー", failAt: singleStepGetRank, wantErrIs: errStore},
+		// #5 …→F→G→E5
+		{name: "total count がエラー", failAt: singleStepTotalCount, wantErrIs: errStore},
+		// #6 …→G→Z
+		{name: "正常系: 名前・スコア・順位・総数が揃う", failAt: singleStepNone},
+	}
+
+	for _, kind := range []rankingKind{kindGuild, kindUser} {
+		for _, tt := range tests {
+			t.Run(kind.String()+"/"+tt.name, func(t *testing.T) {
+				t.Parallel()
+				runSingleRankCase(t, kind, tt, errRepo, errStore)
+			})
+		}
+	}
+}
+
+func runSingleRankCase(t *testing.T, kind rankingKind, tc singleRankCase, errRepo, errStore error) {
+	t.Helper()
 
 	const (
-		userID  = int64(10)
-		guildID = int64(1)
-		points  = int64(500)
-		reason  = "クエストクリア報酬"
+		wantScore = int64(500)
+		wantRank  = int64(3)
+		wantTotal = int64(99)
+		wantName  = "テスト対象"
 	)
 
-	tests := []struct {
-		name        string
-		input       ranking.AddUserPointsInput
-		setup       func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase
-		wantErr     bool
-		checkErr    func(t *testing.T, err error)
-		checkResult func(t *testing.T, r rankingdomain.UserPointAddResult)
-	}{
+	ctrl := gomock.NewController(t)
+	m := newMocks(ctrl)
+	id := testGuildID
+	if kind == kindUser {
+		id = testUserID
+	}
+
+	expectSingleRankCalls(kind, m, tc, id, errRepo, errStore, wantScore, wantRank, wantTotal, wantName)
+
+	uc := m.usecase(t)
+
+	wantErrIs := tc.wantErrIs
+	if tc.failAt == singleStepScoreMissing {
+		wantErrIs = rankingdomain.ErrScoreNotFound
+		if kind == kindUser {
+			wantErrIs = rankingdomain.ErrPointsNotFound
+		}
+	}
+
+	if kind == kindGuild {
+		res, err := uc.GetGuildRank(context.Background(), id)
+		if tc.failAt != singleStepNone {
+			require.Error(t, err)
+			assert.ErrorIs(t, err, wantErrIs)
+			assert.Equal(t, rankingdomain.GuildRankResult{}, res, "エラー時はゼロ値を返す")
+			return
+		}
+		require.NoError(t, err)
+		assert.Equal(t, rankingdomain.GuildRankResult{
+			GuildID: id, GuildName: wantName, Score: wantScore, Rank: wantRank, TotalGuilds: wantTotal,
+		}, res)
+		return
+	}
+
+	res, err := uc.GetUserRank(context.Background(), id)
+	if tc.failAt != singleStepNone {
+		require.Error(t, err)
+		assert.ErrorIs(t, err, wantErrIs)
+		assert.Equal(t, rankingdomain.UserRankResult{}, res, "エラー時はゼロ値を返す")
+		return
+	}
+	require.NoError(t, err)
+	assert.Equal(t, rankingdomain.UserRankResult{
+		UserID: id, UserName: wantName, Points: wantScore, Rank: wantRank, TotalUsers: wantTotal,
+	}, res)
+}
+
+func expectSingleRankCalls(
+	kind rankingKind, m *mocks, tc singleRankCase, id int64,
+	errRepo, errStore error, wantScore, wantRank, wantTotal int64, wantName string,
+) {
+	// B: 名前取得
+	if tc.failAt == singleStepGetEntity {
+		if kind == kindGuild {
+			m.repo.EXPECT().GetGuild(gomock.Any(), nil, id).Return(rankingdomain.Guild{}, errRepo)
+		} else {
+			m.repo.EXPECT().GetUser(gomock.Any(), nil, id).Return("", errRepo)
+		}
+		return
+	}
+	if kind == kindGuild {
+		m.repo.EXPECT().GetGuild(gomock.Any(), nil, id).Return(rankingdomain.Guild{ID: id, Name: wantName}, nil)
+	} else {
+		m.repo.EXPECT().GetUser(gomock.Any(), nil, id).Return(wantName, nil)
+	}
+
+	// C: スコア/ポイント取得
+	if tc.failAt == singleStepGetScore {
+		if kind == kindGuild {
+			m.store.EXPECT().GetGuildScore(gomock.Any(), id).Return(int64(0), false, errStore)
+		} else {
+			m.store.EXPECT().GetUserPoints(gomock.Any(), id).Return(int64(0), false, errStore)
+		}
+		return
+	}
+	// D: exists 判定
+	if tc.failAt == singleStepScoreMissing {
+		if kind == kindGuild {
+			m.store.EXPECT().GetGuildScore(gomock.Any(), id).Return(int64(0), false, nil)
+		} else {
+			m.store.EXPECT().GetUserPoints(gomock.Any(), id).Return(int64(0), false, nil)
+		}
+		return
+	}
+	if kind == kindGuild {
+		m.store.EXPECT().GetGuildScore(gomock.Any(), id).Return(wantScore, true, nil)
+	} else {
+		m.store.EXPECT().GetUserPoints(gomock.Any(), id).Return(wantScore, true, nil)
+	}
+
+	// F: 順位取得
+	if tc.failAt == singleStepGetRank {
+		if kind == kindGuild {
+			m.store.EXPECT().GetGuildRank(gomock.Any(), id).Return(int64(0), errStore)
+		} else {
+			m.store.EXPECT().GetUserRank(gomock.Any(), id).Return(int64(0), errStore)
+		}
+		return
+	}
+	if kind == kindGuild {
+		m.store.EXPECT().GetGuildRank(gomock.Any(), id).Return(wantRank, nil)
+	} else {
+		m.store.EXPECT().GetUserRank(gomock.Any(), id).Return(wantRank, nil)
+	}
+
+	// G: 総数取得
+	if tc.failAt == singleStepTotalCount {
+		if kind == kindGuild {
+			m.store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(int64(0), errStore)
+		} else {
+			m.store.EXPECT().GetUserTotalCount(gomock.Any()).Return(int64(0), errStore)
+		}
+		return
+	}
+	if kind == kindGuild {
+		m.store.EXPECT().GetGuildTotalCount(gomock.Any()).Return(wantTotal, nil)
+	} else {
+		m.store.EXPECT().GetUserTotalCount(gomock.Any()).Return(wantTotal, nil)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 3. AddUserPoints
+// ---------------------------------------------------------------------------
+
+// addStep は AddUserPoints のフロー上で失敗させる地点。
+type addStep int
+
+const (
+	addStepNone addStep = iota
+	addStepGetUser
+	addStepGetGuildID
+	addStepGetUserPoints
+	addStepInsertUserHistory
+	addStepIncrUserPoints
+	addStepInsertEvent
+)
+
+type addPointsCase struct {
+	name string
+
+	// ---- 入力 ----
+	// points は 0 のとき有効な既定値を使う。IsValidScore の境界は domain の責務。
+	points int64
+
+	// ---- どこで失敗させるか ----
+	failAt addStep
+	// invalidPoints が true なら IsValidScore=false の値を渡す。
+	invalidPoints bool
+	// firstTimeUser は個人ポイントの現在値取得が「未登録」を返す経路。
+	firstTimeUser bool
+	// notifyFails はコミット後の通知が失敗する経路。
+	notifyFails bool
+
+	// ---- 期待結果 ----
+	wantErrIs         error
+	wantPreviousTotal int64
+}
+
+func TestUsecase_AddUserPoints(t *testing.T) {
+	t.Parallel()
+
+	errRepo := errors.New("repo error")
+	errNotify := errors.New("notify error")
+
+	// docs/testing/ranking.md「3. AddUserPoints」の仕様表と 1 対 1。
+	tests := []addPointsCase{
 		{
-			name:  "正常系: 既存ポイントありで加算成功",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				const prevPoints = int64(1000)
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{UserID: userID, Points: prevPoints}, nil)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(nil)
-				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(nil)
-				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, points)
-				notifier.EXPECT().Notify(gomock.Any()).Return(nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r rankingdomain.UserPointAddResult) {
-				t.Helper()
-				assert.Equal(t, userID, r.UserID)
-				assert.Equal(t, points, r.Points)
-				assert.Equal(t, int64(1000), r.PreviousTotal)
-				assert.Equal(t, int64(1500), r.NewTotal)
-				assert.Equal(t, guildID, r.GuildID)
-			},
+			// #1 A→B→E1
+			name:          "IsValidScore が false: DoInTx に入らない",
+			invalidPoints: true,
+			wantErrIs:     rankingdomain.ErrInvalidPoints,
 		},
 		{
-			name:  "正常系: 初回ユーザー（ErrPointsNotFound）でも加算成功",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(nil)
-				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(nil)
-				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, points)
-				notifier.EXPECT().Notify(gomock.Any()).Return(nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r rankingdomain.UserPointAddResult) {
-				t.Helper()
-				assert.Equal(t, userID, r.UserID)
-				assert.Equal(t, points, r.Points)
-				assert.Equal(t, int64(0), r.PreviousTotal)
-				assert.Equal(t, points, r.NewTotal)
-				assert.Equal(t, guildID, r.GuildID)
-			},
+			// #2 A→B→C→D→E3
+			name:      "GetUser がエラー: 以降の repo が呼ばれない",
+			failAt:    addStepGetUser,
+			wantErrIs: rankingdomain.ErrUserNotFound,
 		},
 		{
-			name:  "境界値: Points=MaxScore でも加算成功",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: rankingdomain.MaxScore, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				maxPts := int64(rankingdomain.MaxScore)
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, maxPts, reason).Return(nil)
-				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, maxPts).Return(nil)
-				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, maxPts)
-				notifier.EXPECT().Notify(gomock.Any()).Return(nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r rankingdomain.UserPointAddResult) {
-				t.Helper()
-				assert.Equal(t, int64(rankingdomain.MaxScore), r.Points)
-				assert.Equal(t, int64(rankingdomain.MaxScore), r.NewTotal)
-			},
+			// #3 …→D→F→E4
+			name:      "GetUserGuildID がエラー（ギルド未所属）",
+			failAt:    addStepGetGuildID,
+			wantErrIs: rankingdomain.ErrUserNotInGuild,
 		},
 		{
-			name:  "正常系: outbox 通知が失敗してもリクエストは成功する（ポーリングがフォールバック）",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{UserID: userID, Points: 0}, nil)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).Return(nil)
-				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).Return(nil)
-				expectOutboxRankingScoreAdded(t, outboxRepo, userID, guildID, points)
-				notifier.EXPECT().Notify(gomock.Any()).Return(errors.New("redis down"))
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r rankingdomain.UserPointAddResult) {
-				t.Helper()
-				assert.Equal(t, userID, r.UserID)
-				assert.Equal(t, points, r.NewTotal)
-			},
+			// #4 …→F→G→E5
+			name:      "GetUserPoints が予期せぬエラー",
+			failAt:    addStepGetUserPoints,
+			wantErrIs: errRepo,
 		},
 		{
-			name:  "異常系: ポイントが負数で ErrInvalidPoints（IsValidScore=false）",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: -1, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrInvalidPoints)
-			},
+			// #5 …→G→K→E6
+			name:      "InsertUserPointHistory がエラー",
+			failAt:    addStepInsertUserHistory,
+			wantErrIs: errRepo,
 		},
 		{
-			name:  "異常系: ポイントが最大値超過で ErrInvalidPoints（IsValidScore=false）",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: int64(rankingdomain.MaxScore) + 1, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrInvalidPoints)
-			},
+			// #6 …→K→M→E7
+			name:      "IncrementUserPoints がエラー",
+			failAt:    addStepIncrUserPoints,
+			wantErrIs: errRepo,
 		},
 		{
-			name:  "異常系: ユーザー不在（ErrUserNotFound）",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("", rankingdomain.ErrUserNotFound)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrUserNotFound)
-			},
+			// #7 …→M→O→E8
+			name:      "InsertEvent がエラー: Notify が呼ばれない",
+			failAt:    addStepInsertEvent,
+			wantErrIs: errRepo,
 		},
 		{
-			name:  "異常系: ギルド未所属（ErrUserNotInGuild）",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(int64(0), rankingdomain.ErrUserNotInGuild)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrUserNotInGuild)
-			},
+			// #8 …→H2→…→Q→Z
+			name:              "正常系: 既存ポイントあり",
+			wantPreviousTotal: 1000,
 		},
 		{
-			name:  "異常系: GetUserPoints が予期せぬエラー",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				errDB := errors.New("db error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, errDB)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
+			// #9 …→H→…→Z
+			name:          "正常系: 初回ユーザー",
+			firstTimeUser: true,
 		},
 		{
-			name:  "異常系: InsertUserPointHistory がエラー",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				errDB := errors.New("db error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(errDB)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:  "異常系: IncrementUserPoints(repo) がエラー",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				errDB := errors.New("db error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(nil)
-				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(errDB)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:  "異常系: outbox InsertEvent がエラー",
-			input: ranking.AddUserPointsInput{UserID: userID, Points: points, Reason: reason},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-				newDoInTxCaller(tx)
-
-				errOutbox := errors.New("outbox insert error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), userID).
-					Return(guildID, nil)
-				repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), userID).
-					Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
-				repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), userID, points, reason).
-					Return(nil)
-				repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), userID, points).
-					Return(nil)
-				outboxRepo.EXPECT().
-					InsertEvent(gomock.Any(), gomock.Any(), outboxdomain.EventTypeRankingScoreAdded, gomock.Any()).
-					Return(uint64(0), errOutbox)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
+			// #10 …→Q→R→Z
+			name:              "Notify が失敗してもリクエストは成功する",
+			notifyFails:       true,
+			wantPreviousTotal: 1000,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			uc := tt.setup(t, ctrl)
-
-			result, err := uc.AddUserPoints(context.Background(), tt.input)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.checkErr != nil {
-					tt.checkErr(t, err)
-				}
-				assert.Equal(t, rankingdomain.UserPointAddResult{}, result)
-			} else {
-				require.NoError(t, err)
-				if tt.checkResult != nil {
-					tt.checkResult(t, result)
-				}
-			}
+			runAddPointsCase(t, tt, errRepo, errNotify)
 		})
 	}
 }
 
-// TestGetUserRankings_正常系_異常系 はユーザーランキング取得のユースケースを検証する。
-func TestGetUserRankings_正常系_異常系(t *testing.T) {
-	t.Parallel()
+func runAddPointsCase(t *testing.T, tc addPointsCase, errRepo, errNotify error) {
+	t.Helper()
 
-	tests := []struct {
-		name        string
-		input       ranking.GetRankingsInput
-		setup       func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase
-		wantErr     bool
-		checkResult func(t *testing.T, r ranking.RankingsResult)
-	}{
-		{
-			name:  "正常系: ユーザーランキング取得成功",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
+	points := tc.points
+	if points == 0 {
+		points = 100
+	}
+	if tc.invalidPoints {
+		points = -1
+	}
+	input := ranking.AddUserPointsInput{UserID: testUserID, Points: points, Reason: "test"}
 
-				entries := []rankingdomain.RankEntry{
-					{Rank: 1, ID: 1, Score: 8000},
-					{Rank: 2, ID: 2, Score: 6000},
-				}
-				store.EXPECT().GetUserRankings(gomock.Any(), 0, 10).Return(entries, nil)
-				repo.EXPECT().ListUsersByIDs(gomock.Any(), gomock.Any(), []int64{1, 2}).
-					Return(map[int64]string{1: "ユーザーA", 2: "ユーザーB"}, nil)
-				store.EXPECT().GetUserTotalCount(gomock.Any()).Return(int64(2), nil)
+	ctrl := gomock.NewController(t)
+	m := newMocks(ctrl)
+	expectAddPointsCalls(m, tc, input, errRepo, errNotify)
 
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r ranking.RankingsResult) {
-				t.Helper()
-				assert.Equal(t, int64(2), r.TotalCount)
-				require.Len(t, r.Rankings, 2)
-				assert.Equal(t, "ユーザーA", r.Rankings[0].Name)
-				assert.Equal(t, "ユーザーB", r.Rankings[1].Name)
-			},
-		},
-		{
-			name:  "正常系: エントリーが空の場合は ListUsersByIDs を呼ばない",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				store.EXPECT().GetUserRankings(gomock.Any(), 0, 10).Return([]rankingdomain.RankEntry{}, nil)
-				store.EXPECT().GetUserTotalCount(gomock.Any()).Return(int64(0), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-		},
-		{
-			name:  "異常系: GetUserRankings(store) がエラー",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				store.EXPECT().GetUserRankings(gomock.Any(), 0, 10).Return(nil, errors.New("redis error"))
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:  "異常系: ListUsersByIDs がエラー",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				store.EXPECT().GetUserRankings(gomock.Any(), 0, 10).
-					Return([]rankingdomain.RankEntry{{Rank: 1, ID: 1}}, nil)
-				repo.EXPECT().ListUsersByIDs(gomock.Any(), gomock.Any(), gomock.Any()).
-					Return(nil, errors.New("db error"))
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:  "異常系: GetUserTotalCount がエラー",
-			input: ranking.GetRankingsInput{Limit: 10, Offset: 0},
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				store.EXPECT().GetUserRankings(gomock.Any(), 0, 10).Return([]rankingdomain.RankEntry{}, nil)
-				store.EXPECT().GetUserTotalCount(gomock.Any()).Return(int64(0), errors.New("redis error"))
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
+	// 通知失敗を握り潰していないことの観測点は WARN ログだけなので、
+	// このケースに限りログを捕捉できる logger に差し替える。
+	var logBuf bytes.Buffer
+	uc := m.usecase(t)
+	if tc.notifyFails {
+		uc = m.usecaseWithLogger(slog.New(slog.NewJSONHandler(&logBuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	res, err := uc.AddUserPoints(context.Background(), input)
 
-			ctrl := gomock.NewController(t)
-			uc := tt.setup(t, ctrl)
-
-			result, err := uc.GetUserRankings(context.Background(), tt.input)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Equal(t, ranking.RankingsResult{}, result)
-			} else {
-				require.NoError(t, err)
-				if tt.checkResult != nil {
-					tt.checkResult(t, result)
-				}
-			}
-		})
+	if tc.wantErrIs != nil {
+		require.Error(t, err)
+		assert.ErrorIs(t, err, tc.wantErrIs)
+		assert.Equal(t, rankingdomain.UserPointAddResult{}, res, "エラー時はゼロ値を返す")
+		return
 	}
+
+	require.NoError(t, err)
+	if tc.notifyFails {
+		assert.Contains(t, logBuf.String(), `"level":"WARN"`, "通知失敗は WARN ログに残ること")
+		assert.Contains(t, logBuf.String(), "outbox notify failed")
+		assert.Contains(t, logBuf.String(), errNotify.Error())
+	}
+	// ギルドの集計値は outbox-worker へ非同期化したため、同期レスポンスには含まれない。
+	assert.Equal(t, rankingdomain.UserPointAddResult{
+		UserID:        testUserID,
+		Points:        points,
+		PreviousTotal: tc.wantPreviousTotal,
+		NewTotal:      tc.wantPreviousTotal + points,
+		GuildID:       testGuildID,
+	}, res)
 }
 
-// TestGetUserRank_正常系_異常系 はユーザー個別順位取得のユースケースを検証する。
-func TestGetUserRank_正常系_異常系(t *testing.T) {
-	t.Parallel()
+func expectAddPointsCalls(m *mocks, tc addPointsCase, input ranking.AddUserPointsInput, errRepo, errNotify error) {
+	// B: 入力が不正なら境界に入らない
+	if tc.invalidPoints {
+		return
+	}
+	expectDoInTxRunsFn(m.tx)
 
-	const userID = int64(10)
+	// D: GetUser
+	if tc.failAt == addStepGetUser {
+		m.repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), input.UserID).Return("", rankingdomain.ErrUserNotFound)
+		return
+	}
+	m.repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), input.UserID).Return("tester", nil)
 
-	tests := []struct {
-		name        string
-		userID      int64
-		setup       func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase
-		wantErr     bool
-		checkErr    func(t *testing.T, err error)
-		checkResult func(t *testing.T, r rankingdomain.UserRankResult)
-	}{
-		{
-			name:   "正常系: ユーザー順位取得成功",
-			userID: userID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
+	// F: GetUserGuildID
+	if tc.failAt == addStepGetGuildID {
+		m.repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), input.UserID).Return(int64(0), rankingdomain.ErrUserNotInGuild)
+		return
+	}
+	m.repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), input.UserID).Return(testGuildID, nil)
 
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				store.EXPECT().GetUserPoints(gomock.Any(), userID).
-					Return(int64(8000), true, nil)
-				store.EXPECT().GetUserRank(gomock.Any(), userID).
-					Return(int64(3), nil)
-				store.EXPECT().GetUserTotalCount(gomock.Any()).
-					Return(int64(100), nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: false,
-			checkResult: func(t *testing.T, r rankingdomain.UserRankResult) {
-				t.Helper()
-				assert.Equal(t, userID, r.UserID)
-				assert.Equal(t, "テストユーザー", r.UserName)
-				assert.Equal(t, int64(8000), r.Points)
-				assert.Equal(t, int64(3), r.Rank)
-				assert.Equal(t, int64(100), r.TotalUsers)
-			},
-		},
-		{
-			name:   "異常系: GetUser がエラー",
-			userID: userID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("", rankingdomain.ErrUserNotFound)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrUserNotFound)
-			},
-		},
-		{
-			name:   "異常系: ポイント未登録で ErrPointsNotFound",
-			userID: userID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				store.EXPECT().GetUserPoints(gomock.Any(), userID).
-					Return(int64(0), false, nil)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-			checkErr: func(t *testing.T, err error) {
-				t.Helper()
-				assert.ErrorIs(t, err, rankingdomain.ErrPointsNotFound)
-			},
-		},
-		{
-			name:   "異常系: GetUserPoints(store) がエラー",
-			userID: userID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				store.EXPECT().GetUserPoints(gomock.Any(), userID).
-					Return(int64(0), false, errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:   "異常系: GetUserRank(store) がエラー",
-			userID: userID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				store.EXPECT().GetUserPoints(gomock.Any(), userID).
-					Return(int64(8000), true, nil)
-				store.EXPECT().GetUserRank(gomock.Any(), userID).
-					Return(int64(0), errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
-		{
-			name:   "異常系: GetUserTotalCount がエラー",
-			userID: userID,
-			setup: func(t *testing.T, ctrl *gomock.Controller) ranking.Usecase {
-				t.Helper()
-				repo := mockranking.NewMockRepository(ctrl)
-				store := mockranking.NewMockRankingStore(ctrl)
-				tx := mockshared.NewMockTransactor(ctrl)
-				outboxRepo := mockoutbox.NewMockRepository(ctrl)
-				notifier := mockoutbox.NewMockNotifier(ctrl)
-
-				errRedis := errors.New("redis error")
-				repo.EXPECT().GetUser(gomock.Any(), gomock.Any(), userID).
-					Return("テストユーザー", nil)
-				store.EXPECT().GetUserPoints(gomock.Any(), userID).
-					Return(int64(8000), true, nil)
-				store.EXPECT().GetUserRank(gomock.Any(), userID).
-					Return(int64(3), nil)
-				store.EXPECT().GetUserTotalCount(gomock.Any()).
-					Return(int64(0), errRedis)
-
-				return ranking.NewUsecase(tx, repo, store, outboxRepo, notifier, slogtest.NewLogger(t, nil))
-			},
-			wantErr: true,
-		},
+	// G: 個人ポイント現在値。ErrPointsNotFound は初回ユーザーとして正常扱いされる。
+	switch {
+	case tc.failAt == addStepGetUserPoints:
+		m.repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), input.UserID).Return(rankingdomain.UserPoint{}, errRepo)
+		return
+	case tc.firstTimeUser:
+		m.repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), input.UserID).
+			Return(rankingdomain.UserPoint{}, rankingdomain.ErrPointsNotFound)
+	default:
+		m.repo.EXPECT().GetUserPoints(gomock.Any(), gomock.Any(), input.UserID).
+			Return(rankingdomain.UserPoint{UserID: input.UserID, Points: tc.wantPreviousTotal}, nil)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			uc := tt.setup(t, ctrl)
-
-			result, err := uc.GetUserRank(context.Background(), tt.userID)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				if tt.checkErr != nil {
-					tt.checkErr(t, err)
-				}
-				assert.Equal(t, rankingdomain.UserRankResult{}, result)
-			} else {
-				require.NoError(t, err)
-				if tt.checkResult != nil {
-					tt.checkResult(t, result)
-				}
-			}
-		})
+	// K: 個人ポイント履歴。ギルド集計（GetGuildScore / InsertGuildScoreHistory /
+	// IncrementGuildScore）は outbox-worker へ非同期化したため、この tx では呼ばれない。
+	// 呼ばれれば gomock の strict マッチが失敗させる。
+	if tc.failAt == addStepInsertUserHistory {
+		m.repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), input.UserID, input.Points, input.Reason).Return(errRepo)
+		return
 	}
+	m.repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), input.UserID, input.Points, input.Reason).Return(nil)
+
+	// M: 個人ポイント累計加算
+	if tc.failAt == addStepIncrUserPoints {
+		m.repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), input.UserID, input.Points).Return(errRepo)
+		return
+	}
+	m.repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), input.UserID, input.Points).Return(nil)
+
+	// O: outbox イベント登録。payload は domain のマーシャラで組み立てた値と一致すること。
+	wantPayload := outboxdomain.MarshalRankingScoreAddedPayload(outboxdomain.RankingScoreAddedPayload{
+		UserID:  input.UserID,
+		GuildID: testGuildID,
+		Points:  input.Points,
+	})
+	if tc.failAt == addStepInsertEvent {
+		m.outbox.EXPECT().
+			InsertEvent(gomock.Any(), gomock.Any(), outboxdomain.EventTypeRankingScoreAdded, wantPayload).
+			Return(uint64(0), errRepo)
+		return
+	}
+	m.outbox.EXPECT().
+		InsertEvent(gomock.Any(), gomock.Any(), outboxdomain.EventTypeRankingScoreAdded, wantPayload).
+		Return(uint64(1), nil)
+
+	// Q: コミット後の通知。失敗してもリクエストは成功させる。
+	if tc.notifyFails {
+		m.notifier.EXPECT().Notify(gomock.Any()).Return(errNotify)
+		return
+	}
+	m.notifier.EXPECT().Notify(gomock.Any()).Return(nil)
 }

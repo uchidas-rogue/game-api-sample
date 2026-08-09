@@ -10,11 +10,11 @@ import (
 
 	"github.com/uchidas-rogue/game-api-sample/configs"
 	"github.com/uchidas-rogue/game-api-sample/internal/di"
+	"github.com/uchidas-rogue/game-api-sample/internal/driver/http/router"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/logger"
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	infraRedis "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/redis"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/server"
-	"github.com/uchidas-rogue/game-api-sample/internal/driver/http/router"
 )
 
 func main() {

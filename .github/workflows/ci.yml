@@ -26,8 +26,60 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Lint (go vet)
+      # golangci-lint は .golangci-version で固定し、ローカルの `make lint` と
+      # 同一のコマンド・同一のバージョンで実行する（決定論的検証の原則: ローカルと CI の等価性）。
+      # バイナリは毎回ビルドすると遅いため、バージョン文字列をキーにキャッシュする。
+      - name: Cache golangci-lint binary
+        uses: actions/cache@v4
+        with:
+          path: bin/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('.golangci-version') }}
+
+      # sqlc も同様にバージョン固定 + キャッシュする。
+      # mockgen は go.mod の go.uber.org/mock からバージョンが決まるため専用の
+      # キャッシュキーを持たず、setup-go のモジュールキャッシュに乗る。
+      - name: Cache sqlc binary
+        uses: actions/cache@v4
+        with:
+          path: bin/sqlc
+          key: sqlc-${{ runner.os }}-${{ hashFiles('.sqlc-version') }}
+
+      # 差分駆動（--new-from-rev）ではなく全件スキャンにしている。
+      # 差分駆動は CI 時間が問題になる規模で初めて意味を持つが、本リポジトリは全件でも数秒で、
+      # 全件のほうが「違反が一件も存在しない」ことを悉皆的に保証できるため。
+      # CI 時間が問題になったら差分駆動へ切り替え、その際は .golangci.yml 自体が
+      # 変更された PR のみ全件へフォールバックさせること（設定変更は全体に波及するため）。
+      # ローカルでの高速確認用に `make lint/diff` を用意してある。
+      - name: Lint (golangci-lint)
         run: make lint
+
+      # 指示書（AGENTS.md / docs/** / .claude/**）の SSoT 崩れと実態との乖離を検知する。
+      # lint がコードの規約違反を見るのに対し、こちらは「規約そのものが食い違っていないか」を見る。
+      # Go のビルドに依存しないので lint の直後に置き、資料だけの PR でも早く落ちるようにする。
+      - name: Check instruction docs (SSoT)
+        run: make docs/check
+
+      # DB 生成物（schema.sql / sqlc）の再生成忘れを検知する。
+      # migrations を足して db/schema/dump を忘れた場合や、queries を変えて
+      # db/sqlc/gen を忘れた場合に落ちる。
+      #
+      # paths フィルタで deployments/** 変更時のみ実行する案もあるが、
+      # sqlc.yaml の変更や生成物の手動編集を取りこぼすため常に実行する。
+      # バイナリはキャッシュ済みなので追加コストは sqlc generate の実行時間のみ。
+      #
+      # mockgen より先に置く: querier.go が古い状態でモックだけ再生成しても
+      # 「モックは querier.go と一致している」ため gen/check は通ってしまい、
+      # 本当の原因（sqlc の再生成忘れ）が分かりにくくなる。
+      - name: Check DB generated code is up to date
+        run: make db/gen/check
+
+      # 生成物（mockgen）の再生成忘れを検知する。
+      # 実体（interface）を変更したのにモックを再生成していない場合、コンパイルは通っても
+      # テストが古いモックを使い続けるため、ここで落とす。
+      # mockgen のバージョンは go.mod の go.uber.org/mock から導出されるので、
+      # ローカルと CI で同じ生成結果になる。
+      - name: Check generated code is up to date
+        run: make gen/check
 
       - name: Test with -race and coverage
         run: make test/race
@@ -44,6 +96,13 @@ jobs:
               echo '```'
             } >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      # 層別カバレッジが AGENTS.md §3 の目標を満たすかを判定する。
+      # 直前の test/race が生成した coverage.out をそのまま使い、テストを二重実行しない。
+      # サマリ出力の後に置いているのは、未達で落ちたときも $GITHUB_STEP_SUMMARY に
+      # 数値が残るようにするため。
+      - name: Check coverage thresholds
+        run: make test/cover/check
 
       - name: Upload coverage artifact
         if: always()

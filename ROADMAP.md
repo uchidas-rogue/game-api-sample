@@ -10,6 +10,21 @@
 
 ---
 
+## 横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）
+**目標:** AGENTS.md に書かれた規約を「AI が読む助言」から「CI で落ちる判定」へ移し、AI に任せられる範囲を広げる。
+
+方針は「ガードレールはコンテキスト（助言）ではなく実行される仕組み（判定）に置く」。フェーズ2の前提作業で整備した CI 品質ゲート（`make lint` / `make test/race` / カバレッジ計測）を、以下の段階で深化させる。
+
+* **Phase 0（完了）:** テスト設計原則を `docs/testing/principles/` に集約し、`go-testing-qa` スキルからは索引のみ参照する形へ。指示書間の参照ずれ・実態との乖離を解消し、全 AI エージェントが同じ原則を読めるようにした
+* **Phase 1（完了）:** `.golangci.yml` を新設し、Clean Architecture の層間 import 規約（AGENTS.md §1）と Go コーディング規約（§2）を `depguard`（ホワイトリスト方式）・`gochecknoglobals`・`forbidigo`・`mnd`・`gocritic`(ruleguard) で静的強制。`make lint`
+* **Phase 2（完了）:** 生成物（mockgen / sqlc / `schema.sql`）の再生成漏れを `make gen/check` / `make db/gen/check` で CI 検知
+* **Phase 3（完了）:** 層別カバレッジ目標（§3）を CI での閾値判定へ格上げ。`make test/cover/check`（判定の実体は `scripts/coverage-check.sh`）
+* **Phase 4（完了）:** `docs/testing/` に設計図（mermaid フローチャート）とテスト仕様表を導入し、Go では計測できない分岐カバレッジをパスカバレッジで代替
+* **Phase 5（完了）:** 指示書（AGENTS.md / `docs/**` / `.claude/**`）の SSoT 崩れと実態との乖離を `make docs/check` で CI 検知。判定の実体は `scripts/docs-ssot-check.sh`、記述側に置く照合条件は `ssot-assert` ディレクティブ。テスト設計原則を `docs/testing/principles/` へ移し、全 AI エージェントが同じ正本を読める配置にした（`.claude/**` は Claude 専用なので正本を置かない）
+* **次の候補:** 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に `.golangci.yml` / `scripts/` へ移す（[docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) §1）。現在の最有力は AGENTS.md §3「`t.Parallel()` 配下で pkg-global 書換禁止」——`gochecknoglobals` が `_test.go` を除外しているため人手のみで守られており、違反は flaky test という検出しにくい形で出る
+
+---
+
 ## フェーズ1：GoによるモダンなゲームAPIの実装（1ヶ月目 / ローカル完結）
 **目標:** Clean Architectureに基づき、拡張性とテスト耐性を持ったAPIをローカルで完成させる。
 
@@ -24,10 +39,7 @@
      - **設計方針:** 書き込み（個人スコア・ギルド集計）と読み取り（ランキング参照）の責務を分離し、参照負荷が書き込みDBを圧迫しない構成とする
 * **テスト戦略 (TDDの徹底):**
   - 標準 `testing` パッケージによる Table-Driven Tests
-  - 層別方針（詳細は CLAUDE.md §4）:
-    - `domain`: 純粋関数・ビジネスルールの単体テスト（外部依存なし、カバレッジ 90% 以上）
-    - `usecase`: `uber-go/mock` による網羅的テスト（カバレッジ 85% 以上）
-    - `infrastructure`: `testcontainers-go` を用いた MySQL/Redis 実体テスト（カバレッジ 80% 以上）
+  - 層別のテスト方針とカバレッジ閾値は **AGENTS.md §3 が正本**（値をここに写さない。判定は `make test/cover/check`）
   - 競合状態（Race Condition）: 更新系には `t.Parallel()` + goroutine 並行ケースを最低1件含め、`make test/race` で検出する
   - Claudeは必ずローカルでテストを実行し、パスするまで実装を修正すること
 
@@ -36,7 +48,7 @@
 ## フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）
 **目標:** 商用サービスを想定したモダンなインフラ構成を、IaCを用いて構築する。
 
-* **前提作業:** ECS デプロイ前に CI 品質ゲートを整備する（GitHub Actions で `make lint` / `make test/race` / カバレッジ計測 を PR・main push 時に必須化）
+* **前提作業:** ECS デプロイ前に CI 品質ゲートを整備する（GitHub Actions で `make lint` / `make test/race` / カバレッジ計測 を PR・main push 時に必須化）。この品質ゲートの深化は「横断施策：決定論的検証基盤」を参照
 * **IaC化:** Terraformを使用し、AWSリソースをコードで定義
 * **主要コンポーネント:**
   - コンテナオーケストレーション: Amazon ECS (Fargate)

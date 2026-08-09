@@ -236,3 +236,88 @@ func TestTransactor_DoInTx_ROLLBACK_ErrTxDoneはloggerに出力されない(t *t
 	assert.Empty(t, buf.String(), "ErrTxDone はログ出力されないはず")
 	require.NoError(t, mock.ExpectationsWereMet())
 }
+
+// 以下2件は「取り消し処理（ROLLBACK）自体が失敗したときの契約」を検証する。
+// 契約: ROLLBACK の失敗を握り潰さず（ログに残し）、それでも **元の失敗原因** を
+// 呼び出し元に伝える。ROLLBACK 失敗が原因をすり替えてはならない。
+// テスト設計は docs/testing/transaction-boundary.md のシナリオ 2 を参照。
+
+func TestTransactor_DoInTx_異常系_ROLLBACK失敗でも元のエラーを返しログに残す(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	fnErr := errors.New("business logic error")
+	rbErr := errors.New("rollback failed")
+
+	mock.ExpectBegin()
+	mock.ExpectRollback().WillReturnError(rbErr)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	tr := infraMysql.NewTransactor(db, logger)
+
+	err = tr.DoInTx(context.Background(), func(_ shared.Tx) error {
+		return fnErr
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fnErr, "呼び出し元には元の失敗原因が伝わること")
+	assert.NotErrorIs(t, err, rbErr, "ROLLBACK の失敗が原因をすり替えないこと")
+	assert.Contains(t, buf.String(), "failed to rollback tx", "ROLLBACK 失敗はログに残ること")
+	assert.Contains(t, buf.String(), rbErr.Error())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+func TestTransactor_DoInTx_異常系_panic時のROLLBACK失敗でも再panicしログに残す(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	rbErr := errors.New("rollback failed")
+
+	mock.ExpectBegin()
+	mock.ExpectRollback().WillReturnError(rbErr)
+
+	var buf bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	tr := infraMysql.NewTransactor(db, logger)
+
+	assert.PanicsWithValue(t, "test panic", func() {
+		_ = tr.DoInTx(context.Background(), func(_ shared.Tx) error {
+			panic("test panic")
+		})
+	}, "ROLLBACK が失敗しても元の panic をそのまま再送出すること")
+
+	assert.Contains(t, buf.String(), "failed to rollback tx on panic")
+	assert.Contains(t, buf.String(), rbErr.Error())
+	require.NoError(t, mock.ExpectationsWereMet())
+}
+
+// TestSQLTx_Raw は Repository 実装が *sql.Tx を取り出す経路を検証する。
+// 差し替え口ではなく通常の呼び出し経路の一部なので、公開されていてよい。
+func TestSQLTx_Raw_内部のsqlTxを返す(t *testing.T) {
+	t.Parallel()
+
+	db, mock, err := sqlmock.New()
+	require.NoError(t, err)
+	defer db.Close()
+
+	mock.ExpectBegin()
+	mock.ExpectCommit()
+
+	tr := newTransactor(t, db)
+
+	err = tr.DoInTx(context.Background(), func(tx shared.Tx) error {
+		sqlTx, ok := tx.(*infraMysql.SQLTx)
+		require.True(t, ok, "DoInTx は *SQLTx を渡す")
+		assert.NotNil(t, sqlTx.Raw(), "Raw は内部の *sql.Tx を返す")
+		return nil
+	})
+	require.NoError(t, err)
+	require.NoError(t, mock.ExpectationsWereMet())
+}
