@@ -16,9 +16,11 @@ cd "$cwd" 2>/dev/null || exit 0
 changed=$(git status --porcelain 2>/dev/null || true)
 [ -z "$changed" ] && exit 0
 
-# コード・インフラの変更（.go / .tf / ワークフロー yaml / Makefile）
+# コード・インフラ・規約設定の変更
+# （.go / .tf / ワークフロー yaml / Makefile / lint 設定 / テスト除外設定 / スクリプト）
+# lint 設定とテスト除外設定は「規約の正本」なので、変更時は資料との整合確認が必要。
 code_changed=$(printf '%s\n' "$changed" \
-  | grep -E '\.(go|tf)$|\.github/workflows/.*\.ya?ml$|(^|/)Makefile$|make/.*\.mk$' || true)
+  | grep -E '\.(go|tf)$|\.github/workflows/.*\.ya?ml$|(^|/)Makefile$|make/.*\.mk$|(^|/)\.golangci(\.yml|-version)$|(^|/)\.testignore$|scripts/.*\.sh$' || true)
 
 # 資料の変更（AGENTS.md / CLAUDE.md / ARCHITECTURE.md / ROADMAP.md）
 docs_changed=$(printf '%s\n' "$changed" \

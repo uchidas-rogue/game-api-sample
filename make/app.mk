@@ -1,6 +1,12 @@
 # Go アプリ開発系（起動 / テスト / ビルド / 静的解析 / モック生成）
 
-.PHONY: run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint mock/gen
+.PHONY: run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint lint/diff lint/fix tools/golangci-lint mock/gen
+
+# golangci-lint のバージョンは .golangci-version 単一箇所で管理する（ローカルと CI の等価性のため）。
+# go.mod の tool ディレクティブは採用しない: golangci-lint の依存がアプリ本体の
+# モジュールグラフに混ざり、golang.org/x/text 等の共有依存を巻き上げてしまうため。
+GOLANGCI_VERSION := $(shell cat .golangci-version)
+GOLANGCI_BIN     := $(CURDIR)/bin/golangci-lint
 
 ## サーバ起動（デフォルト: info レベル）
 run:
@@ -50,9 +56,28 @@ build/outbox-worker:
 ## 全バイナリをビルド（api / batch / outbox-worker）
 build/all: build build/batch build/outbox-worker
 
-## 静的解析
+## golangci-lint を .golangci-version のバージョンで ./bin へ導入（既に同一版なら何もしない）
+tools/golangci-lint:
+	@if [ ! -x "$(GOLANGCI_BIN)" ] || ! "$(GOLANGCI_BIN)" version 2>/dev/null | grep -q "$(patsubst v%,%,$(GOLANGCI_VERSION))"; then \
+		echo "installing golangci-lint $(GOLANGCI_VERSION) -> $(GOLANGCI_BIN)"; \
+		mkdir -p $(CURDIR)/bin; \
+		GOBIN=$(CURDIR)/bin go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_VERSION); \
+	fi
+
+## 静的解析（全ファイル対象。CI と同一コマンド）
 lint:
-	go vet ./...
+	@$(MAKE) --no-print-directory tools/golangci-lint
+	$(GOLANGCI_BIN) run ./...
+
+## 静的解析（origin/main からの差分のみ。PR 相当の高速確認用）
+lint/diff:
+	@$(MAKE) --no-print-directory tools/golangci-lint
+	$(GOLANGCI_BIN) run --new-from-rev=origin/main ./...
+
+## 静的解析（自動修正できる指摘を修正する）
+lint/fix:
+	@$(MAKE) --no-print-directory tools/golangci-lint
+	$(GOLANGCI_BIN) run --fix ./...
 
 ## モック再生成（uber-go/mockgen 使用）
 mock/gen:

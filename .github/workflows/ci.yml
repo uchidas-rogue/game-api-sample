@@ -26,7 +26,22 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Lint (go vet)
+      # golangci-lint は .golangci-version で固定し、ローカルの `make lint` と
+      # 同一のコマンド・同一のバージョンで実行する（決定論的検証の原則: ローカルと CI の等価性）。
+      # バイナリは毎回ビルドすると遅いため、バージョン文字列をキーにキャッシュする。
+      - name: Cache golangci-lint binary
+        uses: actions/cache@v4
+        with:
+          path: bin/golangci-lint
+          key: golangci-lint-${{ runner.os }}-${{ hashFiles('.golangci-version') }}
+
+      # 差分駆動（--new-from-rev）ではなく全件スキャンにしている。
+      # 差分駆動は CI 時間が問題になる規模で初めて意味を持つが、本リポジトリは全件でも数秒で、
+      # 全件のほうが「違反が一件も存在しない」ことを悉皆的に保証できるため。
+      # CI 時間が問題になったら差分駆動へ切り替え、その際は .golangci.yml 自体が
+      # 変更された PR のみ全件へフォールバックさせること（設定変更は全体に波及するため）。
+      # ローカルでの高速確認用に `make lint/diff` を用意してある。
+      - name: Lint (golangci-lint)
         run: make lint
 
       - name: Test with -race and coverage

@@ -170,8 +170,9 @@ tests := []struct {
 
 ### 横断（`internal/di/`・共有状態）
 
-- 生成箇所は `internal/di/container.go` に一元化する（`layered-architecture-testing.md` §8）。**静的強制は未実装**（`.golangci.yml` の `depguard` で「`internal/infrastructure` を import できるのは `internal/di` と `cmd` のみ」とする予定。現状 `make lint` は `go vet` のみ）
-- パッケージスコープの可変変数を作らない（§10）。許されるのは `const`、`var _ Iface = (*T)(nil)`、domain の sentinel error のみ。**静的強制は未実装**（`gochecknoglobals` で検出する予定）
+- 生成箇所は `internal/di/container.go` に一元化する（`layered-architecture-testing.md` §8）。`.golangci.yml` の `depguard` が「`internal/infrastructure` を import できるのは `internal/di` と `cmd` のみ」というルールで静的に強制している
+- パッケージスコープの可変変数を作らない（§10）。許されるのは `const`、`var _ Iface = (*T)(nil)`、domain の sentinel error のみ。`gochecknoglobals` が検出する
+  - ただし**テストコードは対象外**にしている（宣言は見えるが「書換」を判別できず、読み取り専用フィクスチャまで落ちるため）。`t.Parallel()` 配下の pkg-global 書換禁止（AGENTS.md §3）は引き続き人手で守る
 
 ---
 
@@ -179,7 +180,9 @@ tests := []struct {
 
 `deterministic-verification.md` に沿う。新しい lint ルールを追加する際に守ること。
 
-> 現状 `make lint` の実体は `go vet ./...` のみで、`.golangci.yml` は存在しない。AGENTS.md §1 の層間 import 規約と §2 のコーディング規約は、まだ機械検証されていない（レビュー任せ）。
+判定の実体は `.golangci.yml`（`make lint`）。採用理由・除外理由・見送った linter の理由はすべて同ファイルにコメントで残してある。**判定を変えるときは、まずそのコメントを読む。**
+
+引数の内容まで条件に含める規約（例: `slog.String("error", ...)` だけを禁止し `slog.String("request_id", ...)` は許す）は forbidigo では表現できないため、`scripts/ruleguard/rules.go` に AST パターンとして書く。
 
 - **レビューで毎回同じ指摘をしている規約は機械検証へ回す**（§1）
 - **可能な限り AST ベースで判定する**（§3）。`depguard`（import パス）・`gochecknoglobals`（AST）が該当。`forbidigo` は正規表現ベースなので `analyze-types: true` を有効化し、既知の誤検出パターンと回避策を `.golangci.yml` のコメントに残す

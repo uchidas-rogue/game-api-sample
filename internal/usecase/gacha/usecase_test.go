@@ -56,10 +56,10 @@ func TestUsecase_Multi(t *testing.T) {
 	errDB := errors.New("db error")
 
 	tests := []struct {
-		name      string
-		setup     func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context)
-		wantErr   bool
-		checkErr  func(t *testing.T, err error) // エラー内容の詳細検証（任意）
+		name        string
+		setup       func(t *testing.T, ctrl *gomock.Controller) (gacha.Usecase, context.Context)
+		wantErr     bool
+		checkErr    func(t *testing.T, err error) // エラー内容の詳細検証（任意）
 		checkResult func(t *testing.T, r gacha.Result)
 	}{
 		{

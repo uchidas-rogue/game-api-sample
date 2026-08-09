@@ -10,11 +10,11 @@ import (
 	"syscall"
 
 	"github.com/uchidas-rogue/game-api-sample/configs"
+	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/driver/worker/outbox"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/logger"
 	infraMysql "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/repository"
 	infraRedis "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/redis"
-	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/driver/worker/outbox"
 )
 
 func main() {

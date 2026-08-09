@@ -45,9 +45,9 @@ func TestNew_LevelFiltering(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		setLevel  slog.Level
-		checkLvl  slog.Level
+		name        string
+		setLevel    slog.Level
+		checkLvl    slog.Level
 		wantEnabled bool
 	}{
 		{name: "Info で Debug は無効", setLevel: slog.LevelInfo, checkLvl: slog.LevelDebug, wantEnabled: false},

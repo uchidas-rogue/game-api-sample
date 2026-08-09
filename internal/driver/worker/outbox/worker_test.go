@@ -10,12 +10,12 @@ import (
 	"go.uber.org/mock/gomock"
 
 	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
+	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/driver/worker/outbox"
 	"github.com/uchidas-rogue/game-api-sample/internal/testutil/slogtest"
 	mockoutbox "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox/mock"
 	mockranking "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking/mock"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 	mockshared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared/mock"
-	workeroutbox "github.com/uchidas-rogue/game-api-sample/internal/driver/worker/outbox"
 )
 
 // invokeDoInTx は MockTransactor.DoInTx を fn(nil) で実行するヘルパー。

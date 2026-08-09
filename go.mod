@@ -7,6 +7,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/go-sql-driver/mysql v1.10.0
 	github.com/labstack/echo/v4 v4.15.1
+	github.com/quasilyte/go-ruleguard/dsl v0.3.23
 	github.com/redis/go-redis/v9 v9.19.0
 	github.com/stretchr/testify v1.11.1
 	go.uber.org/mock v0.6.0

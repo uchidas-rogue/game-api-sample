@@ -3,6 +3,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -67,7 +68,7 @@ func Run(ctx context.Context, e *echo.Echo, port int, logger *slog.Logger) error
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("starting http server", slog.String("addr", addr))
-		if err := e.Start(addr); err != nil && err != http.ErrServerClosed {
+		if err := e.Start(addr); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- fmt.Errorf("failed to start server: %w", err)
 			return
 		}

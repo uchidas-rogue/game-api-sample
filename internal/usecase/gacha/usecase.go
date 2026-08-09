@@ -23,7 +23,6 @@ type Result struct {
 	RemainingGems int
 }
 
-
 // Randomizer は抽選用乱数の抽象。テストで決定論的に振る舞わせるために注入可能とする。
 type Randomizer interface {
 	IntN(n int) int

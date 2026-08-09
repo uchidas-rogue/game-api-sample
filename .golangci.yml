@@ -1,0 +1,296 @@
+# golangci-lint 設定。AGENTS.md の規約のうち機械判定できるものをここに集約する。
+#
+# 設計方針は `go-testing-qa` スキルの references/deterministic-verification.md に従う:
+#   §1 レビューで毎回同じ指摘をしている規約は機械検証へ回す
+#   §3 可能な限り AST ベースで判定する（文字列マッチは誤検出・検出漏れを起こす）
+#   §4 ホワイトリスト方式（原則禁止・許可されたものだけ例外）で書き、許可理由を併記する
+#   §2 規則に当てはまらないケースが出たら //nolint の個別例外を作らず、まず規則セットを拡張する
+#   §6 通常は差分駆動、SSoT（本ファイル）変更時は全件スキャンへフォールバック
+#   §7 ローカルと CI で同一のチェッカーを同一引数で実行する（make lint / make lint/diff）
+#
+# バージョンは .golangci-version で固定。`make lint` が同じ版を ./bin へ導入して実行する。
+
+version: "2"
+
+run:
+  # テストコードも規約の対象にする（テストは実装と同じ規律で保守する）
+  tests: true
+
+issues:
+  # 既定では max-same-issues=3 / max-issues-per-linter=50 で同種の指摘が暗黙に打ち切られる。
+  # 「指摘が3件」と表示されながら実際は4件目以降が隠れている状態は、
+  # 決定論的検証の前提（違反が一件も存在しないことを悉皆的に保証する）を壊すため無効化する。
+  max-same-issues: 0
+  max-issues-per-linter: 0
+  # 既定では同一行に複数の指摘があると1件だけ残して他が捨てられる。
+  # 「1行が2つの規約に違反している」ことを見えなくするため無効化する。
+  uniq-by-line: false
+
+linters:
+  # ホワイトリスト方式: 既定を無効にし、採用した linter だけを明示的に有効化する。
+  default: none
+  enable:
+    # --- Go 標準の健全性 ---
+    - govet # `go vet` 相当。従来の make lint の内容を包含する
+    - staticcheck # 静的解析の主力（旧 gosimple / stylecheck を統合）
+    - ineffassign # 使われない代入
+    - unused # 未使用の識別子
+    # --- エラーハンドリング（AGENTS.md §2） ---
+    - errcheck # 戻り値の error を捨てていないか
+    - errorlint # `err == target` ではなく errors.Is/As を使わせる。§2 の規約に直接対応
+    # --- リソース・コンテキスト ---
+    - bodyclose # HTTP レスポンスボディの閉じ忘れ
+    - noctx # context を渡さない HTTP リクエスト発行
+    # --- アーキテクチャ境界（AGENTS.md §1） ---
+    - depguard # 層間 import の静的強制
+    - gochecknoglobals # パッケージスコープの可変変数（隠れた共有状態）の検出
+    # --- コーディング規約（AGENTS.md §2） ---
+    - forbidigo # 禁止 API の検出（Context 伝播 / logger DI / 時刻）
+    - gocritic # ruleguard 経由の自前 AST ルール（引数まで見る規約）
+
+  # 【採用を検討して見送った linter】判断の再現性のため理由を残す（determ. §2）。
+  #
+  # err113: 動的エラー生成（errors.New / fmt.Errorf のインライン）を禁止する。
+  #   AGENTS.md §2 は「**ビジネス上の**エラーは domain 層で sentinel error として定義する」
+  #   と定めているが、err113 はビジネスエラーと内部エラー（プログラミングエラー）を区別できない。
+  #   実測 79 件のうち 70 件はテストのフィクスチャ（`errors.New("db error")` 等、正当）、
+  #   残る 9 件も `unexpected tx type: %T` / `transaction is required` /
+  #   `unexpected negative last insert id` / 設定値バリデーションといった内部エラーで、
+  #   呼び出し側が errors.Is で判別する対象ではない。
+  #   規約が守りたい対象と linter の判定対象がずれているため採用しない。
+  #   ビジネスエラーが sentinel であることは depguard（domain 以外から domain の
+  #   エラー定義を作れない構造）と errorlint（判定は errors.Is/As で行う）で間接的に守る。
+
+  settings:
+    # AGENTS.md §2 の「〜してはならない」規約を判定に落とす。
+    #
+    # forbidigo は AST 上の識別子に対する **正規表現** マッチであり、determ. §3 が推奨する
+    # 完全な構文解析ベースではない。既知の限界と回避策:
+    #   - パターンは「パッケージ名.関数名」の形にしか当たらない。ドット表記を経由しない
+    #     呼び出し（変数に代入してから呼ぶ等）はすり抜ける
+    #   - analyze-types: true にすると型情報を使って解決するため、別名 import
+    #     （`import ctx "context"` 等）でも検出できる
+    # すり抜けを見つけたら //nolint ではなく、ここのパターン自体を拡張する（determ. §2）。
+    # forbidigo が表現できない「引数まで見る規約」を AST パターンで判定する（determ. §3）。
+    # gocritic 本体の各種チェックは有効にせず、ruleguard だけを使う。
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - ruleguard
+      settings:
+        ruleguard:
+          rules: ${base-path}/scripts/ruleguard/rules.go
+          failOn: all # ルールファイルの読込・解析に失敗したら黙って素通りせず落とす
+
+    forbidigo:
+      analyze-types: true
+      forbid:
+        # AGENTS.md §2 Context 伝播
+        - pattern: ^context\.(Background|TODO)$
+          msg: >-
+            リクエストスコープ内で context を新規生成しない。呼び出し元から受け取った ctx を伝播させること。
+            バックグラウンドジョブのエントリポイント（cmd/**, driver/batch, driver/worker）と
+            起動・シャットダウン処理でのみ許可される（exclusions を参照）。
+        # AGENTS.md §2 ログ
+        #
+        # 【ここに書けない規約】`slog.String("error", err.Error())` の禁止は forbidigo では
+        # 表現できない。forbidigo が見るのは呼び出しの関数名（`slog.String`）だけで引数を見ないため、
+        # `^slog\.String$` を禁止すると正当な用途（request_id / method / uri 等、実測6箇所）まで
+        # 落ちてしまう。引数まで見る必要があるこの規約は gocritic の ruleguard 側で判定する。
+        - pattern: ^slog\.Default$
+          msg: >-
+            logger は DI 経由で受け取る。slog.Default() は main / 初期化（cmd/**, internal/di）でのみ許可。
+        # AGENTS.md §2 時刻
+        - pattern: ^time\.Now$
+          msg: >-
+            time.Now() を直接呼ばず Clock インターフェースを DI する（テスト可能性のため）。
+            Clock は未実装のため、最初の利用時に usecase 層へ interface を定義し
+            infrastructure 層に実装を置くこと。
+
+    # AGENTS.md §1 の依存方向（driver → usecase → domain、infrastructure は usecase の
+    # interface を実装する側）を静的に強制する。
+    #
+    # ホワイトリスト方式（determ. §4）: 各層は allow に挙げたものしか import できない。
+    # 新しい外部ライブラリを使いたくなったら、その層の allow に理由付きで追加する。
+    # //nolint で個別に抜け道を作らない（determ. §2）。
+    #
+    # 【副次的効果】`internal/infrastructure` を import できるのは、どの rule にも
+    # マッチしない `internal/di` と `cmd` だけになる。これにより
+    # 「インフラの生成箇所はコンポジションルートに一元化する」（layered §8 / determ. §9）
+    # が構造的に保証される。
+    #
+    # 【depguard の挙動メモ（実測）】
+    # files にマッチした rule は「最初の1つ」ではなく **すべて** 適用され、
+    # どれか1つでも許可していなければ違反になる。
+    # そのため層ごとに test 用 / 非 test 用の2 rule を持たせる場合、
+    # 非 test 側に `!$test` を書いて明示的に除外しないと、テストファイルが
+    # 両方の rule にマッチして厳しい側（テストライブラリ不許可）で落ちる。
+    # また files の複数エントリは AND ではなく OR。`"A" と "B" の両方"` は書けないため、
+    # test 用 rule はパス自体に `*_test.go` を含めたグロブで表現している。
+    depguard:
+      rules:
+        # ---- domain: 最も内側。標準ライブラリと自層のみ ----
+        internal-domain-test:
+          files:
+            - "**/internal/domain/**/*_test.go"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+            - github.com/stretchr/testify # アサーション（AGENTS.md §3）
+        internal-domain:
+          files:
+            - "**/internal/domain/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+
+        # ---- usecase: interface を定義する側。実装（infrastructure）を知ってはならない ----
+        internal-usecase-test:
+          files:
+            - "**/internal/usecase/**/*_test.go"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+            - github.com/uchidas-rogue/game-api-sample/internal/usecase
+            - github.com/uchidas-rogue/game-api-sample/internal/testutil # テストヘルパ（AGENTS.md §3）
+            - github.com/stretchr/testify
+            - go.uber.org/mock # モック（AGENTS.md §3）
+        internal-usecase:
+          files:
+            - "**/internal/usecase/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+            - github.com/uchidas-rogue/game-api-sample/internal/usecase
+
+        # ---- driver: 外部入力を usecase 呼び出しへ変換する。infrastructure は禁止 ----
+        internal-driver-test:
+          files:
+            - "**/internal/driver/**/*_test.go"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+            - github.com/uchidas-rogue/game-api-sample/internal/usecase
+            - github.com/uchidas-rogue/game-api-sample/internal/driver
+            - github.com/uchidas-rogue/game-api-sample/internal/testutil
+            - github.com/labstack/echo/v4
+            - github.com/stretchr/testify
+            - go.uber.org/mock
+        internal-driver:
+          files:
+            - "**/internal/driver/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+            - github.com/uchidas-rogue/game-api-sample/internal/usecase
+            - github.com/uchidas-rogue/game-api-sample/internal/driver
+            - github.com/labstack/echo/v4 # HTTP delivery
+
+        # ---- infrastructure: usecase の interface を実装する。driver は禁止 ----
+        internal-infrastructure-test:
+          files:
+            - "**/internal/infrastructure/**/*_test.go"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+            - github.com/uchidas-rogue/game-api-sample/internal/usecase
+            - github.com/uchidas-rogue/game-api-sample/internal/infrastructure
+            - github.com/uchidas-rogue/game-api-sample/internal/testutil
+            - github.com/labstack/echo/v4
+            - github.com/redis/go-redis/v9
+            - github.com/go-sql-driver/mysql
+            - github.com/stretchr/testify
+            - go.uber.org/mock
+            - github.com/DATA-DOG/go-sqlmock # Transactor のコミット/ロールバック検証
+            - github.com/alicebob/miniredis/v2 # Redis 実体を使わない単体テスト
+        internal-infrastructure:
+          files:
+            - "**/internal/infrastructure/**"
+            - "!$test"
+          allow:
+            - $gostd
+            - github.com/uchidas-rogue/game-api-sample/internal/domain
+            - github.com/uchidas-rogue/game-api-sample/internal/usecase
+            - github.com/uchidas-rogue/game-api-sample/internal/infrastructure
+            - github.com/labstack/echo/v4 # HTTP サーバ実体
+            - github.com/redis/go-redis/v9 # Redis クライアント
+            - github.com/go-sql-driver/mysql # MySQL ドライバ
+
+  exclusions:
+    # 生成コードは lint 対象外。生成物の整合は make gen/check（再生成 + 差分検知）が担当する。
+    #
+    # 【.testignore との関係】
+    # .testignore は「テスト対象外パッケージ」、ここは「lint 対象外パス」で、目的が異なるため
+    # 意図的に別リストにしている。ただし生成物（mock / sqlc）は両方に載る。
+    # 生成物のディレクトリ構成を変えた場合は両方を更新すること。片方だけ直さない。
+    paths:
+      - internal/.*/mock/
+      - internal/infrastructure/mysql/sqlc/
+
+    rules:
+      # テストコードでは、後始末や表明のための戻り値無視を許容する。
+      # 本番コードの errcheck は緩めない。
+      - path: _test\.go
+        linters:
+          - errcheck
+
+      # gochecknoglobals は本番コードのみを対象にする。
+      #
+      # determ. §9「隠れた共有状態の検出」が守りたいのは、呼び出し単位（リクエスト等）を
+      # またいで生存するプロセス内の可変状態であり、対象は本番コード。
+      # テストの共有フィクスチャについては AGENTS.md §3 が「t.Parallel() 配下で
+      # pkg-global 書換禁止」を別途定めているが、gochecknoglobals は「宣言」を見るだけで
+      # 「書換」を判別できないため、読み取り専用フィクスチャまで落ちてしまう。
+      #
+      # 【未回収の課題】この除外により、テストの pkg-global 書換は機械検証されない。
+      # 現在の該当箇所は internal/usecase/gacha/usecase_test.go の testItems 1件のみ
+      # （読み取り専用）。同ファイルのテスト再構成時に関数化して除外を外すか再検討する。
+      - path: _test\.go
+        linters: [gochecknoglobals]
+
+      # --- forbidigo の除外（AGENTS.md §2 が明示的に許容している箇所のみ） ---
+      #
+      # context.Background() / TODO(): バックグラウンドジョブのエントリポイント。
+      # 「リクエストスコープ内で生成しない」という規約なので、スコープの起点は対象外。
+      - path: ^cmd/
+        linters: [forbidigo]
+      - path: ^internal/driver/(batch|worker)/
+        linters: [forbidigo]
+      # 起動時の疎通確認とグレースフルシャットダウン。呼び出し元の ctx が既に
+      # キャンセルされている場面で使うため、新規 context の生成が正しい。
+      - path: ^internal/infrastructure/redis/client\.go$
+        linters: [forbidigo]
+        text: context\.(Background|TODO)
+      - path: ^internal/infrastructure/server/echo\.go$
+        linters: [forbidigo]
+        text: context\.(Background|TODO)
+      # slog.Default(): main / 初期化のみ許可（cmd/ は上で除外済み）。
+      - path: ^internal/di/
+        linters: [forbidigo]
+        text: slog\.Default
+      # time.Now(): Clock の実装を置く層でのみ許可。実装はまだ無い。
+      - path: ^internal/infrastructure/
+        linters: [forbidigo]
+        text: time\.Now
+      # テストコードでは時刻・context の直接生成を許容する（SUT 側の規約であって
+      # テスト側の規約ではない。テストの Flaky 対策は AGENTS.md §3 が別途定めている）。
+      - path: _test\.go
+        linters: [forbidigo]
+
+      # noctx はテストコードでは無効にする。
+      # 理由: noctx の目的は「リクエストスコープの context を外部呼び出しへ伝播させること」だが、
+      # テストが指摘されるのは httptest.NewRequest / net.Listen という、テスト専用かつ
+      # context を持たないことが正しい標準構成の場合に限られる。
+      # ここを個別の //nolint で潰すと同じ例外がテストの数だけ増えるため、
+      # 規則セットのレベルで「本番コードのみ対象」と決める（determ. §2）。
+      - path: _test\.go
+        linters:
+          - noctx
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
