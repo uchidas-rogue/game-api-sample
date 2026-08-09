@@ -13,6 +13,11 @@ import (
 	"github.com/labstack/echo/v4/middleware"
 )
 
+// shutdownTimeout はグレースフルシャットダウンで処理中リクエストの完了を待つ上限。
+// この層固有の運用値なので server パッケージで定義する（AGENTS.md §2）。
+// 環境ごとに変える必要が出たら configs へ移す。
+const shutdownTimeout = 10 * time.Second
+
 // New はミドルウェア設定済みのEchoインスタンスを生成する。
 // アクセスログはslogへ流す。
 func New(logger *slog.Logger) *echo.Echo {
@@ -77,7 +82,7 @@ func Run(ctx context.Context, e *echo.Echo, port int, logger *slog.Logger) error
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		logger.Info("shutting down http server")
 		if err := e.Shutdown(shutdownCtx); err != nil {

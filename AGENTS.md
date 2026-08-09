@@ -38,6 +38,7 @@
   - `domain` の純粋関数・値オブジェクトは図を作らない。テストケース配列自体が正本
   - **契約表・決定表は作らない**（テストと同じ情報を2箇所に持つとドリフトするため）
   - 実装変更時に「ノードの追加削除／分岐条件の変更／下位層への呼び出し内容の変更／戻り値の変更」が起きたら図の更新は必須
+- API レスポンス契約: `driver/http` のレスポンス構造は `internal/driver/http/testdata/contracts/*.json` を正本とし、`internal/testutil/apicontract` で**構造のみ**を検証する（値の妥当性はハンドラのテストの責務）。json タグの追加・削除・リネームをしたら同じ PR で契約ファイルも更新する。これはレスポンスを解釈する側（k6 シナリオ等）の変更が必要になるサイン
 - アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する
   - 生成物は手動編集しない。更新は `make mock/gen` の再実行のみ。再生成忘れ・手動編集は `make gen/check` が検知する（CI 必須）

@@ -208,7 +208,7 @@ func TestUsecase_Multi(t *testing.T) {
 			wantDrawnIndex: 1, // 先頭の Weight 0 はスキップされ、次の item が当選する
 		},
 		{
-			// #12 と同じパス。pullCount の下限でも成立することを確認する。
+			// #15 …→M→N→Z（#12 と同一パス）。pullCount の下限でも成立することを確認する。
 			// 図のパスは同一だが、pullCount によって upsert の個数と履歴の件数が変わるため残す。
 			name:           "正常系: pullCount が下限（1回）",
 			pullCount:      gachadomain.MinPullCount,

@@ -47,6 +47,7 @@ linters:
     # --- コーディング規約（AGENTS.md §2） ---
     - forbidigo # 禁止 API の検出（Context 伝播 / logger DI / 時刻）
     - gocritic # ruleguard 経由の自前 AST ルール（引数まで見る規約）
+    - mnd # マジックナンバー検出（AGENTS.md §2）
 
   # 【採用を検討して見送った linter】判断の再現性のため理由を残す（determ. §2）。
   #
@@ -81,6 +82,17 @@ linters:
         ruleguard:
           rules: ${base-path}/scripts/ruleguard/rules.go
           failOn: all # ルールファイルの読込・解析に失敗したら黙って素通りせず落とす
+
+    # AGENTS.md §2「マジックナンバー禁止」。
+    # 既定の検出対象（argument / case / condition / operation / return / assign）をそのまま使う。
+    # 0 と 1 は既定で無視される。
+    # テストコードは対象外にしている（exclusions を参照）: テストの入力値・期待値は
+    # リテラルであること自体に意味があり、const 化するとケースの意図が読み取れなくなる。
+    mnd:
+      ignored-functions:
+        # time.Duration の乗算はリテラルのほうが読みやすい（30 * time.Second 等）。
+        # 意味のある値は const 名で表現する運用にする。
+        - ^time\.(Duration|Second|Minute|Hour)$
 
     forbidigo:
       analyze-types: true
@@ -236,6 +248,12 @@ linters:
       - path: _test\.go
         linters:
           - errcheck
+
+      # mnd はテストコードでは無効にする。
+      # テストの入力値・期待値はリテラルであること自体に意味があり（「9090 を渡したら 9090 が返る」）、
+      # const 化するとケースの意図が読み取れなくなる。マジックナンバー禁止は本番コードの規約。
+      - path: _test\.go
+        linters: [mnd]
 
       # gochecknoglobals は本番コードのみを対象にする。
       #
