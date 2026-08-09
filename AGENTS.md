@@ -34,6 +34,10 @@
 
 # 3. Testing Rules (規約)
 - **テスト設計の考え方の正本は `go-testing-qa` スキル**（`.claude/skills/go-testing-qa/`）。テーブル駆動テストの正しい形、モック対象の選択基準、境界値ケースの取捨、カバレッジ指標の重み付け、設計図とテスト仕様表の作り方はそちらを参照する。本節は Go 固有の閾値・配置・命名規約を定める
+- テスト設計文書: `usecase` / `driver` の新規実装・分岐変更は、**実装より先に** `docs/testing/<機能>.md` にフローチャートとテスト仕様表を作る（順序は 図 → 失敗するテスト → 実装）。運用ルールは [docs/testing/README.md](docs/testing/README.md)
+  - `domain` の純粋関数・値オブジェクトは図を作らない。テストケース配列自体が正本
+  - **契約表・決定表は作らない**（テストと同じ情報を2箇所に持つとドリフトするため）
+  - 実装変更時に「ノードの追加削除／分岐条件の変更／下位層への呼び出し内容の変更／戻り値の変更」が起きたら図の更新は必須
 - アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する
   - 生成物は手動編集しない。更新は `make mock/gen` の再実行のみ。再生成忘れ・手動編集は `make gen/check` が検知する（CI 必須）
