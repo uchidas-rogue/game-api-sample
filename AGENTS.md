@@ -64,6 +64,8 @@
 
 # 4. Database Rules (sqlc + golang-migrate)
 - クエリ生成: `sqlc`。型安全・コンパイル時検証のため ORM (GORM 等) は使用しない
+  - sqlc のバージョンは `.sqlc-version` の1箇所で管理し、`make db/sqlc/gen` が同じ版を `./bin` へ導入する。`sqlc generate` を直接叩かない（PATH 上の別バージョンで生成結果が変わる）
+  - `schema.sql` と sqlc 生成物の再生成忘れ・手動編集は `make db/gen/check` が検知する（CI 必須）
 - マイグレーション: `golang-migrate` の連番形式で `up`/`down` をペア作成。down が困難な変更（カラム削除等）は事前にユーザーへ確認する
 - `schema.sql` は `make db/schema/dump` の生成物。手動編集しない
 - トランザクション制御:
@@ -97,6 +99,6 @@
   - 計画からの逸脱系: 当初の方針・前提が崩れた、想定と異なる実装が必要になった、副作用や影響範囲が事前見積りより大きい
   - ブロック内容: 「何が想定外か」「当初の想定との差分」「影響と次の選択肢」を簡潔に記す
   - 既存のエスカレーション規約に該当する場合は作業を止めて確認する。該当しない場合も、検知した事実は本ルールに従い必ず明示してから作業を続行する
-- タスク完了時の確認: コード変更を伴うタスクの完了前に `make lint` / `make gen/check` / `make test` を1回ずつ実行する（変更ごとの逐次実行は不要）
+- タスク完了時の確認: コード変更を伴うタスクの完了前に `make lint` / `make gen/check` / `make test` を1回ずつ実行する（変更ごとの逐次実行は不要）。`deployments/mysql/**` または `sqlc.yaml` を変更した場合は `make db/gen/check` も実行する
 - インターフェース変更時: `make mock/gen` でモックを再生成してからテストを実行する。再生成忘れは `make gen/check` が CI で検知する
 - git 操作: ユーザーから明示的な指示があるまで commit / push しない
