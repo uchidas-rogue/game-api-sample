@@ -127,62 +127,6 @@ func TestRankingRepository_GetUser(t *testing.T) {
 	}
 }
 
-func TestRankingRepository_GetGuildScore(t *testing.T) {
-	t.Parallel()
-
-	errDB := errors.New("db error")
-	now := time.Now()
-
-	tests := []struct {
-		name      string
-		stubScore sqlc.GuildScore
-		stubErr   error
-		wantErr   error
-	}{
-		{
-			name: "正常系: ギルドスコア取得成功",
-			stubScore: sqlc.GuildScore{
-				GuildID:   1,
-				Score:     1000,
-				UpdatedAt: sql.NullTime{Time: now, Valid: true},
-			},
-		},
-		{
-			name:    "異常系: sql.ErrNoRows は ErrScoreNotFound に変換される",
-			stubErr: sql.ErrNoRows,
-			wantErr: rankingdomain.ErrScoreNotFound,
-		},
-		{
-			name:    "異常系: その他の DB エラーはラップして返す",
-			stubErr: errDB,
-			wantErr: errDB,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().GetGuildScore(gomock.Any(), int64(1)).Return(tt.stubScore, tt.stubErr)
-
-			repo := repository.NewRankingRepositoryWithQuerier(mockQ)
-			got, err := repo.GetGuildScore(context.Background(), dummyTx{}, 1)
-
-			if tt.wantErr != nil {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, tt.wantErr)
-				assert.Equal(t, rankingdomain.GuildScore{}, got)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.stubScore.GuildID, got.GuildID)
-			assert.Equal(t, tt.stubScore.Score, got.Score)
-		})
-	}
-}
-
 func TestRankingRepository_IncrementGuildScore(t *testing.T) {
 	t.Parallel()
 
@@ -422,48 +366,6 @@ func TestRankingRepository_BulkInsertGuildScoreHistories(t *testing.T) {
 		assert.ErrorIs(t, err, errDB)
 		require.NoError(t, mock.ExpectationsWereMet())
 	})
-}
-
-func TestRankingRepository_IsUserInGuild(t *testing.T) {
-	t.Parallel()
-
-	errDB := errors.New("db error")
-
-	tests := []struct {
-		name       string
-		stubResult bool
-		stubErr    error
-		wantResult bool
-		wantErr    bool
-	}{
-		{name: "正常系: メンバーである", stubResult: true, wantResult: true},
-		{name: "正常系: メンバーでない", stubResult: false, wantResult: false},
-		{name: "異常系: DB エラーはラップして返す", stubErr: errDB, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().IsUserInGuild(gomock.Any(), sqlc.IsUserInGuildParams{
-				GuildID: int64(1),
-				UserID:  int64(2),
-			}).Return(tt.stubResult, tt.stubErr)
-
-			repo := repository.NewRankingRepositoryWithQuerier(mockQ)
-			got, err := repo.IsUserInGuild(context.Background(), dummyTx{}, 2, 1)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, errDB)
-			} else {
-				require.NoError(t, err)
-				assert.Equal(t, tt.wantResult, got)
-			}
-		})
-	}
 }
 
 func TestRankingRepository_GetUserGuildID(t *testing.T) {

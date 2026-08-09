@@ -1,11 +1,12 @@
 package repository
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
@@ -30,6 +31,7 @@ func NewRankingRepository(db sqlc.DBTX) *RankingRepository {
 	}
 }
 
+// GetGuild はギルドを取得する。存在しない場合は ErrGuildNotFound へ変換する。
 func (r *RankingRepository) GetGuild(ctx context.Context, tx shared.Tx, guildID int64) (rankingdomain.Guild, error) {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -50,6 +52,7 @@ func (r *RankingRepository) GetGuild(ctx context.Context, tx shared.Tx, guildID 
 	}, nil
 }
 
+// GetUser はユーザー名を取得する。存在しない場合は ErrUserNotFound へ変換する。
 func (r *RankingRepository) GetUser(ctx context.Context, tx shared.Tx, userID int64) (string, error) {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -65,25 +68,7 @@ func (r *RankingRepository) GetUser(ctx context.Context, tx shared.Tx, userID in
 	return u.Name, nil
 }
 
-func (r *RankingRepository) GetGuildScore(ctx context.Context, tx shared.Tx, guildID int64) (rankingdomain.GuildScore, error) {
-	q, err := r.querier(tx)
-	if err != nil {
-		return rankingdomain.GuildScore{}, fmt.Errorf("GetGuildScore: %w", err)
-	}
-	gs, err := q.GetGuildScore(ctx, guildID)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound
-		}
-		return rankingdomain.GuildScore{}, fmt.Errorf("get guild score: %w", err)
-	}
-	return rankingdomain.GuildScore{
-		GuildID:   gs.GuildID,
-		Score:     gs.Score,
-		UpdatedAt: gs.UpdatedAt.Time,
-	}, nil
-}
-
+// IncrementGuildScore はギルドスコアを加算する（行が無ければ作成する upsert）。
 func (r *RankingRepository) IncrementGuildScore(ctx context.Context, tx shared.Tx, guildID int64, score int64) error {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -123,9 +108,10 @@ func (r *RankingRepository) BulkIncrementGuildScores(ctx context.Context, tx sha
 	}
 
 	// 呼び出し元のスライスを書き換えないようコピーしてからソートする。
-	sorted := make([]rankingdomain.GuildScoreDelta, len(deltas))
-	copy(sorted, deltas)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].GuildID < sorted[j].GuildID })
+	sorted := slices.Clone(deltas)
+	slices.SortFunc(sorted, func(a, b rankingdomain.GuildScoreDelta) int {
+		return cmp.Compare(a.GuildID, b.GuildID)
+	})
 
 	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?),", len(sorted)), ",")
 	query := "INSERT INTO guild_scores (guild_id, score) VALUES " + valuesClause +
@@ -164,6 +150,7 @@ func (r *RankingRepository) BulkInsertGuildScoreHistories(ctx context.Context, t
 	return nil
 }
 
+// InsertGuildScoreHistory はギルドスコアの加算履歴を1件記録する。
 func (r *RankingRepository) InsertGuildScoreHistory(ctx context.Context, tx shared.Tx, guildID int64, userID int64, score int64) error {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -179,21 +166,8 @@ func (r *RankingRepository) InsertGuildScoreHistory(ctx context.Context, tx shar
 	return nil
 }
 
-func (r *RankingRepository) IsUserInGuild(ctx context.Context, tx shared.Tx, userID int64, guildID int64) (bool, error) {
-	q, err := r.querier(tx)
-	if err != nil {
-		return false, fmt.Errorf("IsUserInGuild: %w", err)
-	}
-	isMember, err := q.IsUserInGuild(ctx, sqlc.IsUserInGuildParams{
-		GuildID: guildID,
-		UserID:  userID,
-	})
-	if err != nil {
-		return false, fmt.Errorf("is user in guild: %w", err)
-	}
-	return isMember, nil
-}
-
+// GetUserGuildID はユーザーの所属ギルド ID を取得する。
+// 未所属（該当行なし）は ErrUserNotInGuild へ変換する。
 func (r *RankingRepository) GetUserGuildID(ctx context.Context, tx shared.Tx, userID int64) (int64, error) {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -209,6 +183,8 @@ func (r *RankingRepository) GetUserGuildID(ctx context.Context, tx shared.Tx, us
 	return guildID, nil
 }
 
+// ListGuildsByIDs は指定 ID のギルドを一括取得し、ID をキーにしたマップで返す。
+// 存在しない ID は結果に含まれない（呼び出し側が欠落を許容する前提）。
 func (r *RankingRepository) ListGuildsByIDs(ctx context.Context, tx shared.Tx, guildIDs []int64) (map[int64]rankingdomain.Guild, error) {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -230,6 +206,7 @@ func (r *RankingRepository) ListGuildsByIDs(ctx context.Context, tx shared.Tx, g
 	return result, nil
 }
 
+// ListAllGuildScores は全ギルドのスコアをスコア降順で返す（バッチ同期用）。
 func (r *RankingRepository) ListAllGuildScores(ctx context.Context, tx shared.Tx) ([]rankingdomain.GuildScore, error) {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -250,6 +227,8 @@ func (r *RankingRepository) ListAllGuildScores(ctx context.Context, tx shared.Tx
 	return result, nil
 }
 
+// GetUserPoints はユーザーの累計ポイントを取得する。
+// 未登録（該当行なし）は ErrPointsNotFound へ変換する。
 func (r *RankingRepository) GetUserPoints(ctx context.Context, tx shared.Tx, userID int64) (rankingdomain.UserPoint, error) {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -269,6 +248,7 @@ func (r *RankingRepository) GetUserPoints(ctx context.Context, tx shared.Tx, use
 	}, nil
 }
 
+// IncrementUserPoints はユーザーの累計ポイントを加算する（行が無ければ作成する upsert）。
 func (r *RankingRepository) IncrementUserPoints(ctx context.Context, tx shared.Tx, userID int64, points int64) error {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -283,6 +263,7 @@ func (r *RankingRepository) IncrementUserPoints(ctx context.Context, tx shared.T
 	return nil
 }
 
+// InsertUserPointHistory は個人ポイントの加算履歴を1件記録する。
 func (r *RankingRepository) InsertUserPointHistory(ctx context.Context, tx shared.Tx, userID int64, points int64, reason string) error {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -298,6 +279,8 @@ func (r *RankingRepository) InsertUserPointHistory(ctx context.Context, tx share
 	return nil
 }
 
+// ListUsersByIDs は指定 ID のユーザー名を一括取得し、ID をキーにしたマップで返す。
+// 存在しない ID は結果に含まれない（呼び出し側が欠落を許容する前提）。
 func (r *RankingRepository) ListUsersByIDs(ctx context.Context, tx shared.Tx, userIDs []int64) (map[int64]string, error) {
 	q, err := r.querier(tx)
 	if err != nil {
@@ -314,6 +297,7 @@ func (r *RankingRepository) ListUsersByIDs(ctx context.Context, tx shared.Tx, us
 	return result, nil
 }
 
+// ListAllUserPoints は全ユーザーのポイントをポイント降順で返す（バッチ同期用）。
 func (r *RankingRepository) ListAllUserPoints(ctx context.Context, tx shared.Tx) ([]rankingdomain.UserPoint, error) {
 	q, err := r.querier(tx)
 	if err != nil {

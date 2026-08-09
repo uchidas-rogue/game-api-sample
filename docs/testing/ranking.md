@@ -130,7 +130,7 @@ flowchart TD
 **設計上の要点**（テストで守る不変条件）:
 
 - `IsValidScore` の判定は `DoInTx` の**外**。不正入力でトランザクションを張らない
-- ギルド集計（`GetGuildScore` / `InsertGuildScoreHistory` / `IncrementGuildScore`）は
+- ギルド集計（`IncrementGuildScore` / `InsertGuildScoreHistory`）は
   この tx で**行わない**。ホット行（1ギルド=1行）の排他ロックを同期リクエスト経路から
   除去するため outbox-worker へ非同期化した（[outbox-worker.md](outbox-worker.md)）。
   同期レスポンスも `GuildID` のみを返し、ギルドの previous/new total は返さない

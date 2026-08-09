@@ -676,8 +676,8 @@ func expectAddPointsCalls(m *mocks, tc addPointsCase, input ranking.AddUserPoint
 	}
 	m.repo.EXPECT().GetUserGuildID(gomock.Any(), gomock.Any(), input.UserID).Return(testGuildID, nil)
 
-	// K: 個人ポイント履歴。ギルド集計（GetGuildScore / InsertGuildScoreHistory /
-	// IncrementGuildScore）は outbox-worker へ非同期化したため、この tx では呼ばれない。
+	// K: 個人ポイント履歴。ギルド集計（IncrementGuildScore / InsertGuildScoreHistory）は
+	// outbox-worker へ非同期化したため、この tx では呼ばれない。
 	// 呼ばれれば gomock の strict マッチが失敗させる。
 	if tc.failAt == addStepInsertUserHistory {
 		m.repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), input.UserID, input.Points, input.Reason).Return(errRepo)

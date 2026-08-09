@@ -85,21 +85,6 @@ func (mr *MockRepositoryMockRecorder) GetGuild(ctx, tx, guildID any) *gomock.Cal
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGuild", reflect.TypeOf((*MockRepository)(nil).GetGuild), ctx, tx, guildID)
 }
 
-// GetGuildScore mocks base method.
-func (m *MockRepository) GetGuildScore(ctx context.Context, tx shared.Tx, guildID int64) (ranking.GuildScore, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetGuildScore", ctx, tx, guildID)
-	ret0, _ := ret[0].(ranking.GuildScore)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetGuildScore indicates an expected call of GetGuildScore.
-func (mr *MockRepositoryMockRecorder) GetGuildScore(ctx, tx, guildID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGuildScore", reflect.TypeOf((*MockRepository)(nil).GetGuildScore), ctx, tx, guildID)
-}
-
 // GetUser mocks base method.
 func (m *MockRepository) GetUser(ctx context.Context, tx shared.Tx, userID int64) (string, error) {
 	m.ctrl.T.Helper()
@@ -199,21 +184,6 @@ func (m *MockRepository) InsertUserPointHistory(ctx context.Context, tx shared.T
 func (mr *MockRepositoryMockRecorder) InsertUserPointHistory(ctx, tx, userID, points, reason any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertUserPointHistory", reflect.TypeOf((*MockRepository)(nil).InsertUserPointHistory), ctx, tx, userID, points, reason)
-}
-
-// IsUserInGuild mocks base method.
-func (m *MockRepository) IsUserInGuild(ctx context.Context, tx shared.Tx, userID, guildID int64) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsUserInGuild", ctx, tx, userID, guildID)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// IsUserInGuild indicates an expected call of IsUserInGuild.
-func (mr *MockRepositoryMockRecorder) IsUserInGuild(ctx, tx, userID, guildID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsUserInGuild", reflect.TypeOf((*MockRepository)(nil).IsUserInGuild), ctx, tx, userID, guildID)
 }
 
 // ListAllGuildScores mocks base method.

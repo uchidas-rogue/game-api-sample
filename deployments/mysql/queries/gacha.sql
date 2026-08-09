@@ -17,13 +17,3 @@ WHERE id = ?;
 SELECT id, name, rarity, weight, created_at
 FROM items;
 
--- name: UpsertUserItem :exec
--- ユーザー所持アイテムを追加。既に存在する場合は所持数を加算する。
-INSERT INTO user_items (user_id, item_id, num)
-VALUES (?, ?, ?)
-ON DUPLICATE KEY UPDATE num = num + VALUES(num);
-
--- name: InsertGachaHistory :exec
--- ガチャ履歴を1件追加する。
-INSERT INTO gacha_histories (user_id, item_id)
-VALUES (?, ?);

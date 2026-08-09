@@ -33,31 +33,6 @@ func collectRoutes(e *echo.Echo) map[routeKey]struct{} {
 	return m
 }
 
-func TestRegister_HealthOnly(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	mockHealth := mock_health.NewMockUsecase(ctrl)
-	h := router.Handlers{
-		Health:  healthhandler.NewHandler(mockHealth, slogtest.NewLogger(t, nil)),
-		Gacha:   nil,
-		Ranking: nil,
-	}
-
-	e := echo.New()
-	router.Register(e, h)
-	routes := collectRoutes(e)
-
-	// /healthz のみ登録されている。
-	assert.Contains(t, routes, routeKey{method: "GET", path: "/healthz"})
-
-	// Gacha / Ranking ルートは登録されない。
-	assert.NotContains(t, routes, routeKey{method: "POST", path: "/users/:userID/gacha/multi"})
-	assert.NotContains(t, routes, routeKey{method: "GET", path: "/rankings/guilds"})
-}
-
 func TestRegister_AllHandlers(t *testing.T) {
 	t.Parallel()
 

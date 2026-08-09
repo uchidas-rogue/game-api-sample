@@ -18,9 +18,6 @@ type Repository interface {
 	// GetUser はユーザー情報を取得する。
 	GetUser(ctx context.Context, tx shared.Tx, userID int64) (userName string, err error)
 
-	// GetGuildScore はギルドの現在スコアを取得する。
-	GetGuildScore(ctx context.Context, tx shared.Tx, guildID int64) (rankingdomain.GuildScore, error)
-
 	// IncrementGuildScore はギルドスコアを加算する。
 	IncrementGuildScore(ctx context.Context, tx shared.Tx, guildID int64, score int64) error
 
@@ -36,9 +33,6 @@ type Repository interface {
 	// BulkInsertGuildScoreHistories はスコア履歴を1文の複数行 INSERT で一括記録する。
 	// スコア加算はギルド単位に集約できるが、履歴はイベント単位で残す必要がある。
 	BulkInsertGuildScoreHistories(ctx context.Context, tx shared.Tx, entries []rankingdomain.GuildScoreHistoryEntry) error
-
-	// IsUserInGuild はユーザーがギルドに所属しているかを確認する。
-	IsUserInGuild(ctx context.Context, tx shared.Tx, userID int64, guildID int64) (bool, error)
 
 	// GetUserGuildID はユーザーが所属するギルドIDを取得する。未所属時は ErrUserNotInGuild を返す。
 	GetUserGuildID(ctx context.Context, tx shared.Tx, userID int64) (int64, error)

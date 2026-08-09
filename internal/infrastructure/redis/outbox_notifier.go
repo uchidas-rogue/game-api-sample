@@ -12,9 +12,10 @@ import (
 // outboxEventsChannel は outbox イベント追加通知の Redis Pub/Sub チャネル名。
 const outboxEventsChannel = "outbox:events"
 
-// OutboxNotifier は Redis Pub/Sub で worker に通知する Publisher 実装。
+// OutboxNotifier が usecase 層の Notifier を満たすことをコンパイル時に検証する。
 var _ outboxusecase.Notifier = (*OutboxNotifier)(nil)
 
+// OutboxNotifier は Redis Pub/Sub で worker に通知する Publisher 実装。
 type OutboxNotifier struct {
 	client *redis.Client
 }
@@ -33,9 +34,10 @@ func (n *OutboxNotifier) Notify(ctx context.Context) error {
 	return nil
 }
 
-// OutboxSubscriber は Redis Pub/Sub で通知を購読する Subscriber 実装。
+// OutboxSubscriber が usecase 層の Subscriber を満たすことをコンパイル時に検証する。
 var _ outboxusecase.Subscriber = (*OutboxSubscriber)(nil)
 
+// OutboxSubscriber は Redis Pub/Sub で通知を購読する Subscriber 実装。
 type OutboxSubscriber struct {
 	client *redis.Client
 }

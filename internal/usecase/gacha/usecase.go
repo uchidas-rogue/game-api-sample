@@ -55,10 +55,11 @@ func NewUsecase(tx shared.Transactor, repo Repository, rnd Randomizer, logger *s
 // Multi はマルチガチャ（PullCount回分の抽選）を実行する。
 //
 // トランザクション設計（負荷試験向けの注意点）:
+//   - アイテムマスタ（items）の取得はトランザクションの外で行う。更新しないためロック順序の
+//     対象外であり、行ロックを保持したままマスタ参照の往復をはさまないようにする。
 //   - 単一トランザクション内で users を FOR UPDATE → user_items を upsert → gacha_histories を INSERT。
 //   - 行ロック取得順序は常に「users → user_items（item_id 昇順）」に統一する。
 //     複数ユーザーが同時に同じアイテム集合を引いてもデッドロックを最小化する目的。
-//   - items テーブルはマスタ参照のみで更新しないため、ロック取得順序からは除外する。
 //   - 抽選結果が同一 item_id に複数回当選した場合は集約してから upsert することで
 //     行ロックの取得回数とラウンドトリップを削減する（負荷試験を意識した最適化）。
 func (u *usecase) Multi(ctx context.Context, userID int64, pullCount int) (Result, error) {
@@ -66,9 +67,21 @@ func (u *usecase) Multi(ctx context.Context, userID int64, pullCount int) (Resul
 		return Result{}, fmt.Errorf("%w: %d (allowed: %d-%d)", gachadomain.ErrInvalidPullCount, pullCount, gachadomain.MinPullCount, gachadomain.MaxPullCount)
 	}
 
+	// アイテムマスタはトランザクションの外で読む（tx=nil）。更新しないためロック順序の
+	// 対象外であり、tx 内に置くと users の行ロックを保持したままマスタ参照の往復が
+	// 1回はさまる。外に出すことで、マスタ不備（下の2分岐）はトランザクションを張らず
+	// 行ロックも取らずに弾ける。
+	items, err := u.repo.ListItems(ctx, nil)
+	if err != nil {
+		return Result{}, err
+	}
+	if len(items) == 0 {
+		return Result{}, gachadomain.ErrNoItemsAvailable
+	}
+
 	gemCost := gachadomain.GemCostFor(pullCount)
 	var result Result
-	err := u.tx.DoInTx(ctx, func(tx shared.Tx) error {
+	err = u.tx.DoInTx(ctx, func(tx shared.Tx) error {
 		user, err := u.repo.GetUserForUpdate(ctx, tx, userID)
 		if err != nil {
 			return err
@@ -77,13 +90,6 @@ func (u *usecase) Multi(ctx context.Context, userID int64, pullCount int) (Resul
 			return fmt.Errorf("user %d: %w (have=%d, need=%d)", userID, gachadomain.ErrInsufficientGems, user.GemNum, gemCost)
 		}
 
-		items, err := u.repo.ListItems(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if len(items) == 0 {
-			return gachadomain.ErrNoItemsAvailable
-		}
 		drawn, err := u.draw(items, pullCount)
 		if err != nil {
 			return err

@@ -12,9 +12,10 @@ import (
 	rankingusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking"
 )
 
-// RankingStore は Redis Sorted Set を使用したランキングストア。
+// RankingStore が usecase 層の RankingStore を満たすことをコンパイル時に検証する。
 var _ rankingusecase.RankingStore = (*RankingStore)(nil)
 
+// RankingStore は Redis Sorted Set を使用したランキングストア。
 type RankingStore struct {
 	client *redis.Client
 }
@@ -74,7 +75,11 @@ func (r *RankingStore) GetGuildRankings(ctx context.Context, offset, limit int) 
 
 	entries := make([]rankingdomain.RankEntry, 0, len(results))
 	for i, z := range results {
-		id, err := strconv.ParseInt(z.Member.(string), 10, 64)
+		// go-redis は Member を常に string で返すが、型アサーションを裸で書くと
+		// 前提が崩れたときに読み取り経路で panic する。カンマ ok で受けて空文字に倒し、
+		// 直下の ParseInt に弾かせる（不正な member をスキップする既存の経路に合流させる）。
+		member, _ := z.Member.(string)
+		id, err := strconv.ParseInt(member, 10, 64)
 		if err != nil {
 			continue
 		}
@@ -176,7 +181,11 @@ func (r *RankingStore) GetUserRankings(ctx context.Context, offset, limit int) (
 
 	entries := make([]rankingdomain.RankEntry, 0, len(results))
 	for i, z := range results {
-		id, err := strconv.ParseInt(z.Member.(string), 10, 64)
+		// go-redis は Member を常に string で返すが、型アサーションを裸で書くと
+		// 前提が崩れたときに読み取り経路で panic する。カンマ ok で受けて空文字に倒し、
+		// 直下の ParseInt に弾かせる（不正な member をスキップする既存の経路に合流させる）。
+		member, _ := z.Member.(string)
+		id, err := strconv.ParseInt(member, 10, 64)
 		if err != nil {
 			continue
 		}

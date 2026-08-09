@@ -31,22 +31,6 @@ func (q *Queries) GetUserForUpdate(ctx context.Context, id int64) (User, error) 
 	return i, err
 }
 
-const insertGachaHistory = `-- name: InsertGachaHistory :exec
-INSERT INTO gacha_histories (user_id, item_id)
-VALUES (?, ?)
-`
-
-type InsertGachaHistoryParams struct {
-	UserID int64
-	ItemID int64
-}
-
-// ガチャ履歴を1件追加する。
-func (q *Queries) InsertGachaHistory(ctx context.Context, arg InsertGachaHistoryParams) error {
-	_, err := q.db.ExecContext(ctx, insertGachaHistory, arg.UserID, arg.ItemID)
-	return err
-}
-
 const listItems = `-- name: ListItems :many
 SELECT id, name, rarity, weight, created_at
 FROM items
@@ -96,23 +80,5 @@ type UpdateUserGemsParams struct {
 // 指定ユーザーの石残高を更新する。トランザクション内から呼び出す前提。
 func (q *Queries) UpdateUserGems(ctx context.Context, arg UpdateUserGemsParams) error {
 	_, err := q.db.ExecContext(ctx, updateUserGems, arg.GemNum, arg.ID)
-	return err
-}
-
-const upsertUserItem = `-- name: UpsertUserItem :exec
-INSERT INTO user_items (user_id, item_id, num)
-VALUES (?, ?, ?)
-ON DUPLICATE KEY UPDATE num = num + VALUES(num)
-`
-
-type UpsertUserItemParams struct {
-	UserID int64
-	ItemID int64
-	Num    int32
-}
-
-// ユーザー所持アイテムを追加。既に存在する場合は所持数を加算する。
-func (q *Queries) UpsertUserItem(ctx context.Context, arg UpsertUserItemParams) error {
-	_, err := q.db.ExecContext(ctx, upsertUserItem, arg.UserID, arg.ItemID, arg.Num)
 	return err
 }

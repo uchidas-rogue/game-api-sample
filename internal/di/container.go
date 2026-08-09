@@ -33,10 +33,12 @@ var (
 )
 
 // Container はアプリケーション全体のコンポーネントを保持する。
+//
+// 現状は HTTP ハンドラ束のみ。usecase を直接参照したい呼び出し元（別 driver 等）が
+// 出てきたら、そのときにフィールドを足す。使われないまま持たせると、
+// 依存の実際の広がりが Container の見た目と食い違う。
 type Container struct {
-	Handlers  router.Handlers
-	GachaUC   gachausecase.Usecase
-	RankingUC rankingusecase.Usecase
+	Handlers router.Handlers
 }
 
 // Build は DB, Redis, logger を受け取り、各層の依存を組み立てる。
@@ -66,7 +68,5 @@ func Build(db *sql.DB, redisClient *infraRedis.Client, logger *slog.Logger) Cont
 			Gacha:   gachaH,
 			Ranking: rankingH,
 		},
-		GachaUC:   gachaUC,
-		RankingUC: rankingUC,
 	}
 }

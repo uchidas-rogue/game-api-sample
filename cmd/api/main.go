@@ -56,7 +56,7 @@ func main() {
 	}
 
 	// Redis接続を確立
-	redisClient, err := infraRedis.NewClient(cfg.RedisAddr)
+	redisClient, err := infraRedis.NewClient(ctx, cfg.RedisAddr)
 	if err != nil {
 		log.Error("failed to connect redis", slog.Any("error", err))
 		os.Exit(1)
