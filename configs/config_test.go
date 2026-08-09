@@ -12,15 +12,34 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/configs"
 )
 
+// clearConfigEnv は Load が参照する全ての環境変数を空にする。
+//
+// 各テストが個別に列挙すると、設定値を追加したときに一部のテストだけ更新漏れが起き、
+// 実行環境の環境変数に結果が左右される（= flaky）。列挙はここ1箇所に集約する。
+// AGENTS.md §2 の「新規の設定値追加時は Config 構造体・既定値・Load() の3箇所を更新する」
+// に該当する変更をしたら、このリストにも追加すること。
+//
+// t.Setenv を使うため、呼び出し元のテストは t.Parallel() を付けられない。
+func clearConfigEnv(t *testing.T) {
+	t.Helper()
+
+	for _, key := range []string{
+		"PORT",
+		"LOG_LEVEL",
+		"MYSQL_DSN",
+		"REDIS_ADDR",
+		"OUTBOX_POLL_INTERVAL",
+		"OUTBOX_BATCH_SIZE",
+		"OUTBOX_TICK_TIMEOUT",
+		"DB_PING_TIMEOUT",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 // TestLoad_Defaults は全環境変数未設定時に既定値が返ることを検証する。
-// env 干渉回避のため各テストで t.Setenv を使用し、t.Parallel() は付けない。
 func TestLoad_Defaults(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("LOG_LEVEL", "")
-	t.Setenv("MYSQL_DSN", "")
-	t.Setenv("REDIS_ADDR", "")
-	t.Setenv("OUTBOX_POLL_INTERVAL", "")
-	t.Setenv("OUTBOX_BATCH_SIZE", "")
+	clearConfigEnv(t)
 
 	cfg, err := configs.Load()
 	require.NoError(t, err)
@@ -31,6 +50,8 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:6379", cfg.RedisAddr)
 	assert.Equal(t, 10*time.Minute, cfg.OutboxPollInterval)
 	assert.Equal(t, 100, cfg.OutboxBatchSize)
+	assert.Equal(t, 30*time.Second, cfg.OutboxTickTimeout)
+	assert.Equal(t, 5*time.Second, cfg.DBPingTimeout)
 }
 
 func TestLoad_PORT(t *testing.T) {
@@ -46,12 +67,8 @@ func TestLoad_PORT(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
 			t.Setenv("PORT", tt.value)
-			t.Setenv("LOG_LEVEL", "")
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
-			t.Setenv("OUTBOX_POLL_INTERVAL", "")
-			t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 			cfg, err := configs.Load()
 			if tt.wantErr {
@@ -80,12 +97,8 @@ func TestLoad_LogLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PORT", "")
+			clearConfigEnv(t)
 			t.Setenv("LOG_LEVEL", tt.value)
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
-			t.Setenv("OUTBOX_POLL_INTERVAL", "")
-			t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 			cfg, err := configs.Load()
 			if tt.wantErr {
@@ -99,12 +112,8 @@ func TestLoad_LogLevel(t *testing.T) {
 }
 
 func TestLoad_MySQLDSN(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("LOG_LEVEL", "")
+	clearConfigEnv(t)
 	t.Setenv("MYSQL_DSN", "user:pass@tcp(db:3306)/mydb")
-	t.Setenv("REDIS_ADDR", "")
-	t.Setenv("OUTBOX_POLL_INTERVAL", "")
-	t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 	cfg, err := configs.Load()
 	require.NoError(t, err)
@@ -112,12 +121,8 @@ func TestLoad_MySQLDSN(t *testing.T) {
 }
 
 func TestLoad_RedisAddr(t *testing.T) {
-	t.Setenv("PORT", "")
-	t.Setenv("LOG_LEVEL", "")
-	t.Setenv("MYSQL_DSN", "")
+	clearConfigEnv(t)
 	t.Setenv("REDIS_ADDR", "redis:6379")
-	t.Setenv("OUTBOX_POLL_INTERVAL", "")
-	t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 	cfg, err := configs.Load()
 	require.NoError(t, err)
@@ -140,12 +145,8 @@ func TestLoad_OutboxPollInterval(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PORT", "")
-			t.Setenv("LOG_LEVEL", "")
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
+			clearConfigEnv(t)
 			t.Setenv("OUTBOX_POLL_INTERVAL", tt.value)
-			t.Setenv("OUTBOX_BATCH_SIZE", "")
 
 			cfg, err := configs.Load()
 			if tt.wantErr {
@@ -173,11 +174,7 @@ func TestLoad_OutboxBatchSize(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("PORT", "")
-			t.Setenv("LOG_LEVEL", "")
-			t.Setenv("MYSQL_DSN", "")
-			t.Setenv("REDIS_ADDR", "")
-			t.Setenv("OUTBOX_POLL_INTERVAL", "")
+			clearConfigEnv(t)
 			t.Setenv("OUTBOX_BATCH_SIZE", tt.value)
 
 			cfg, err := configs.Load()
@@ -187,6 +184,72 @@ func TestLoad_OutboxBatchSize(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.OutboxBatchSize)
+		})
+	}
+}
+
+// TestLoad_OutboxTickTimeout / TestLoad_DBPingTimeout は
+// OUTBOX_POLL_INTERVAL と同じ検証構造を持つ独立したコードブロックを対象にする。
+// 4 ブロックは同じ形だが条件式はそれぞれ別のソース行にあるため、
+// 1 ブロックのテストで他を代表させることはできない。
+//
+// 0s と -1s はどちらも `parsed <= 0` の同一分岐に入るが、別ケースとして残す。
+// 0s は `<=` を `<` と書き誤った場合、-1s は `== 0` と書き誤った場合を検出するため
+// （境界値を独立ケースにする3基準のうち「片方だけが検出できる実装ミスがある」に該当）。
+func TestLoad_OutboxTickTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 10s", value: "10s", want: 10 * time.Second},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0s（0以下）", value: "0s", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("OUTBOX_TICK_TIMEOUT", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.OutboxTickTimeout)
+		})
+	}
+}
+
+func TestLoad_DBPingTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 3s", value: "3s", want: 3 * time.Second},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0s（0以下）", value: "0s", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_PING_TIMEOUT", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBPingTimeout)
 		})
 	}
 }

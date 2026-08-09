@@ -1,6 +1,6 @@
 # Go アプリ開発系（起動 / テスト / ビルド / 静的解析 / モック生成）
 
-.PHONY: run run/debug run/outbox-worker test test/v test/race test/cover build build/batch build/outbox-worker build/all lint lint/diff lint/fix tools/golangci-lint tools/mockgen mock/gen gen/check
+.PHONY: run run/debug run/outbox-worker test test/v test/race test/cover test/cover/check build build/batch build/outbox-worker build/all lint lint/diff lint/fix tools/golangci-lint tools/mockgen mock/gen gen/check
 
 # golangci-lint のバージョンは .golangci-version 単一箇所で管理する（ローカルと CI の等価性のため）。
 # go.mod の tool ディレクティブは採用しない: golangci-lint の依存がアプリ本体の
@@ -48,6 +48,14 @@ test/race:
 test/cover:
 	@go test -coverprofile=coverage.out $(TEST_PKGS)
 	go tool cover -html=coverage.out
+
+# 既存の coverage.out を判定するだけで、テストは実行しない。
+# CI では test/race が生成したプロファイルをそのまま使い、テストの二重実行を避ける。
+# ローカルで単体で叩く場合は先に test/race か test/cover を実行すること
+# （プロファイルが古い場合はスクリプトが警告する）。
+## 層別カバレッジが閾値を満たすか判定（要 coverage.out。CI 用）
+test/cover/check:
+	@./scripts/coverage-check.sh coverage.out
 
 ## ビルド（./bin/api に出力）
 build:

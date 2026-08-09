@@ -91,6 +91,13 @@ jobs:
             } >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      # 層別カバレッジが AGENTS.md §3 の目標を満たすかを判定する。
+      # 直前の test/race が生成した coverage.out をそのまま使い、テストを二重実行しない。
+      # サマリ出力の後に置いているのは、未達で落ちたときも $GITHUB_STEP_SUMMARY に
+      # 数値が残るようにするため。
+      - name: Check coverage thresholds
+        run: make test/cover/check
+
       - name: Upload coverage artifact
         if: always()
         uses: actions/upload-artifact@v4

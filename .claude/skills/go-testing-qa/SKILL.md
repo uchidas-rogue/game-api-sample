@@ -103,13 +103,21 @@ tests := []struct {
 
 | §11 の指標 | 本プロジェクトでの担保方法 |
 | --- | --- |
-| 行/文カバレッジ | 層別閾値の CI 判定（層別目標は AGENTS.md §3）。**閾値判定は未実装** — 現状 CI は `go tool cover -func` の結果をサマリ表示するだけで、未達でも落ちない |
+| 行/文カバレッジ | 層別閾値の **CI 機械判定**（`make test/cover/check`。層別目標は AGENTS.md §3、実体は `scripts/coverage-check.sh`）。未達なら CI が落ちる |
 | 分岐カバレッジ | **代替: `tdd-workflow.md` §7 のフロー図パスカバレッジ**。テスト仕様表「図のパス」列の網羅を、同 §8 チェックリストによる**レビューゲート**で担保する。**設計文書の置き場（`docs/testing/`）は未整備** |
 | 条件カバレッジ・関数カバレッジ | 参考値（§11 のとおり目標から除外） |
 
 つまり **分岐の網羅は数値ではなく設計文書とレビューで守る**。フロー図を作る対象（`internal/usecase/` / `internal/driver/`）でこれを省略すると、分岐カバレッジの担保手段が完全に失われる。
 
-現状のカバレッジ確認手段は `make test/cover`（HTML 表示）と `make test/race`（`coverage.out` 生成）。
+### 計測と判定の手順
+
+1. `make test/race` — テストを実行し `coverage.out` を生成する
+2. `make test/cover/check` — 層別に集計して閾値と突き合わせる。未達なら未カバー箇所の一覧が出る
+3. `make test/cover` — HTML で視覚的に確認したい場合
+
+**`go tool cover -func` の数値で判断しないこと。** あれは関数単位の平均で、小さな未カバー関数を過大に、大きな高カバレッジ関数を過小に評価する。`make test/cover/check` は文数で重み付けした集計（`go tool cover -func` の `total` と一致する定義）を使う。
+
+未達だったときの進め方は `tdd-workflow.md` §11（分類 → 到達可能なものだけ追加 → 過剰モック禁止 → 試行上限で打ち切り報告）。同じ内容が AGENTS.md §6 にも規約として載っている。
 
 ---
 
