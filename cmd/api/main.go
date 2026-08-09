@@ -40,6 +40,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = db.Close() }()
+	infraMysql.ConfigurePool(db, infraMysql.PoolConfig{
+		MaxOpenConns:    cfg.DBMaxOpenConns,
+		MaxIdleConns:    cfg.DBMaxIdleConns,
+		ConnMaxLifetime: cfg.DBConnMaxLifetime,
+		ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
+	})
 
 	// 遅延接続のため起動時に疎通確認する（DB 未到達なら fail fast で ECS に再起動を委ねる）
 	pingCtx, cancelPing := context.WithTimeout(ctx, cfg.DBPingTimeout)

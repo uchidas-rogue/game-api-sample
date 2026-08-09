@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 
 	gachadomain "github.com/uchidas-rogue/game-api-sample/internal/domain/gacha"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
@@ -21,6 +22,7 @@ var _ gachausecase.Repository = (*GachaRepository)(nil)
 // GachaRepository は gachausecase.Repository の sqlc/MySQL 実装。
 type GachaRepository struct {
 	querier querierFactory
+	execer  execerFactory
 }
 
 // NewGachaRepository は GachaRepository を生成する。
@@ -28,6 +30,7 @@ type GachaRepository struct {
 func NewGachaRepository(db sqlc.DBTX) *GachaRepository {
 	return &GachaRepository{
 		querier: newQuerierFactory(db),
+		execer:  newExecerFactory(db),
 	}
 }
 
@@ -83,33 +86,55 @@ func (r *GachaRepository) ListItems(ctx context.Context, tx shared.Tx) ([]gachad
 	return items, nil
 }
 
-// UpsertUserItem はユーザー所持アイテムを追加（既存は加算）する。
-func (r *GachaRepository) UpsertUserItem(ctx context.Context, tx shared.Tx, userID int64, itemID int64, num int) error {
-	q, err := r.querier(tx)
-	if err != nil {
-		return fmt.Errorf("UpsertUserItem: %w", err)
+// 複数行 INSERT の1行あたりのプレースホルダ数。args のキャパシティ計算に使う。
+const (
+	// userItemColumns は user_items の (user_id, item_id, num)。
+	userItemColumns = 3
+	// gachaHistoryColumns は gacha_histories の (user_id, item_id)。
+	gachaHistoryColumns = 2
+)
+
+// UpsertUserItems はユーザー所持アイテムを複数行 INSERT で一括追加（既存は加算）する。
+// sqlc は可変行数の複数行 INSERT を生成できないため、execer で生 SQL を発行する。
+// items は呼び出し側で item_id 昇順に並べてある前提（行ロック取得順を揃えデッドロックを回避）。
+func (r *GachaRepository) UpsertUserItems(ctx context.Context, tx shared.Tx, userID int64, items []gachausecase.UserItemCount) error {
+	if len(items) == 0 {
+		return nil
 	}
-	if err := q.UpsertUserItem(ctx, sqlc.UpsertUserItemParams{
-		UserID: userID,
-		ItemID: itemID,
-		Num:    int32(num),
-	}); err != nil {
-		return fmt.Errorf("failed to upsert user item (user=%d, item=%d): %w", userID, itemID, err)
+	ex, err := r.execer(tx)
+	if err != nil {
+		return fmt.Errorf("UpsertUserItems: %w", err)
+	}
+	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?, ?),", len(items)), ",")
+	query := "INSERT INTO user_items (user_id, item_id, num) VALUES " + valuesClause +
+		" ON DUPLICATE KEY UPDATE num = num + VALUES(num)"
+	args := make([]any, 0, len(items)*userItemColumns)
+	for _, it := range items {
+		args = append(args, userID, it.ItemID, int32(it.Num))
+	}
+	if _, err := ex.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("failed to bulk upsert user items (user=%d, count=%d): %w", userID, len(items), err)
 	}
 	return nil
 }
 
-// InsertGachaHistory はガチャ履歴を1件追加する。
-func (r *GachaRepository) InsertGachaHistory(ctx context.Context, tx shared.Tx, userID int64, itemID int64) error {
-	q, err := r.querier(tx)
-	if err != nil {
-		return fmt.Errorf("InsertGachaHistory: %w", err)
+// InsertGachaHistories はガチャ履歴を複数行 INSERT で一括追加する。
+func (r *GachaRepository) InsertGachaHistories(ctx context.Context, tx shared.Tx, userID int64, itemIDs []int64) error {
+	if len(itemIDs) == 0 {
+		return nil
 	}
-	if err := q.InsertGachaHistory(ctx, sqlc.InsertGachaHistoryParams{
-		UserID: userID,
-		ItemID: itemID,
-	}); err != nil {
-		return fmt.Errorf("failed to insert gacha history (user=%d, item=%d): %w", userID, itemID, err)
+	ex, err := r.execer(tx)
+	if err != nil {
+		return fmt.Errorf("InsertGachaHistories: %w", err)
+	}
+	valuesClause := strings.TrimSuffix(strings.Repeat("(?, ?),", len(itemIDs)), ",")
+	query := "INSERT INTO gacha_histories (user_id, item_id) VALUES " + valuesClause
+	args := make([]any, 0, len(itemIDs)*gachaHistoryColumns)
+	for _, itemID := range itemIDs {
+		args = append(args, userID, itemID)
+	}
+	if _, err := ex.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("failed to bulk insert gacha histories (user=%d, count=%d): %w", userID, len(itemIDs), err)
 	}
 	return nil
 }

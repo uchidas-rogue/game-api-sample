@@ -42,10 +42,10 @@ flowchart TD
     J -- ok --> K[UpdateUserGems<br/>石を消費]
 
     K -- err --> E8((repo のエラー))
-    K -- ok --> L[aggregateByID → sortedKeys<br/>UpsertUserItem を item_id 昇順でループ]
+    K -- ok --> L[aggregateByID → sortedKeys<br/>UpsertUserItems に item_id 昇順の行をまとめて渡す]
 
     L -- err --> E9((repo のエラー))
-    L -- ok --> M[InsertGachaHistory<br/>抽選順にループ]
+    L -- ok --> M[InsertGachaHistories<br/>抽選順の item_id をまとめて渡す]
 
     M -- err --> E10((repo のエラー))
     M -- ok --> N[Result 構築]
@@ -53,7 +53,9 @@ flowchart TD
 ```
 
 **ロック取得順序の不変条件**: `F`（users を FOR UPDATE）→ `L`（user_items を item_id 昇順）。
-`L` の昇順は `sortedKeys` が保証し、デッドロック回避のための不変条件なのでテストで順序を検証する（ケース 12）。
+`L` の昇順は `sortedKeys` が保証し、デッドロック回避のための不変条件なのでテストで順序を検証する（ケース 16）。
+単行ループではなく**可変行数の bulk INSERT**（`UpsertUserItems` / `InsertGachaHistories`）に集約しており、
+トランザクション内の DB 往復とロック保持時間を削減している（AGENTS.md §4 の生 SQL 例外）。
 `H`（items）はマスタ参照のみで更新しないため、ロック順序の対象外。
 
 ### 1-2. `draw` のサブフロー
@@ -87,13 +89,13 @@ flowchart TD
 | 6 | `ListItems` がエラー | `…→G→H→E5` | repo のエラー | `UpdateUserGems` 以降が呼ばれない |
 | 7 | `items` が空 | `…→H→I→E6` | `ErrNoItemsAvailable` | 同上 |
 | 8 | 全アイテムの `Weight` が 0 | `…→I→J→E7`（`D1→D2→DE`） | `ErrInvalidItemWeights` | 同上 |
-| 9 | `UpdateUserGems` がエラー | `…→J→K→E8` | repo のエラー | `UpsertUserItem` 以降が呼ばれない |
-| 10 | `UpsertUserItem` がエラー | `…→K→L→E9` | repo のエラー | `InsertGachaHistory` が呼ばれない |
-| 11 | `InsertGachaHistory` がエラー | `…→L→M→E10` | repo のエラー | — |
-| 12 | 正常系: 1件目のアイテムが当選（`IntN=0`） | `…→M→N→Z`（`D4→D6→D7` 即当選） | `Result` に `pullCount` 件、石が `gemCost` 分減る | `UpsertUserItem` が集約後の個数で1回／`InsertGachaHistory` が `pullCount` 回 |
-| 13 | 正常系: 2件目のアイテムが当選（`IntN` = 1件目の重みと同値） | `…→M→N→Z`（`D6` が No→Yes） | 2件目の item が `Result` に入る | `UpsertUserItem` が2件目の item_id で呼ばれる |
+| 9 | `UpdateUserGems` がエラー | `…→J→K→E8` | repo のエラー | `UpsertUserItems` 以降が呼ばれない |
+| 10 | `UpsertUserItems` がエラー | `…→K→L→E9` | repo のエラー | `InsertGachaHistories` が呼ばれない |
+| 11 | `InsertGachaHistories` がエラー | `…→L→M→E10` | repo のエラー | — |
+| 12 | 正常系: 1件目のアイテムが当選（`IntN=0`） | `…→M→N→Z`（`D4→D6→D7` 即当選） | `Result` に `pullCount` 件、石が `gemCost` 分減る | `UpsertUserItems` が集約後の個数で1回／`InsertGachaHistories` に `pullCount` 件の item_id が渡る |
+| 13 | 正常系: 2件目のアイテムが当選（`IntN` = 1件目の重みと同値） | `…→M→N→Z`（`D6` が No→Yes） | 2件目の item が `Result` に入る | `UpsertUserItems` に2件目の item_id が渡る |
 | 14 | 正常系: `Weight` 0 のアイテムが混在 | `…→M→N→Z`（`D4→D5` を通過） | `Weight` 0 のアイテムは1度も当選しない | 当選 item_id に `Weight` 0 のものが含まれない |
-| 15 | 正常系: `pullCount` が下限（1回） | 12 と同一 | 1件だけ当選、石は1回分だけ減る | `UpsertUserItem` の個数が 1、`InsertGachaHistory` が 1 回 |
+| 15 | 正常系: `pullCount` が下限（1回） | 12 と同一 | 1件だけ当選、石は1回分だけ減る | `UpsertUserItems` の個数が 1、`InsertGachaHistories` が 1 件 |
 
 **ケース 15 を 12 と統合しない理由**: パスは同一だが、境界値を独立ケースにする3基準のうち
 「出力が違う」と「片方だけが検出できる実装ミスがある」を満たす。
@@ -110,14 +112,14 @@ flowchart TD
 
 ## 2. ロック取得順序の不変条件
 
-`UpsertUserItem` が **item_id の昇順**で呼ばれること（`sortedKeys` が保証）。
+`UpsertUserItems` に **item_id の昇順**で並べた行が渡されること（`sortedKeys` が保証）。
 デッドロック回避のための不変条件なので、独立したテストで検証する。
 
 乱数の戻り値を呼び出しごとに変える必要があり、1 の表とは手続きが異なるためテーブルを分ける。
 
 | # | 条件 | 期待結果 |
 | --- | --- | --- |
-| 16 | 抽選順が ID 降順（先に ID 2、次に ID 1 が当選） | `UpsertUserItem` は ID 1 → ID 2 の**昇順**で呼ばれる。`InsertGachaHistory` は**抽選順**（ID 2 → ID 1） |
+| 16 | 抽選順が ID 降順（先に ID 2、次に ID 1 が当選） | `UpsertUserItems` の行は ID 1 → ID 2 の**昇順**。`InsertGachaHistories` は**抽選順**（ID 2 → ID 1） |
 
 抽選順と ID 順が一致していると検証にならないため、フィクスチャは
 「先に当たるアイテムの ID を大きく」してある。

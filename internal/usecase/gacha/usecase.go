@@ -94,20 +94,26 @@ func (u *usecase) Multi(ctx context.Context, userID int64, pullCount int) (Resul
 			return err
 		}
 
-		// 当選結果を item_id でグルーピングし、ID 昇順で upsert する（デッドロック回避順序）。
-		// 検証チューニングでbulk_insertへ変更するかも。
+		// 当選結果を item_id でグルーピングし、ID 昇順の1文で一括 upsert する。
+		// 昇順にすることで行ロックの取得順序を揃え、逆順アクセスによるデッドロックを避ける。
+		// 単行ループから複数行 INSERT へ集約し、トランザクション内の DB 往復とロック保持時間を削減する。
 		counts := aggregateByID(drawn)
-		for _, itemID := range sortedKeys(counts) {
-			if err := u.repo.UpsertUserItem(ctx, tx, userID, itemID, counts[itemID]); err != nil {
-				return err
-			}
+		sortedIDs := sortedKeys(counts)
+		userItems := make([]UserItemCount, 0, len(sortedIDs))
+		for _, itemID := range sortedIDs {
+			userItems = append(userItems, UserItemCount{ItemID: itemID, Num: counts[itemID]})
+		}
+		if err := u.repo.UpsertUserItems(ctx, tx, userID, userItems); err != nil {
+			return err
 		}
 
-		// ガチャ履歴を抽選順に追加（書き込み負荷検証用）。
-		for _, it := range drawn {
-			if err := u.repo.InsertGachaHistory(ctx, tx, userID, it.ID); err != nil {
-				return err
-			}
+		// ガチャ履歴を抽選順に1文で一括追加（書き込み負荷検証用）。
+		historyItemIDs := make([]int64, len(drawn))
+		for i, it := range drawn {
+			historyItemIDs[i] = it.ID
+		}
+		if err := u.repo.InsertGachaHistories(ctx, tx, userID, historyItemIDs); err != nil {
+			return err
 		}
 
 		result = Result{

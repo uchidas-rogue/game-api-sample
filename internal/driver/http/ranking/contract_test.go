@@ -124,7 +124,7 @@ func execContractRequest(t *testing.T, ep endpoint) *httptest.ResponseRecorder {
 	case epAddUserPoints:
 		uc.EXPECT().AddUserPoints(gomock.Any(), gomock.Any()).Return(rankingdomain.UserPointAddResult{
 			UserID: 1, Points: 100, PreviousTotal: 0, NewTotal: 100,
-			GuildID: 2, GuildPreviousTotal: 0, GuildNewTotal: 100,
+			GuildID: 2,
 		}, nil)
 		c, rec := newEchoContext(e, http.MethodPost, "/users/1/points", `{"points":100,"reason":"test"}`)
 		c.SetParamNames("userID")

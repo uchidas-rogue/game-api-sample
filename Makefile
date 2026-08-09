@@ -37,3 +37,4 @@ include make/db.mk
 include make/docker.mk
 include make/docs.mk
 include make/terraform.mk
+include make/loadtest.mk

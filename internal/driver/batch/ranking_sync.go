@@ -6,23 +6,25 @@ import (
 	"fmt"
 	"log/slog"
 
-	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
-	outboxusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/outbox"
 	rankingusecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/ranking"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
 
-// RankingSyncer は DB のランキング状態を Redis に焼き直すバッチ処理。
+// RankingSyncer は MySQL のランキング状態（guild_scores / user_points）を Redis ZSet に
+// 焼き直す「揃え直し（rebuild）専用」バッチ。Redis 揮発時の復旧に用いる。
 //
-// 整合性ポリシー:
-//   - DB 読み取りと outbox イベントの processed マークを単一トランザクション内で実施する
-//   - Redis への SET（外部副作用）は COMMIT 後に行う
-//   - これにより、バッチが Redis に焼き直したスナップショットの「カバー範囲」と
-//     outbox の processed フラグが一致し、worker による同じイベントの二重適用を防ぐ
+// 設計方針:
+//   - MySQL の guild_scores / user_points を唯一の source of truth とし、その値で Redis を
+//     上書き（SET）する。guild_scores は outbox-worker がイベントを exactly-once に適用して
+//     維持するため、本バッチは outbox イベントの processed マークには一切関与しない。
+//   - スナップショット一貫性のため、guild_scores と user_points の読み取りは単一トランザクション
+//     （REPEATABLE READ）で行う。Redis への SET は COMMIT 後に行う。
+//   - 注意: worker が稼働中に本バッチを走らせると、スナップショット取得後に worker が反映した
+//     数件が SET で上書きされ Redis 側で一時的に欠落しうる。ただし MySQL は常に正しく、次回の
+//     再構築で自己修復する。原則として揮発復旧など書き込みが静穏な状況で実行する。
 type RankingSyncer struct {
 	repo         rankingusecase.Repository
-	outboxRepo   outboxusecase.Repository
 	rankingStore rankingusecase.RankingStore
 	tx           shared.Transactor
 	logger       *slog.Logger
@@ -31,42 +33,30 @@ type RankingSyncer struct {
 // NewRankingSyncer は RankingSyncer を生成する。
 func NewRankingSyncer(
 	repo rankingusecase.Repository,
-	outboxRepo outboxusecase.Repository,
 	rankingStore rankingusecase.RankingStore,
 	tx shared.Transactor,
 	logger *slog.Logger,
 ) *RankingSyncer {
 	return &RankingSyncer{
 		repo:         repo,
-		outboxRepo:   outboxRepo,
 		rankingStore: rankingStore,
 		tx:           tx,
 		logger:       logger,
 	}
 }
 
-// SyncAll は全ランキングを同期する。
-// トランザクション内で DB スナップショット取得と outbox の processed マークを行い、
-// COMMIT 後に Redis へ反映する。
+// SyncAll は MySQL のランキング状態を Redis に焼き直す。
+// 単一トランザクションで guild_scores / user_points のスナップショットを取得し、
+// COMMIT 後に Redis へ SET する。
 func (s *RankingSyncer) SyncAll(ctx context.Context) error {
 	s.logger.InfoContext(ctx, "starting ranking sync")
 
 	var (
 		guildScores []rankingdomain.GuildScore
 		userPoints  []rankingdomain.UserPoint
-		markedRows  int64
-		maxID       uint64
 	)
 
 	if err := s.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		// outbox の現在の最大 ID をスナップショット境界として先に取得する。
-		// REPEATABLE READ により後続の SELECT はこの境界と整合する。
-		id, err := s.outboxRepo.GetMaxID(ctx, tx)
-		if err != nil {
-			return fmt.Errorf("get max outbox id: %w", err)
-		}
-		maxID = id
-
 		gs, err := s.repo.ListAllGuildScores(ctx, tx)
 		if err != nil {
 			return fmt.Errorf("list all guild scores: %w", err)
@@ -78,23 +68,12 @@ func (s *RankingSyncer) SyncAll(ctx context.Context) error {
 			return fmt.Errorf("list all user points: %w", err)
 		}
 		userPoints = up
-
-		// スナップショット境界までの ranking 系 pending イベントを processed にマークする。
-		// ranking 以外のイベント (将来追加されるドメインのイベント) を巻き添えにしないよう
-		// event_type を明示的に絞り込む。maxID == 0 の場合（空テーブル）でもクエリは安全（0 件 UPDATE）。
-		rows, err := s.outboxRepo.MarkProcessedUpTo(ctx, tx, maxID, outboxdomain.EventTypeRankingScoreAdded)
-		if err != nil {
-			return fmt.Errorf("mark outbox processed up to %d: %w", maxID, err)
-		}
-		markedRows = rows
 		return nil
 	}); err != nil {
 		return fmt.Errorf("ranking sync tx: %w", err)
 	}
 
 	s.logger.InfoContext(ctx, "ranking sync snapshot taken",
-		slog.Uint64("outbox_max_id", maxID),
-		slog.Int64("outbox_marked_processed", markedRows),
 		slog.Int("guild_count", len(guildScores)),
 		slog.Int("user_count", len(userPoints)),
 	)

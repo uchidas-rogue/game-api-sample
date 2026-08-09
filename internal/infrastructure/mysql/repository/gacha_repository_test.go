@@ -9,6 +9,7 @@ import (
 	"errors"
 	"testing"
 
+	sqlmock "github.com/DATA-DOG/go-sqlmock"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -17,6 +18,7 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/repository"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
 	mocksqlc "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc/mock"
+	gachausecase "github.com/uchidas-rogue/game-api-sample/internal/usecase/gacha"
 )
 
 // dummyTx は usecase.Tx を満たすだけのスタブ。
@@ -206,95 +208,141 @@ func TestGachaRepository_ListItems(t *testing.T) {
 	}
 }
 
-func TestGachaRepository_UpsertUserItem(t *testing.T) {
-	t.Parallel()
-
-	errDB := errors.New("upsert failed")
-
-	tests := []struct {
-		name    string
-		stubErr error
-		wantErr bool
-	}{
-		{
-			name:    "正常系: アップサート成功",
-			stubErr: nil,
-			wantErr: false,
-		},
-		{
-			name:    "異常系: DB エラーはラップして返す",
-			stubErr: errDB,
-			wantErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().UpsertUserItem(gomock.Any(), sqlc.UpsertUserItemParams{
-				UserID: int64(10),
-				ItemID: int64(20),
-				Num:    int32(3),
-			}).Return(tt.stubErr)
-
-			repo := repository.NewGachaRepositoryWithQuerier(mockQ)
-			err := repo.UpsertUserItem(context.Background(), dummyTx{}, 10, 20, 3)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, errDB)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
+// newSqlmockDB は go-sqlmock の *sql.DB とその mock を生成するヘルパー。
+// bulk INSERT の SQL は括弧・カンマを含み正規表現の特殊文字と衝突するため、
+// QueryMatcherEqual（完全一致）を用いる。
+func newSqlmockDB(t *testing.T) (*sql.DB, sqlmock.Sqlmock) {
+	t.Helper()
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+	return db, mock
 }
 
-func TestGachaRepository_InsertGachaHistory(t *testing.T) {
+func TestGachaRepository_UpsertUserItems(t *testing.T) {
 	t.Parallel()
 
+	const userID = int64(10)
+	errDB := errors.New("upsert failed")
+
+	t.Run("正常系: 複数件を1回の複数行INSERTでON DUPLICATE KEY UPDATE付きで発行する", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		wantQuery := "INSERT INTO user_items (user_id, item_id, num) VALUES (?, ?, ?),(?, ?, ?) ON DUPLICATE KEY UPDATE num = num + VALUES(num)"
+		mock.ExpectExec(wantQuery).
+			WithArgs(userID, int64(1), int32(3), userID, int64(2), int32(5)).
+			WillReturnResult(sqlmock.NewResult(0, 2))
+
+		repo := repository.NewGachaRepositoryWithExecer(db)
+		err := repo.UpsertUserItems(context.Background(), nil, userID, []gachausecase.UserItemCount{
+			{ItemID: 1, Num: 3},
+			{ItemID: 2, Num: 5},
+		})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("正常系: 単一件でも正しいプレースホルダ数でINSERTされる", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		wantQuery := "INSERT INTO user_items (user_id, item_id, num) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE num = num + VALUES(num)"
+		mock.ExpectExec(wantQuery).
+			WithArgs(userID, int64(1), int32(3)).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+
+		repo := repository.NewGachaRepositoryWithExecer(db)
+		err := repo.UpsertUserItems(context.Background(), nil, userID, []gachausecase.UserItemCount{
+			{ItemID: 1, Num: 3},
+		})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("正常系: 空スライスの場合はExecを発行せずnilを返す", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		// ExpectExec を設定しないため、Exec が発行されたら ExpectationsWereMet で検知できる
+
+		repo := repository.NewGachaRepositoryWithExecer(db)
+		err := repo.UpsertUserItems(context.Background(), nil, userID, []gachausecase.UserItemCount{})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("異常系: Exec失敗時はエラーがラップされて返る", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		wantQuery := "INSERT INTO user_items (user_id, item_id, num) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE num = num + VALUES(num)"
+		mock.ExpectExec(wantQuery).
+			WithArgs(userID, int64(1), int32(3)).
+			WillReturnError(errDB)
+
+		repo := repository.NewGachaRepositoryWithExecer(db)
+		err := repo.UpsertUserItems(context.Background(), nil, userID, []gachausecase.UserItemCount{
+			{ItemID: 1, Num: 3},
+		})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errDB)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+}
+
+func TestGachaRepository_InsertGachaHistories(t *testing.T) {
+	t.Parallel()
+
+	const userID = int64(10)
 	errDB := errors.New("insert failed")
 
-	tests := []struct {
-		name    string
-		stubErr error
-		wantErr bool
-	}{
-		{
-			name:    "正常系: 履歴挿入成功",
-			stubErr: nil,
-			wantErr: false,
-		},
-		{
-			name:    "異常系: DB エラーはラップして返す",
-			stubErr: errDB,
-			wantErr: true,
-		},
-	}
+	t.Run("正常系: 複数件を1回の複数行INSERTで発行する（抽選順を保持）", func(t *testing.T) {
+		t.Parallel()
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+		db, mock := newSqlmockDB(t)
+		wantQuery := "INSERT INTO gacha_histories (user_id, item_id) VALUES (?, ?),(?, ?),(?, ?)"
+		mock.ExpectExec(wantQuery).
+			WithArgs(userID, int64(1), userID, int64(2), userID, int64(1)).
+			WillReturnResult(sqlmock.NewResult(0, 3))
 
-			ctrl := gomock.NewController(t)
-			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().InsertGachaHistory(gomock.Any(), sqlc.InsertGachaHistoryParams{
-				UserID: int64(10),
-				ItemID: int64(20),
-			}).Return(tt.stubErr)
+		repo := repository.NewGachaRepositoryWithExecer(db)
+		err := repo.InsertGachaHistories(context.Background(), nil, userID, []int64{1, 2, 1})
 
-			repo := repository.NewGachaRepositoryWithQuerier(mockQ)
-			err := repo.InsertGachaHistory(context.Background(), dummyTx{}, 10, 20)
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, errDB)
-			} else {
-				require.NoError(t, err)
-			}
-		})
-	}
+	t.Run("正常系: 空スライスの場合はExecを発行せずnilを返す", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+
+		repo := repository.NewGachaRepositoryWithExecer(db)
+		err := repo.InsertGachaHistories(context.Background(), nil, userID, []int64{})
+
+		require.NoError(t, err)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
+
+	t.Run("異常系: Exec失敗時はエラーがラップされて返る", func(t *testing.T) {
+		t.Parallel()
+
+		db, mock := newSqlmockDB(t)
+		wantQuery := "INSERT INTO gacha_histories (user_id, item_id) VALUES (?, ?)"
+		mock.ExpectExec(wantQuery).
+			WithArgs(userID, int64(1)).
+			WillReturnError(errDB)
+
+		repo := repository.NewGachaRepositoryWithExecer(db)
+		err := repo.InsertGachaHistories(context.Background(), nil, userID, []int64{1})
+
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errDB)
+		require.NoError(t, mock.ExpectationsWereMet())
+	})
 }

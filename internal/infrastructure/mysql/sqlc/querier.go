@@ -10,13 +10,17 @@ import (
 )
 
 type Querier interface {
+	// 指定 ID の未処理イベントを FOR UPDATE SKIP LOCKED で確保（claim）する。
+	// worker は ListPending で得た候補を1件ずつ本クエリで claim し、handleEvent（MySQL 副作用）と
+	// MarkProcessed を同一 tx でコミットして exactly-once を担保する。
+	// ID 指定にすることで、先頭イベントが恒久失敗しても後続を処理でき（head-of-line blocking 回避）、
+	// SKIP LOCKED と processed_at IS NULL 条件により複数 worker が同一イベントを二重処理しない。
+	// 既に処理済み or 他 worker がロック中は sql.ErrNoRows（該当なし）。
+	ClaimPendingOutboxEventByID(ctx context.Context, id uint64) (ClaimPendingOutboxEventByIDRow, error)
 	DeleteProcessedOutboxEventsBefore(ctx context.Context, processedAt sql.NullTime) error
 	GetGuild(ctx context.Context, id int64) (Guild, error)
 	GetGuildScore(ctx context.Context, guildID int64) (GuildScore, error)
 	GetGuildScoreForUpdate(ctx context.Context, guildID int64) (GuildScore, error)
-	// バッチが「DB を読んだ時点までに COMMIT 済みの outbox イベント」を ID 上限として取得するために使用する。
-	// 空テーブルでも 0 を返すよう COALESCE する。
-	GetMaxOutboxEventID(ctx context.Context) (int64, error)
 	GetUser(ctx context.Context, id int64) (User, error)
 	// ユーザー行を排他ロックで取得する。10連ガチャの整合性確保用。
 	// 必ずトランザクション内から呼び出すこと。デッドロック誘発検証のため意図的に FOR UPDATE。
@@ -42,11 +46,6 @@ type Querier interface {
 	ListPendingOutboxEvents(ctx context.Context, limit int32) ([]ListPendingOutboxEventsRow, error)
 	ListUsersByIDs(ctx context.Context, ids []int64) ([]User, error)
 	MarkOutboxEventProcessed(ctx context.Context, id uint64) error
-	// 指定 ID 以下、かつ event_type が一致する pending イベントを一括で処理済みにマークする。
-	// ranking 同期バッチがスナップショット境界 (max_id) までの ranking 系イベントを processed として
-	// 確定させるために使用する。ranking 以外のイベント (将来追加されるドメインのイベント) を
-	// 巻き添えで processed 化しないよう event_type で必ず絞り込む。
-	MarkOutboxEventsProcessedUpTo(ctx context.Context, arg MarkOutboxEventsProcessedUpToParams) (int64, error)
 	// 指定ユーザーの石残高を更新する。トランザクション内から呼び出す前提。
 	UpdateUserGems(ctx context.Context, arg UpdateUserGemsParams) error
 	UpsertGuildScore(ctx context.Context, arg UpsertGuildScoreParams) error

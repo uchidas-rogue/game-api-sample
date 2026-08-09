@@ -23,6 +23,25 @@ func TestOpen_lazy(t *testing.T) {
 	t.Cleanup(func() { _ = db.Close() })
 }
 
+// TestConfigurePool は ConfigurePool がプール上限を *sql.DB に適用することを確認する。
+// I/O は起こさず db.Stats() で反映を検証する。
+func TestConfigurePool(t *testing.T) {
+	t.Parallel()
+
+	db, err := infraMysql.Open("game:game@tcp(127.0.0.1:1)/game_db")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	infraMysql.ConfigurePool(db, infraMysql.PoolConfig{
+		MaxOpenConns:    25,
+		MaxIdleConns:    10,
+		ConnMaxLifetime: 5 * time.Minute,
+		ConnMaxIdleTime: time.Minute,
+	})
+
+	assert.Equal(t, 25, db.Stats().MaxOpenConnections)
+}
+
 // TestPing_unreachable は到達不能な DB に対し Ping が
 // deadline 内に確定エラーを返すことを確認する（起動時 fail fast）。
 func TestPing_unreachable(t *testing.T) {

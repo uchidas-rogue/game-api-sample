@@ -509,11 +509,8 @@ const (
 	addStepGetUser
 	addStepGetGuildID
 	addStepGetUserPoints
-	addStepGetGuildScore
 	addStepInsertUserHistory
-	addStepInsertGuildHistory
 	addStepIncrUserPoints
-	addStepIncrGuildScore
 	addStepInsertEvent
 )
 
@@ -528,16 +525,14 @@ type addPointsCase struct {
 	failAt addStep
 	// invalidPoints が true なら IsValidScore=false の値を渡す。
 	invalidPoints bool
-	// firstTimeUser / firstTimeGuild は現在値の取得が「未登録」を返す経路。
-	firstTimeUser  bool
-	firstTimeGuild bool
+	// firstTimeUser は個人ポイントの現在値取得が「未登録」を返す経路。
+	firstTimeUser bool
 	// notifyFails はコミット後の通知が失敗する経路。
 	notifyFails bool
 
 	// ---- 期待結果 ----
-	wantErrIs          error
-	wantPreviousTotal  int64
-	wantGuildPrevTotal int64
+	wantErrIs         error
+	wantPreviousTotal int64
 }
 
 func TestUsecase_AddUserPoints(t *testing.T) {
@@ -573,59 +568,38 @@ func TestUsecase_AddUserPoints(t *testing.T) {
 			wantErrIs: errRepo,
 		},
 		{
-			// #5 …→G→I→E6
-			name:      "GetGuildScore が予期せぬエラー",
-			failAt:    addStepGetGuildScore,
-			wantErrIs: errRepo,
-		},
-		{
-			// #6 …→I→K→E7
+			// #5 …→G→K→E6
 			name:      "InsertUserPointHistory がエラー",
 			failAt:    addStepInsertUserHistory,
 			wantErrIs: errRepo,
 		},
 		{
-			// #7 …→K→L→E8
-			name:      "InsertGuildScoreHistory がエラー",
-			failAt:    addStepInsertGuildHistory,
-			wantErrIs: errRepo,
-		},
-		{
-			// #8 …→L→M→E9
+			// #6 …→K→M→E7
 			name:      "IncrementUserPoints がエラー",
 			failAt:    addStepIncrUserPoints,
 			wantErrIs: errRepo,
 		},
 		{
-			// #9 …→M→N→E10
-			name:      "IncrementGuildScore がエラー",
-			failAt:    addStepIncrGuildScore,
-			wantErrIs: errRepo,
-		},
-		{
-			// #10 …→N→O→E11
+			// #7 …→M→O→E8
 			name:      "InsertEvent がエラー: Notify が呼ばれない",
 			failAt:    addStepInsertEvent,
 			wantErrIs: errRepo,
 		},
 		{
-			// #11 …→H2→J2→…→Q→Z
-			name:               "正常系: 既存ポイント・既存ギルドスコアあり",
-			wantPreviousTotal:  1000,
-			wantGuildPrevTotal: 5000,
+			// #8 …→H2→…→Q→Z
+			name:              "正常系: 既存ポイントあり",
+			wantPreviousTotal: 1000,
 		},
 		{
-			// #12 …→H→J→…→Z
-			name:           "正常系: 初回ユーザー かつ 初回ギルド",
-			firstTimeUser:  true,
-			firstTimeGuild: true,
+			// #9 …→H→…→Z
+			name:          "正常系: 初回ユーザー",
+			firstTimeUser: true,
 		},
 		{
-			// #13 …→Q→R→Z
-			name:               "Notify が失敗してもリクエストは成功する",
-			notifyFails:        true,
-			wantPreviousTotal:  1000,
-			wantGuildPrevTotal: 5000,
+			// #10 …→Q→R→Z
+			name:              "Notify が失敗してもリクエストは成功する",
+			notifyFails:       true,
+			wantPreviousTotal: 1000,
 		},
 	}
 
@@ -676,14 +650,13 @@ func runAddPointsCase(t *testing.T, tc addPointsCase, errRepo, errNotify error) 
 		assert.Contains(t, logBuf.String(), "outbox notify failed")
 		assert.Contains(t, logBuf.String(), errNotify.Error())
 	}
+	// ギルドの集計値は outbox-worker へ非同期化したため、同期レスポンスには含まれない。
 	assert.Equal(t, rankingdomain.UserPointAddResult{
-		UserID:             testUserID,
-		Points:             points,
-		PreviousTotal:      tc.wantPreviousTotal,
-		NewTotal:           tc.wantPreviousTotal + points,
-		GuildID:            testGuildID,
-		GuildPreviousTotal: tc.wantGuildPrevTotal,
-		GuildNewTotal:      tc.wantGuildPrevTotal + points,
+		UserID:        testUserID,
+		Points:        points,
+		PreviousTotal: tc.wantPreviousTotal,
+		NewTotal:      tc.wantPreviousTotal + points,
+		GuildID:       testGuildID,
 	}, res)
 }
 
@@ -721,32 +694,14 @@ func expectAddPointsCalls(m *mocks, tc addPointsCase, input ranking.AddUserPoint
 			Return(rankingdomain.UserPoint{UserID: input.UserID, Points: tc.wantPreviousTotal}, nil)
 	}
 
-	// I: ギルドスコア現在値。ErrScoreNotFound は初回ギルドとして正常扱いされる。
-	switch {
-	case tc.failAt == addStepGetGuildScore:
-		m.repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), testGuildID).Return(rankingdomain.GuildScore{}, errRepo)
-		return
-	case tc.firstTimeGuild:
-		m.repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), testGuildID).
-			Return(rankingdomain.GuildScore{}, rankingdomain.ErrScoreNotFound)
-	default:
-		m.repo.EXPECT().GetGuildScore(gomock.Any(), gomock.Any(), testGuildID).
-			Return(rankingdomain.GuildScore{GuildID: testGuildID, Score: tc.wantGuildPrevTotal}, nil)
-	}
-
-	// K: 個人ポイント履歴
+	// K: 個人ポイント履歴。ギルド集計（GetGuildScore / InsertGuildScoreHistory /
+	// IncrementGuildScore）は outbox-worker へ非同期化したため、この tx では呼ばれない。
+	// 呼ばれれば gomock の strict マッチが失敗させる。
 	if tc.failAt == addStepInsertUserHistory {
 		m.repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), input.UserID, input.Points, input.Reason).Return(errRepo)
 		return
 	}
 	m.repo.EXPECT().InsertUserPointHistory(gomock.Any(), gomock.Any(), input.UserID, input.Points, input.Reason).Return(nil)
-
-	// L: ギルドスコア履歴
-	if tc.failAt == addStepInsertGuildHistory {
-		m.repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), testGuildID, input.UserID, input.Points).Return(errRepo)
-		return
-	}
-	m.repo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), testGuildID, input.UserID, input.Points).Return(nil)
 
 	// M: 個人ポイント累計加算
 	if tc.failAt == addStepIncrUserPoints {
@@ -754,13 +709,6 @@ func expectAddPointsCalls(m *mocks, tc addPointsCase, input ranking.AddUserPoint
 		return
 	}
 	m.repo.EXPECT().IncrementUserPoints(gomock.Any(), gomock.Any(), input.UserID, input.Points).Return(nil)
-
-	// N: ギルドスコア累計加算
-	if tc.failAt == addStepIncrGuildScore {
-		m.repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), testGuildID, input.Points).Return(errRepo)
-		return
-	}
-	m.repo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), testGuildID, input.Points).Return(nil)
 
 	// O: outbox イベント登録。payload は domain のマーシャラで組み立てた値と一致すること。
 	wantPayload := outboxdomain.MarshalRankingScoreAddedPayload(outboxdomain.RankingScoreAddedPayload{

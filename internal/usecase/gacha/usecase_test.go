@@ -58,8 +58,8 @@ const (
 	stepGetUser
 	stepListItems
 	stepUpdateGems
-	stepUpsertItem
-	stepInsertHistory
+	stepUpsertItems
+	stepInsertHistories
 )
 
 // multiCase は Multi のテストケース1件。**データのみ**を持ち、手続きは持たない。
@@ -170,17 +170,17 @@ func TestUsecase_Multi(t *testing.T) {
 		},
 		{
 			// #10 …→K→L→E9
-			name:      "UpsertUserItem がエラー: InsertGachaHistory が呼ばれない",
+			name:      "UpsertUserItems がエラー: InsertGachaHistories が呼ばれない",
 			pullCount: gachadomain.MaxPullCount,
-			failAt:    stepUpsertItem,
+			failAt:    stepUpsertItems,
 			failErr:   errDB,
 			wantErrIs: errDB,
 		},
 		{
 			// #11 …→L→M→E10
-			name:      "InsertGachaHistory がエラー",
+			name:      "InsertGachaHistories がエラー",
 			pullCount: gachadomain.MaxPullCount,
-			failAt:    stepInsertHistory,
+			failAt:    stepInsertHistories,
 			failErr:   errDB,
 			wantErrIs: errDB,
 		},
@@ -321,21 +321,25 @@ func expectMultiCalls(tc multiCase, repo *mockuc.MockRepository, tx *mockshared.
 	}
 	repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), testUserID, newGems).Return(nil)
 
-	// L: 当選アイテムは固定なので、集約後は1種類 × pullCount 個になる
+	// L: 当選アイテムは固定なので、集約後は1種類 × pullCount 個を1回の bulk upsert で流す
 	wantItemID := items[tc.wantDrawnIndex].ID
-	if tc.failAt == stepUpsertItem {
-		repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), testUserID, wantItemID, tc.pullCount).Return(tc.failErr)
+	wantUserItems := []gacha.UserItemCount{{ItemID: wantItemID, Num: tc.pullCount}}
+	if tc.failAt == stepUpsertItems {
+		repo.EXPECT().UpsertUserItems(gomock.Any(), gomock.Any(), testUserID, wantUserItems).Return(tc.failErr)
 		return
 	}
-	repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), testUserID, wantItemID, tc.pullCount).Return(nil)
+	repo.EXPECT().UpsertUserItems(gomock.Any(), gomock.Any(), testUserID, wantUserItems).Return(nil)
 
-	// M: 履歴は抽選回数ぶん
-	if tc.failAt == stepInsertHistory {
-		// 1回目で失敗し、以降は呼ばれない
-		repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), testUserID, wantItemID).Return(tc.failErr)
+	// M: 履歴は抽選回数ぶんを抽選順のまま1回の bulk insert で流す
+	wantHistories := make([]int64, tc.pullCount)
+	for i := range wantHistories {
+		wantHistories[i] = wantItemID
+	}
+	if tc.failAt == stepInsertHistories {
+		repo.EXPECT().InsertGachaHistories(gomock.Any(), gomock.Any(), testUserID, wantHistories).Return(tc.failErr)
 		return
 	}
-	repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), testUserID, wantItemID).Return(nil).Times(tc.pullCount)
+	repo.EXPECT().InsertGachaHistories(gomock.Any(), gomock.Any(), testUserID, wantHistories).Return(nil)
 }
 
 func totalWeightOf(items []gachadomain.Item) int {
@@ -349,7 +353,7 @@ func totalWeightOf(items []gachadomain.Item) int {
 }
 
 // TestUsecase_Multi_ロック取得順序 は、複数種類のアイテムが当選したときに
-// UpsertUserItem が item_id の昇順で呼ばれることを検証する。
+// UpsertUserItems へ item_id の昇順で並べた行が渡されることを検証する。
 //
 // この順序はデッドロック回避のための不変条件（usecase.go の Multi コメント参照）であり、
 // 「抽選順」ではなく「ID 昇順」であることに意味がある。
@@ -358,7 +362,7 @@ func totalWeightOf(items []gachadomain.Item) int {
 //
 // 乱数の戻り値を呼び出しごとに変える必要があり、他のケースと手続きが異なるため
 // テーブルを分けている。
-func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で呼ばれる(t *testing.T) {
+func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で渡される(t *testing.T) {
 	t.Parallel()
 
 	const pullCount = 2
@@ -388,17 +392,14 @@ func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で呼ばれ�
 	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
 	repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), testUserID, gems-gachadomain.GemCostFor(pullCount)).Return(nil)
 
-	// 抽選順は ID 2 → ID 1 だが、upsert は ID 1 → ID 2 の昇順でなければならない。
-	gomock.InOrder(
-		repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), testUserID, int64(1), gachadomain.GrantQuantity).Return(nil),
-		repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), testUserID, int64(2), gachadomain.GrantQuantity).Return(nil),
-	)
+	// 抽選順は ID 2 → ID 1 だが、upsert の行は ID 1 → ID 2 の昇順でなければならない。
+	repo.EXPECT().UpsertUserItems(gomock.Any(), gomock.Any(), testUserID, []gacha.UserItemCount{
+		{ItemID: 1, Num: gachadomain.GrantQuantity},
+		{ItemID: 2, Num: gachadomain.GrantQuantity},
+	}).Return(nil)
 
 	// 履歴は抽選順（ID 2 → ID 1）で積まれる。
-	gomock.InOrder(
-		repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), testUserID, int64(2)).Return(nil),
-		repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), testUserID, int64(1)).Return(nil),
-	)
+	repo.EXPECT().InsertGachaHistories(gomock.Any(), gomock.Any(), testUserID, []int64{2, 1}).Return(nil)
 
 	uc := gacha.NewUsecase(tx, repo, rnd, slogtest.NewLogger(t, nil))
 	res, err := uc.Multi(context.Background(), testUserID, pullCount)
@@ -430,11 +431,9 @@ func TestNewUsecase_Randomizerがnilなら既定実装を使う(t *testing.T) {
 		Return(gachadomain.User{ID: testUserID, GemNum: gems}, nil)
 	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
 	repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), testUserID, gems-gachadomain.GemCostFor(pullCount)).Return(nil)
-	// 当選内訳は乱数依存なので、呼び出し回数の範囲だけを期待する。
-	repo.EXPECT().UpsertUserItem(gomock.Any(), gomock.Any(), testUserID, gomock.Any(), gomock.Any()).
-		Return(nil).MinTimes(1).MaxTimes(len(items))
-	repo.EXPECT().InsertGachaHistory(gomock.Any(), gomock.Any(), testUserID, gomock.Any()).
-		Return(nil).Times(pullCount)
+	// 当選内訳は乱数依存なので、bulk 呼び出しの中身までは期待しない。
+	repo.EXPECT().UpsertUserItems(gomock.Any(), gomock.Any(), testUserID, gomock.Any()).Return(nil)
+	repo.EXPECT().InsertGachaHistories(gomock.Any(), gomock.Any(), testUserID, gomock.Any()).Return(nil)
 
 	uc := gacha.NewUsecase(tx, repo, nil, slogtest.NewLogger(t, nil))
 	res, err := uc.Multi(context.Background(), testUserID, pullCount)

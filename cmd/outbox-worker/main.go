@@ -36,6 +36,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer func() { _ = db.Close() }()
+	infraMysql.ConfigurePool(db, infraMysql.PoolConfig{
+		MaxOpenConns:    cfg.DBMaxOpenConns,
+		MaxIdleConns:    cfg.DBMaxIdleConns,
+		ConnMaxLifetime: cfg.DBConnMaxLifetime,
+		ConnMaxIdleTime: cfg.DBConnMaxIdleTime,
+	})
 
 	pingCtx, cancelPing := context.WithTimeout(ctx, cfg.DBPingTimeout)
 	defer cancelPing()
@@ -53,11 +59,13 @@ func main() {
 
 	tx := infraMysql.NewTransactor(db, log)
 	outboxRepo := repository.NewOutboxRepository(db)
+	rankingRepo := repository.NewRankingRepository(db)
 	rankingStore := infraRedis.NewRankingStore(redisClient.Raw())
 	outboxSubscriber := infraRedis.NewOutboxSubscriber(redisClient.Raw())
 
 	w := workeroutbox.New(workeroutbox.Config{
 		Repo:         outboxRepo,
+		RankingRepo:  rankingRepo,
 		RankingStore: rankingStore,
 		Tx:           tx,
 		Subscriber:   outboxSubscriber,

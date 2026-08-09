@@ -214,72 +214,50 @@ func TestOutboxRepository_MarkProcessed(t *testing.T) {
 	}
 }
 
-func TestOutboxRepository_GetMaxID(t *testing.T) {
+func TestOutboxRepository_ClaimByID(t *testing.T) {
 	t.Parallel()
 
-	errDB := errors.New("query failed")
+	payload := json.RawMessage(`{"user_id":1,"guild_id":2,"points":100}`)
+	errDB := errors.New("claim failed")
 
 	tests := []struct {
-		name    string
-		stubID  int64
-		stubErr error
-		wantID  uint64
-		wantErr bool
-	}{
-		{name: "正常系: 最大ID取得成功", stubID: 100, wantID: 100},
-		{name: "正常系: 空テーブルは0を返す", stubID: 0, wantID: 0},
-		{name: "異常系: DB エラーはラップして返す", stubErr: errDB, wantErr: true},
-		{name: "異常系: 負の値はエラーになる", stubID: -1, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().GetMaxOutboxEventID(gomock.Any()).Return(tt.stubID, tt.stubErr)
-
-			repo := repository.NewOutboxRepositoryWithQuerier(mockQ)
-			got, err := repo.GetMaxID(context.Background(), dummyTx{})
-
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantID, got)
-		})
-	}
-}
-
-func TestOutboxRepository_MarkProcessedUpTo(t *testing.T) {
-	t.Parallel()
-
-	errDB := errors.New("update failed")
-
-	tests := []struct {
-		name      string
-		maxID     uint64
-		eventType outboxdomain.EventType
-		stubRows  int64
-		stubErr   error
-		wantRows  int64
-		wantErr   bool
+		name        string
+		id          uint64
+		stubRow     sqlc.ClaimPendingOutboxEventByIDRow
+		stubErr     error
+		wantFound   bool
+		wantErr     bool
+		checkResult func(t *testing.T, ev outboxdomain.Event)
 	}{
 		{
-			name:      "正常系: 複数件処理済みマーク",
-			maxID:     10,
-			eventType: outboxdomain.EventTypeRankingScoreAdded,
-			stubRows:  3,
-			wantRows:  3,
+			name: "正常系: 指定 ID の未処理イベントを確保する",
+			id:   1,
+			stubRow: sqlc.ClaimPendingOutboxEventByIDRow{
+				ID:         1,
+				EventType:  string(outboxdomain.EventTypeRankingScoreAdded),
+				Payload:    payload,
+				RetryCount: 2,
+			},
+			wantFound: true,
+			checkResult: func(t *testing.T, ev outboxdomain.Event) {
+				t.Helper()
+				assert.Equal(t, uint64(1), ev.ID)
+				assert.Equal(t, outboxdomain.EventTypeRankingScoreAdded, ev.Type)
+				assert.Equal(t, []byte(payload), ev.Payload)
+				assert.Equal(t, uint32(2), ev.RetryCount)
+			},
 		},
 		{
-			name:      "異常系: DB エラーはラップして返す",
-			maxID:     10,
-			eventType: outboxdomain.EventTypeRankingScoreAdded,
-			stubErr:   errDB,
-			wantErr:   true,
+			name:      "正常系: 該当なし（sql.ErrNoRows）は found=false かつ err=nil",
+			id:        2,
+			stubErr:   sql.ErrNoRows,
+			wantFound: false,
+		},
+		{
+			name:    "異常系: DB エラーはラップして返す",
+			id:      3,
+			stubErr: errDB,
+			wantErr: true,
 		},
 	}
 
@@ -289,21 +267,22 @@ func TestOutboxRepository_MarkProcessedUpTo(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().MarkOutboxEventsProcessedUpTo(gomock.Any(), sqlc.MarkOutboxEventsProcessedUpToParams{
-				MaxID:     tt.maxID,
-				EventType: string(tt.eventType),
-			}).Return(tt.stubRows, tt.stubErr)
+			mockQ.EXPECT().ClaimPendingOutboxEventByID(gomock.Any(), tt.id).Return(tt.stubRow, tt.stubErr)
 
 			repo := repository.NewOutboxRepositoryWithQuerier(mockQ)
-			got, err := repo.MarkProcessedUpTo(context.Background(), dummyTx{}, tt.maxID, tt.eventType)
+			ev, found, err := repo.ClaimByID(context.Background(), dummyTx{}, tt.id)
 
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, errDB)
+				assert.False(t, found)
 				return
 			}
 			require.NoError(t, err)
-			assert.Equal(t, tt.wantRows, got)
+			assert.Equal(t, tt.wantFound, found)
+			if tt.checkResult != nil {
+				tt.checkResult(t, ev)
+			}
 		})
 	}
 }

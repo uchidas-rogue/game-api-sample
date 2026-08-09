@@ -123,13 +123,12 @@ type addUserPointsRequest struct {
 // 本エンドポイントでは返さない。クライアントは別途 GET /users/:userID/ranking
 // および GET /guilds/:guildID/ranking を呼び出して取得する。
 type addUserPointsResponse struct {
-	UserID             int64 `json:"user_id"`
-	Points             int64 `json:"points"`
-	PreviousTotal      int64 `json:"previous_total"`
-	NewTotal           int64 `json:"new_total"`
-	GuildID            int64 `json:"guild_id"`
-	GuildPreviousTotal int64 `json:"guild_previous_total"`
-	GuildNewTotal      int64 `json:"guild_new_total"`
+	UserID        int64 `json:"user_id"`
+	Points        int64 `json:"points"`
+	PreviousTotal int64 `json:"previous_total"`
+	NewTotal      int64 `json:"new_total"`
+	// ギルドスコア加算は非同期化したため guild の previous/new total は返さない。
+	GuildID int64 `json:"guild_id"`
 }
 
 // AddUserPoints は POST /users/:userID/points のハンドラ。
@@ -159,13 +158,11 @@ func (h *Handler) AddUserPoints(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusOK, addUserPointsResponse{
-		UserID:             result.UserID,
-		Points:             result.Points,
-		PreviousTotal:      result.PreviousTotal,
-		NewTotal:           result.NewTotal,
-		GuildID:            result.GuildID,
-		GuildPreviousTotal: result.GuildPreviousTotal,
-		GuildNewTotal:      result.GuildNewTotal,
+		UserID:        result.UserID,
+		Points:        result.Points,
+		PreviousTotal: result.PreviousTotal,
+		NewTotal:      result.NewTotal,
+		GuildID:       result.GuildID,
 	})
 }
 

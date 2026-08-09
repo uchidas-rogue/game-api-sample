@@ -32,6 +32,10 @@ func clearConfigEnv(t *testing.T) {
 		"OUTBOX_BATCH_SIZE",
 		"OUTBOX_TICK_TIMEOUT",
 		"DB_PING_TIMEOUT",
+		"DB_MAX_OPEN_CONNS",
+		"DB_MAX_IDLE_CONNS",
+		"DB_CONN_MAX_LIFETIME",
+		"DB_CONN_MAX_IDLE_TIME",
 	} {
 		t.Setenv(key, "")
 	}
@@ -52,6 +56,10 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 100, cfg.OutboxBatchSize)
 	assert.Equal(t, 30*time.Second, cfg.OutboxTickTimeout)
 	assert.Equal(t, 5*time.Second, cfg.DBPingTimeout)
+	assert.Equal(t, 25, cfg.DBMaxOpenConns)
+	assert.Equal(t, 25, cfg.DBMaxIdleConns)
+	assert.Equal(t, 5*time.Minute, cfg.DBConnMaxLifetime)
+	assert.Equal(t, 5*time.Minute, cfg.DBConnMaxIdleTime)
 }
 
 func TestLoad_PORT(t *testing.T) {
@@ -250,6 +258,125 @@ func TestLoad_DBPingTimeout(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.DBPingTimeout)
+		})
+	}
+}
+
+// DB プール設定4件は同型の検証ブロックが並ぶ（AGENTS.md §3 の対称性チェック）。
+// MaxOpenConns だけが `<= 0` を拒否し、他の3つは 0 を許容する（`< 0` を拒否）ため、
+// 各ブロックの境界値ケースは意図的に非対称にしてある。
+func TestLoad_DBMaxOpenConns(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    int
+	}{
+		{name: "有効: 100", value: "100", want: 100},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0（0以下）", value: "0", wantErr: true},
+		{name: "無効: -1（負値）", value: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_MAX_OPEN_CONNS", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBMaxOpenConns)
+		})
+	}
+}
+
+func TestLoad_DBMaxIdleConns(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    int
+	}{
+		{name: "有効: 50", value: "50", want: 50},
+		{name: "有効: 0（アイドル接続を保持しない）", value: "0", want: 0},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: -1（負値）", value: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_MAX_IDLE_CONNS", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBMaxIdleConns)
+		})
+	}
+}
+
+func TestLoad_DBConnMaxLifetime(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 1m", value: "1m", want: time.Minute},
+		{name: "有効: 0s（無制限）", value: "0s", want: 0},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_CONN_MAX_LIFETIME", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBConnMaxLifetime)
+		})
+	}
+}
+
+func TestLoad_DBConnMaxIdleTime(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    time.Duration
+	}{
+		{name: "有効: 30s", value: "30s", want: 30 * time.Second},
+		{name: "有効: 0s（無制限）", value: "0s", want: 0},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: -1s（負値）", value: "-1s", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("DB_CONN_MAX_IDLE_TIME", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.DBConnMaxIdleTime)
 		})
 	}
 }

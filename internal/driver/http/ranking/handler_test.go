@@ -553,10 +553,8 @@ func TestHandler_AddUserPoints(t *testing.T) {
 				`"previous_total":1000`,
 				`"new_total":1500`,
 				fmt.Sprintf(`"guild_id":%d`, testGuildID),
-				`"guild_previous_total":5000`,
-				`"guild_new_total":5500`,
 			},
-			wantBodyAbsent: []string{`"rank"`, `"guild_rank"`},
+			wantBodyAbsent: []string{`"rank"`, `"guild_rank"`, `"guild_previous_total"`, `"guild_new_total"`},
 		},
 	}
 
@@ -578,13 +576,11 @@ func runAddPointsCase(t *testing.T, tc addPointsCase) {
 		result := rankingdomain.UserPointAddResult{}
 		if tc.ucErr == nil {
 			result = rankingdomain.UserPointAddResult{
-				UserID:             testUserID,
-				Points:             testPoints,
-				PreviousTotal:      1000,
-				NewTotal:           1000 + testPoints,
-				GuildID:            testGuildID,
-				GuildPreviousTotal: 5000,
-				GuildNewTotal:      5000 + testPoints,
+				UserID:        testUserID,
+				Points:        testPoints,
+				PreviousTotal: 1000,
+				NewTotal:      1000 + testPoints,
+				GuildID:       testGuildID,
 			}
 		}
 		// リクエストの値がそのまま usecase の入力になることを引数で検証する。

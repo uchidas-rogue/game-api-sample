@@ -115,24 +115,14 @@ flowchart TD
     G -- ErrPointsNotFound --> H[previousTotal = 0<br/>初回ユーザー]
     G -- その他の err --> E5((予期せぬエラー))
     G -- ok --> H2[previousTotal = 現在値]
-    H --> I[repo.GetGuildScore]
-    H2 --> I
+    H --> K[repo.InsertUserPointHistory]
+    H2 --> K
 
-    I -- ErrScoreNotFound --> J[guildPreviousTotal = 0<br/>初回ギルド]
-    I -- その他の err --> E6((予期せぬエラー))
-    I -- ok --> J2[guildPreviousTotal = 現在値]
-    J --> K[repo.InsertUserPointHistory]
-    J2 --> K
-
-    K -- err --> E7((repo のエラー))
-    K -- ok --> L[repo.InsertGuildScoreHistory]
-    L -- err --> E8((repo のエラー))
-    L -- ok --> M[repo.IncrementUserPoints]
-    M -- err --> E9((repo のエラー))
-    M -- ok --> N[repo.IncrementGuildScore]
-    N -- err --> E10((repo のエラー))
-    N -- ok --> O[outboxRepo.InsertEvent]
-    O -- err --> E11((insert outbox event エラー))
+    K -- err --> E6((repo のエラー))
+    K -- ok --> M[repo.IncrementUserPoints]
+    M -- err --> E7((repo のエラー))
+    M -- ok --> O[outboxRepo.InsertEvent]
+    O -- err --> E8((insert outbox event エラー))
     O -- ok --> P[Result 構築・コミット]
 
     P --> Q[outboxNotifier.Notify<br/>**コミット後**に実行]
@@ -144,6 +134,10 @@ flowchart TD
 **設計上の要点**（テストで守る不変条件）:
 
 - `IsValidScore` の判定は `DoInTx` の**外**。不正入力でトランザクションを張らない
+- ギルド集計（`GetGuildScore` / `InsertGuildScoreHistory` / `IncrementGuildScore`）は
+  この tx で**行わない**。ホット行（1ギルド=1行）の排他ロックを同期リクエスト経路から
+  除去するため outbox-worker へ非同期化した（[outbox-worker.md](outbox-worker.md)）。
+  同期レスポンスも `GuildID` のみを返し、ギルドの previous/new total は返さない
 - `Notify` は**コミット後**に呼ぶ。コミット前だと worker が空振りする
 - `Notify` の失敗はリクエストを失敗させない。worker のポーリングがフォールバックになる
 
@@ -155,15 +149,12 @@ flowchart TD
 | 2 | `GetUser` がエラー（ユーザー不在） | `A→B→C→D→E3` | repo のエラーをそのまま返す | 以降の repo が呼ばれない |
 | 3 | `GetUserGuildID` がエラー（ギルド未所属） | `…→D→F→E4` | `ErrUserNotInGuild` | 同上 |
 | 4 | `GetUserPoints` が予期せぬエラー | `…→F→G→E5` | エラーを返す | 同上 |
-| 5 | `GetGuildScore` が予期せぬエラー | `…→G→I→E6` | エラーを返す | 同上 |
-| 6 | `InsertUserPointHistory` がエラー | `…→I→K→E7` | エラーを返す | 同上 |
-| 7 | `InsertGuildScoreHistory` がエラー | `…→K→L→E8` | エラーを返す | 同上 |
-| 8 | `IncrementUserPoints` がエラー | `…→L→M→E9` | エラーを返す | 同上 |
-| 9 | `IncrementGuildScore` がエラー | `…→M→N→E10` | エラーを返す | 同上 |
-| 10 | `InsertEvent` がエラー | `…→N→O→E11` | エラーを返す | `Notify` が呼ばれない |
-| 11 | 正常系: 既存ポイント・既存ギルドスコアあり | `…→H2→J2→…→Q→Z` | `PreviousTotal` / `GuildPreviousTotal` に現在値、`NewTotal` は加算後 | outbox に `RankingScoreAdded` が積まれる／`Notify` が呼ばれる |
-| 12 | 正常系: 初回ユーザー かつ 初回ギルド | `…→H→J→…→Z` | `PreviousTotal=0`、`GuildPreviousTotal=0` | — |
-| 13 | `Notify` が失敗 | `…→Q→R→Z` | **リクエストは成功する**（エラーを返さない） | WARN ログが出る |
+| 5 | `InsertUserPointHistory` がエラー | `…→G→K→E6` | エラーを返す | 同上 |
+| 6 | `IncrementUserPoints` がエラー | `…→K→M→E7` | エラーを返す | 同上 |
+| 7 | `InsertEvent` がエラー | `…→M→O→E8` | エラーを返す | `Notify` が呼ばれない |
+| 8 | 正常系: 既存ポイントあり | `…→H2→…→Q→Z` | `PreviousTotal` に現在値、`NewTotal` は加算後 | outbox に `RankingScoreAdded` が積まれる／`Notify` が呼ばれる／**ギルド集計の repo が呼ばれない** |
+| 9 | 正常系: 初回ユーザー | `…→H→…→Z` | `PreviousTotal=0` | 同上 |
+| 10 | `Notify` が失敗 | `…→Q→R→Z` | **リクエストは成功する**（エラーを返さない） | WARN ログが出る |
 
 **`DoInTx` 自体のエラー（`E2`）について**: トランザクション境界の契約は
 [transaction-boundary.md](transaction-boundary.md) が `Transactor` 自身のテストで担保する。
@@ -181,7 +172,7 @@ usecase 側は境界をモックしてよく、契約の検証を重複させな
 | **層をまたぐ責務の重複** | `GetGuildRankings` に `limit=0 → 既定値`／`limit>Max → 丸め`／`offset<0 → 0` の 3 ケースがあった。これは `NormalizeLimit` / `NormalizeOffset` の境界値であり、[constants_test.go](../../internal/domain/ranking/constants_test.go) が既に 11 ケースで網羅している。usecase で検証すべきは「正規化を通した値を store へ渡している」という結線だけ | 表のケース 6（1 件）へ統合 |
 | **対称性の欠如** | 上記 3 ケースは `GetGuildRankings` にだけあり、同一構造の `GetUserRankings` には 1 件も無かった。**片方だけにケースがある**状態 | 両者を同じケース構成に揃える |
 | **層をまたぐ責務の重複** | `AddUserPoints` の「負数で `ErrInvalidPoints`」「最大値超過で `ErrInvalidPoints`」は同一パス（`A→B→E1`）。`IsValidScore` の境界は domain が 5 ケースで網羅済み | 表のケース 1 へ統合 |
-| **同一パスの重複** | `AddUserPoints` の「境界値: `Points=MaxScore` でも加算成功」は正常系（ケース 11）と同一パス。`MaxScore` が有効値であることは domain の責務 | ケース 11 へ統合 |
+| **同一パスの重複** | `AddUserPoints` の「境界値: `Points=MaxScore` でも加算成功」は正常系（ケース 8）と同一パス。`MaxScore` が有効値であることは domain の責務 | ケース 8 へ統合 |
 | **テーブル駆動の形** | 5 つのテーブルすべてが `setup func(t, ctrl) ranking.Usecase` を持ち、モックの組み立て手順をテーブル側に書いていた | テーブルをデータのみにし、組み立てはランナーへ集約 |
 
 **教訓**: gacha（Phase 4）では「テストが足りない」穴が出たが、ranking では逆に
@@ -197,4 +188,4 @@ usecase 側は境界をモックしてよく、契約の検証を重複させな
 | 種別 | 内容 | 対応 |
 | --- | --- | --- |
 | **パスの欠落** | 名前解決の結果に entry の ID が含まれない分岐（`if _, ok := ...` の No 側）が、図・表・テストのいずれにも無かった。Redis の ZSet と MySQL がずれたときの振る舞いが未定義のまま | 図に `H` の分岐を追加し、表のケース 7 とテストを追加 |
-| **検証の欠落** | ケース 13 の「検証すべき呼び出し」に **WARN ログが出る**とあるのに、テストは「エラーを返さない」ことしか見ていなかった。ログは「通知失敗を握り潰していない」ことの唯一の観測点なので、出ていないと検証が成立しない | このケースだけログ捕捉用の logger に差し替えて `assert` を追加 |
+| **検証の欠落** | ケース 10 の「検証すべき呼び出し」に **WARN ログが出る**とあるのに、テストは「エラーを返さない」ことしか見ていなかった。ログは「通知失敗を握り潰していない」ことの唯一の観測点なので、出ていないと検証が成立しない | このケースだけログ捕捉用の logger に差し替えて `assert` を追加 |

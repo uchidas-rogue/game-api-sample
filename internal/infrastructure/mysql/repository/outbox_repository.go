@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
@@ -67,6 +68,28 @@ func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit 
 	return events, nil
 }
 
+// ClaimByID は指定 ID の未処理イベントを FOR UPDATE SKIP LOCKED で確保する。
+// 該当なし（処理済み or 他 worker がロック中 = sql.ErrNoRows）は found=false を返し、エラーにはしない。
+func (r *OutboxRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64) (outboxdomain.Event, bool, error) {
+	q, err := r.querier(tx)
+	if err != nil {
+		return outboxdomain.Event{}, false, fmt.Errorf("ClaimByID: %w", err)
+	}
+	row, err := q.ClaimPendingOutboxEventByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return outboxdomain.Event{}, false, nil
+		}
+		return outboxdomain.Event{}, false, fmt.Errorf("claim pending outbox event by id=%d: %w", id, err)
+	}
+	return outboxdomain.Event{
+		ID:         row.ID,
+		Type:       outboxdomain.EventType(row.EventType),
+		Payload:    []byte(row.Payload),
+		RetryCount: row.RetryCount,
+	}, true, nil
+}
+
 // MarkProcessed は処理済みフラグを立てる。
 func (r *OutboxRepository) MarkProcessed(ctx context.Context, tx shared.Tx, id uint64) error {
 	q, err := r.querier(tx)
@@ -77,44 +100,6 @@ func (r *OutboxRepository) MarkProcessed(ctx context.Context, tx shared.Tx, id u
 		return fmt.Errorf("mark outbox event processed: %w", err)
 	}
 	return nil
-}
-
-// GetMaxID は outbox_events の現在の最大 ID を返す（空テーブル時は 0）。
-func (r *OutboxRepository) GetMaxID(ctx context.Context, tx shared.Tx) (uint64, error) {
-	q, err := r.querier(tx)
-	if err != nil {
-		return 0, fmt.Errorf("GetMaxID: %w", err)
-	}
-	maxID, err := q.GetMaxOutboxEventID(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("get max outbox event id: %w", err)
-	}
-	if maxID < 0 {
-		return 0, fmt.Errorf("unexpected negative max id: %d", maxID)
-	}
-	return uint64(maxID), nil
-}
-
-// MarkProcessedUpTo は指定 ID 以下、かつ eventType が一致する pending イベントを一括で
-// 処理済みにマークする。
-func (r *OutboxRepository) MarkProcessedUpTo(
-	ctx context.Context,
-	tx shared.Tx,
-	maxID uint64,
-	eventType outboxdomain.EventType,
-) (int64, error) {
-	q, err := r.querier(tx)
-	if err != nil {
-		return 0, fmt.Errorf("MarkProcessedUpTo: %w", err)
-	}
-	rows, err := q.MarkOutboxEventsProcessedUpTo(ctx, sqlc.MarkOutboxEventsProcessedUpToParams{
-		MaxID:     maxID,
-		EventType: string(eventType),
-	})
-	if err != nil {
-		return 0, fmt.Errorf("mark outbox events processed up to: %w", err)
-	}
-	return rows, nil
 }
 
 // IncrementRetry は retry_count をインクリメントし last_error を記録する。

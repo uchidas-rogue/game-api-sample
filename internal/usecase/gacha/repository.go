@@ -27,9 +27,17 @@ type Repository interface {
 	// マスタ参照のためトランザクション必須ではないが、シグネチャを統一するため tx を受ける。
 	ListItems(ctx context.Context, tx shared.Tx) ([]gachadomain.Item, error)
 
-	// UpsertUserItem はユーザー所持アイテムを追加（同一item_idは加算）する。
-	UpsertUserItem(ctx context.Context, tx shared.Tx, userID int64, itemID int64, num int) error
+	// UpsertUserItems はユーザー所持アイテムを一括追加（同一item_idは加算）する。
+	// items は item_id 昇順で渡すこと。同一トランザクション内で行ロックを昇順取得させ、
+	// 逆順アクセスによるデッドロックを避けるための前提（呼び出し側が保証する）。
+	UpsertUserItems(ctx context.Context, tx shared.Tx, userID int64, items []UserItemCount) error
 
-	// InsertGachaHistory はガチャ履歴を1件追加する。
-	InsertGachaHistory(ctx context.Context, tx shared.Tx, userID int64, itemID int64) error
+	// InsertGachaHistories はガチャ履歴を一括追加する（抽選順）。
+	InsertGachaHistories(ctx context.Context, tx shared.Tx, userID int64, itemIDs []int64) error
+}
+
+// UserItemCount は所持アイテムの加算単位（bulk upsert 用）。
+type UserItemCount struct {
+	ItemID int64
+	Num    int
 }
