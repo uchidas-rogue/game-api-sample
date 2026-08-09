@@ -10,6 +10,19 @@
 
 ---
 
+## 横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）
+**目標:** AGENTS.md に書かれた規約を「AI が読む助言」から「CI で落ちる判定」へ移し、AI に任せられる範囲を広げる。
+
+方針は「ガードレールはコンテキスト（助言）ではなく実行される仕組み（判定）に置く」。フェーズ2の前提作業で整備した CI 品質ゲート（`make lint` / `make test/race` / カバレッジ計測）を、以下の段階で深化させる。
+
+* **Phase 0（完了）:** テスト設計原則を `.claude/skills/go-testing-qa/` としてスキル化。指示書間の参照ずれ・実態との乖離を解消
+* **Phase 1:** `.golangci.yml` を新設し、Clean Architecture の層間 import 規約（AGENTS.md §1）と Go コーディング規約（§2）を `depguard`（ホワイトリスト方式）・`gochecknoglobals`・`forbidigo` で静的強制する。現状 `make lint` は `go vet` のみ
+* **Phase 2:** 生成物（mockgen / sqlc / `schema.sql`）の再生成漏れを `git diff --exit-code` で CI 検知する
+* **Phase 3:** 層別カバレッジ目標（§3）を、サマリ表示のみから CI での閾値判定へ格上げする（ラチェット方式で段階的に引き上げ）
+* **Phase 4:** `docs/testing/` に設計図（mermaid フローチャート）とテスト仕様表を導入し、Go では計測できない分岐カバレッジをパスカバレッジで代替する
+
+---
+
 ## フェーズ1：GoによるモダンなゲームAPIの実装（1ヶ月目 / ローカル完結）
 **目標:** Clean Architectureに基づき、拡張性とテスト耐性を持ったAPIをローカルで完成させる。
 
@@ -24,10 +37,11 @@
      - **設計方針:** 書き込み（個人スコア・ギルド集計）と読み取り（ランキング参照）の責務を分離し、参照負荷が書き込みDBを圧迫しない構成とする
 * **テスト戦略 (TDDの徹底):**
   - 標準 `testing` パッケージによる Table-Driven Tests
-  - 層別方針（詳細は CLAUDE.md §4）:
+  - テスト設計の考え方の正本は `go-testing-qa` スキル、Go 固有の規約は AGENTS.md §3
+  - 層別方針（詳細は AGENTS.md §3）:
     - `domain`: 純粋関数・ビジネスルールの単体テスト（外部依存なし、カバレッジ 90% 以上）
     - `usecase`: `uber-go/mock` による網羅的テスト（カバレッジ 85% 以上）
-    - `infrastructure`: `testcontainers-go` を用いた MySQL/Redis 実体テスト（カバレッジ 80% 以上）
+    - `infrastructure`: sqlc `Querier` モック注入 / `miniredis` / `go-sqlmock` による単体テスト（カバレッジ 80% 以上）。`testcontainers-go` による実体テストは未導入
   - 競合状態（Race Condition）: 更新系には `t.Parallel()` + goroutine 並行ケースを最低1件含め、`make test/race` で検出する
   - Claudeは必ずローカルでテストを実行し、パスするまで実装を修正すること
 
@@ -36,7 +50,7 @@
 ## フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）
 **目標:** 商用サービスを想定したモダンなインフラ構成を、IaCを用いて構築する。
 
-* **前提作業:** ECS デプロイ前に CI 品質ゲートを整備する（GitHub Actions で `make lint` / `make test/race` / カバレッジ計測 を PR・main push 時に必須化）
+* **前提作業:** ECS デプロイ前に CI 品質ゲートを整備する（GitHub Actions で `make lint` / `make test/race` / カバレッジ計測 を PR・main push 時に必須化）。この品質ゲートの深化は「横断施策：決定論的検証基盤」を参照
 * **IaC化:** Terraformを使用し、AWSリソースをコードで定義
 * **主要コンポーネント:**
   - コンテナオーケストレーション: Amazon ECS (Fargate)

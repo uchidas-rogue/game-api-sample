@@ -28,15 +28,18 @@
 - Context 伝播: batch/worker などバックグラウンドジョブのエントリポイントを除き、リクエストスコープ内で `context.Background()`/`context.TODO()` を生成しない
 - インターフェース実装検証: 実装型の定義直前に `var _ Iface = (*Type)(nil)` を記述する（値レシーバのみは `Type{}` 可）
 - 時刻: `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
+  - 現時点で Clock インターフェースの実装は存在しない（`time.Now()` を使う機能がまだ無いため）。時刻依存の機能を追加する際に、`usecase` 層へ interface を定義し `infrastructure` 層に実装を置いて DI する
 - 設定管理: 環境変数のパースは `configs/config.go` の `Config` に集約する。環境変数のキー名と既定値は同パッケージで `const` 定義し、各層には `*Config` を DI して渡す。新規の設定値追加時は `Config` 構造体・既定値・`Load()` の3箇所を更新する
 
 # 3. Testing Rules (規約)
+- **テスト設計の考え方の正本は `go-testing-qa` スキル**（`.claude/skills/go-testing-qa/`）。テーブル駆動テストの正しい形、モック対象の選択基準、境界値ケースの取捨、カバレッジ指標の重み付け、設計図とテスト仕様表の作り方はそちらを参照する。本節は Go 固有の閾値・配置・命名規約を定める
 - アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する
 - 層別カバレッジ・テスト方針:
   - `domain` 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ **90% 以上**
   - `usecase` 層: 正常系・異常系・エッジケースを網羅。カバレッジ **85% 以上** を維持
-  - `infrastructure` 層: `testcontainers-go` を用いた MySQL/Redis 実体テストを基本方針とする（`miniredis` / `go-sqlmock` は補助的位置付け）。検証対象は sqlc 型 ⇄ domain 型の変換、エラー変換（`sql.ErrNoRows` → `domain.ErrNotFound` 等）、`Transactor` のコミット/ロールバック挙動。カバレッジ **80% 以上**
+  - `infrastructure` 層: 実リソースを起動しない単体テストを基本方針とする。MySQL repository は sqlc 生成の `Querier` インターフェースのモックを `export_test.go` のテスト専用コンストラクタ経由で注入、Redis は `miniredis`、`Transactor` は `go-sqlmock` を使う。検証対象は sqlc 型 ⇄ domain 型の変換、エラー変換（`sql.ErrNoRows` → `domain.ErrNotFound` 等）、クエリ構築引数（`FOR UPDATE` の有無・絞り込み条件）、`Transactor` のコミット/ロールバック挙動。カバレッジ **80% 以上**
+    - `testcontainers-go` による実 DB/Redis テストは未導入。導入する場合は依存追加を含めて別タスクとして扱い、実装前にユーザーへ確認する
 - Race / 競合テスト:
   - 更新系の repository / usecase は `t.Parallel()` + 複数 goroutine による同時アクセスケースを最低1件持つ
   - race 検出は `make test/race` で実行し CI で必須化（ローカル `make test` は race 無しで高速実行を維持）
