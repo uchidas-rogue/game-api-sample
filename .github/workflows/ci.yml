@@ -44,6 +44,14 @@ jobs:
       - name: Lint (golangci-lint)
         run: make lint
 
+      # 生成物（mockgen）の再生成忘れを検知する。
+      # 実体（interface）を変更したのにモックを再生成していない場合、コンパイルは通っても
+      # テストが古いモックを使い続けるため、ここで落とす。
+      # mockgen のバージョンは go.mod の go.uber.org/mock から導出されるので、
+      # ローカルと CI で同じ生成結果になる。
+      - name: Check generated code is up to date
+        run: make gen/check
+
       - name: Test with -race and coverage
         run: make test/race
 

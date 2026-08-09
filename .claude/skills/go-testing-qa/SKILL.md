@@ -49,7 +49,8 @@ description: 本プロジェクトのテスト設計・TDD 進行・静的検証
 | ダックタイピングのテスト（インターフェイス一致の実行時エラー防止） | `var _ Iface = (*T)(nil)` + コンパイラ。AGENTS.md §2 で必須化済み。模範例: `internal/di/container.go` の実装検証ブロック（コンポジションルートで全インターフェースをまとめて検証している） |
 | 未定義フィールドへの書き込み・参照の検出 | struct とコンパイラ |
 | `testing-principles.md` §4「存在しない操作名をモックに指定したら即エラー」 | mockgen 生成物 + コンパイラ |
-| `deterministic-verification.md` §8 の正方向チェック（生成物の要素が実体に実在するか） | コンパイラ。逆方向（実体の変更が生成物に反映されているか）は再生成 + 差分検知が担当する（**未実装**。現状は `make mock/gen` の実行忘れを検知できない） |
+| `deterministic-verification.md` §8 の正方向チェック（生成物の要素が実体に実在するか） | コンパイラ |
+| `deterministic-verification.md` §8 の逆方向チェック（実体の変更が生成物に反映されているか） | `make gen/check`（再生成 + 差分検知）。CI 必須。再生成忘れ・生成物の手動編集の両方を検知する |
 
 ---
 
@@ -86,7 +87,8 @@ tests := []struct {
 
 - **モックするのは `internal/usecase/` が定義する interface のみ**（Repository / Transactor / RankingStore / Notifier / Randomizer 等）
 - **`internal/domain/` の entity・値・sentinel error・定数はモックしない**。外部依存を持たないので実物を使う（`layered-architecture-testing.md` §1）
-- 手書きモック禁止。`//go:generate mockgen` を interface 定義ファイルに書き、`make mock/gen` で生成する
+- 手書きモック禁止。`//go:generate mockgen` を interface 定義ファイルに書き、`make mock/gen` で生成する（`go generate ./...` を直接叩かない。PATH 上の別バージョンの mockgen が使われ、生成結果が変わる）
+- 生成物を手で編集しない。編集しても `make gen/check` が再生成して差分として検知する
 - 生成物の配置は `<interface と同じパッケージ>/mock/`（例: `internal/usecase/gacha/mock/`）。**`internal/testutil/mock/` ではない**
 - テスト用のフィクスチャ・ヘルパーは `internal/testutil/` 配下に置く（モックとは別）
 - Go では `t.Cleanup` / `gomock.NewController(t)` が §4 の「リストア保証」を満たす。グローバル書き換え型のモックは使わない
