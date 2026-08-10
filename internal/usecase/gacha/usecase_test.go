@@ -272,8 +272,21 @@ func runMultiCase(t *testing.T, tc multiCase) {
 // 期待していない呼び出しが起きれば gomock が失敗させるため、テスト仕様表の
 // 「検証すべき呼び出し」列にある「後続が呼ばれないこと」の検証はここに含まれている。
 func expectMultiCalls(tc multiCase, repo *mockuc.MockRepository, tx *mockshared.MockTransactor, items []gachadomain.Item, gems int) {
-	// B: pullCount が不正なら DoInTx にも入らない
+	// B: pullCount が不正なら ListItems にも DoInTx にも入らない
 	if !gachadomain.IsValidPullCount(tc.pullCount) {
+		return
+	}
+
+	// H: ListItems はトランザクションの外で呼ぶ。tx を張る前に弾けることを
+	// 「DoInTx の EXPECT を設定しない」ことで担保する（呼ばれれば gomock が落とす）。
+	if tc.failAt == stepListItems {
+		repo.EXPECT().ListItems(gomock.Any(), nil).Return(nil, tc.failErr)
+		return
+	}
+	repo.EXPECT().ListItems(gomock.Any(), nil).Return(items, nil)
+
+	// I: items が空ならトランザクションを張らずに終わる
+	if len(items) == 0 {
 		return
 	}
 
@@ -301,15 +314,8 @@ func expectMultiCalls(tc multiCase, repo *mockuc.MockRepository, tx *mockshared.
 		return
 	}
 
-	// H: ListItems
-	if tc.failAt == stepListItems {
-		repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(nil, tc.failErr)
-		return
-	}
-	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
-
-	// I / J: items 空・重み不正はここで打ち切られる
-	if len(items) == 0 || totalWeightOf(items) <= 0 {
+	// J: 重み不正はここで打ち切られる
+	if totalWeightOf(items) <= 0 {
 		return
 	}
 
@@ -389,7 +395,7 @@ func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で渡され�
 		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error { return fn(nil) })
 	repo.EXPECT().GetUserForUpdate(gomock.Any(), gomock.Any(), testUserID).
 		Return(gachadomain.User{ID: testUserID, GemNum: gems}, nil)
-	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
+	repo.EXPECT().ListItems(gomock.Any(), nil).Return(items, nil)
 	repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), testUserID, gems-gachadomain.GemCostFor(pullCount)).Return(nil)
 
 	// 抽選順は ID 2 → ID 1 だが、upsert の行は ID 1 → ID 2 の昇順でなければならない。
@@ -429,7 +435,7 @@ func TestNewUsecase_Randomizerがnilなら既定実装を使う(t *testing.T) {
 		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error { return fn(nil) })
 	repo.EXPECT().GetUserForUpdate(gomock.Any(), gomock.Any(), testUserID).
 		Return(gachadomain.User{ID: testUserID, GemNum: gems}, nil)
-	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
+	repo.EXPECT().ListItems(gomock.Any(), nil).Return(items, nil)
 	repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), testUserID, gems-gachadomain.GemCostFor(pullCount)).Return(nil)
 	// 当選内訳は乱数依存なので、bulk 呼び出しの中身までは期待しない。
 	repo.EXPECT().UpsertUserItems(gomock.Any(), gomock.Any(), testUserID, gomock.Any()).Return(nil)

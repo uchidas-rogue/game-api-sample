@@ -11,10 +11,11 @@ import (
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
 )
 
-// SQLTx は usecase 層の Tx インターフェースに対する MySQL 実装。
-// 内部の *sql.Tx は infrastructure 層の Repository 実装側でのみ取り出して使う。
+// SQLTx が usecase 層の Tx を満たすことをコンパイル時に検証する。
 var _ shared.Tx = (*SQLTx)(nil)
 
+// SQLTx は usecase 層の Tx インターフェースに対する MySQL 実装。
+// 内部の *sql.Tx は infrastructure 層の Repository 実装側でのみ取り出して使う。
 type SQLTx struct {
 	tx *sql.Tx
 }
@@ -25,11 +26,12 @@ func (*SQLTx) IsTx() {}
 // Raw は内部の *sql.Tx を返す。infrastructure 層の Repository 実装からのみ呼び出す。
 func (s *SQLTx) Raw() *sql.Tx { return s.tx }
 
+// Transactor が usecase 層の Transactor を満たすことをコンパイル時に検証する。
+var _ shared.Transactor = (*Transactor)(nil)
+
 // Transactor は *sql.DB を用いたトランザクション境界制御の実装。
 // usecase 層は内部の DoInTx を介してロジックを与え、本実装が
 // BEGIN/COMMIT/ROLLBACK を保証する。
-var _ shared.Transactor = (*Transactor)(nil)
-
 type Transactor struct {
 	db     *sql.DB
 	logger *slog.Logger

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
 	"github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
@@ -116,6 +117,25 @@ func (r *OutboxRepository) MarkProcessedByIDs(ctx context.Context, tx shared.Tx,
 		return fmt.Errorf("mark outbox events processed (count=%d): %w", len(ids), err)
 	}
 	return nil
+}
+
+// DeleteProcessedBefore は処理済みイベントのうち retention より古いものを最大 limit 件削除する。
+// 基準時刻は SQL 側の NOW(6) で取るため、ここでは保持期間を秒に落として渡すだけ。
+func (r *OutboxRepository) DeleteProcessedBefore(
+	ctx context.Context, tx shared.Tx, retention time.Duration, limit int32,
+) (int64, error) {
+	q, err := r.querier(tx)
+	if err != nil {
+		return 0, fmt.Errorf("DeleteProcessedBefore: %w", err)
+	}
+	deleted, err := q.DeleteProcessedOutboxEventsBefore(ctx, sqlc.DeleteProcessedOutboxEventsBeforeParams{
+		RetentionSeconds: int64(retention.Seconds()),
+		Limit:            limit,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("delete processed outbox events (retention=%s, limit=%d): %w", retention, limit, err)
+	}
+	return deleted, nil
 }
 
 // IncrementRetry は retry_count をインクリメントし last_error を記録する。

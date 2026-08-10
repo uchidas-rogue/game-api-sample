@@ -38,7 +38,19 @@ const (
 	// 並列度ぶんの同時トランザクションを張るため、DBMaxOpenConns 以下である必要がある
 	// （Load() で検証する）。
 	defaultOutboxConcurrency = 8
-	envOutboxTickTimeout     = "OUTBOX_TICK_TIMEOUT"
+	envOutboxRetention       = "OUTBOX_RETENTION"
+	// defaultOutboxRetention は処理済み outbox イベントを保持する期間。
+	// これを過ぎた行は GC バッチ（cmd/batch -gc-outbox）が削除する。
+	// 障害調査で数日ぶんの処理済み履歴を辿れれば足りる一方、負荷試験規模
+	// （実測 約400 events/sec）では1日あたり約3,400万行が積み上がるため、
+	// 長くしすぎるとテーブルが肥大する。
+	defaultOutboxRetention = 72 * time.Hour
+	// minOutboxRetention は保持期間の下限。
+	// GC の SQL は INTERVAL ? SECOND で比較するため、repository が保持期間を秒へ落とす際に
+	// 1秒未満はゼロ方向に切り捨てられる。`500ms` を許すと INTERVAL 0 SECOND となり、
+	// 経過時間に関係なく処理済みイベントを全削除してしまう（復旧不能）。
+	minOutboxRetention   = time.Second
+	envOutboxTickTimeout = "OUTBOX_TICK_TIMEOUT"
 	// defaultOutboxTickTimeout は1ティック（runOnce）の処理時間上限。
 	// DB/Redis のブロッキングで worker のループがハングするのを防ぐ。
 	defaultOutboxTickTimeout = 30 * time.Second
@@ -79,6 +91,7 @@ type Config struct {
 	OutboxBatchSize    int
 	OutboxConcurrency  int
 	OutboxTickTimeout  time.Duration
+	OutboxRetention    time.Duration
 	DBPingTimeout      time.Duration
 	DBMaxOpenConns     int
 	DBMaxIdleConns     int
@@ -165,6 +178,18 @@ func Load() (*Config, error) {
 		tickTimeout = parsed
 	}
 
+	retention := defaultOutboxRetention
+	if v := os.Getenv(envOutboxRetention); v != "" {
+		parsed, err := time.ParseDuration(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s %q: %w", envOutboxRetention, v, err)
+		}
+		if parsed < minOutboxRetention {
+			return nil, fmt.Errorf("invalid %s: must be >= %s", envOutboxRetention, minOutboxRetention)
+		}
+		retention = parsed
+	}
+
 	pingTimeout := defaultDBPingTimeout
 	if v := os.Getenv(envDBPingTimeout); v != "" {
 		parsed, err := time.ParseDuration(v)
@@ -243,6 +268,7 @@ func Load() (*Config, error) {
 		OutboxBatchSize:    batchSize,
 		OutboxConcurrency:  concurrency,
 		OutboxTickTimeout:  tickTimeout,
+		OutboxRetention:    retention,
 		DBPingTimeout:      pingTimeout,
 		DBMaxOpenConns:     maxOpenConns,
 		DBMaxIdleConns:     maxIdleConns,

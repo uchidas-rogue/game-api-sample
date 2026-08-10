@@ -11,7 +11,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
-	"math/rand"
+	"math/rand/v2"
 	"strings"
 
 	gachadomain "github.com/uchidas-rogue/game-api-sample/internal/domain/gacha"
@@ -33,8 +33,10 @@ const (
 	insertChunkSize = 1000
 
 	// randSeed は投入データを再現可能にするための固定シード。
-	// time.Now を種にしないことで、同一パラメータなら毎回同じデータを得る。
-	randSeed = 20260720
+	// 現在時刻を種にしないことで、同一パラメータなら毎回同じデータを得る。
+	// math/rand/v2 の PCG は 128bit の種を取るため、2 つ目は固定の補助値。
+	randSeed    = 20260720
+	randSeedAux = 0x9E3779B97F4A7C15
 
 	// maxInitialUserPoints は初期投入する個人ポイントの上限（0〜この値の一様乱数）。
 	maxInitialUserPoints = 100000
@@ -113,7 +115,7 @@ func (s *Seeder) Seed(ctx context.Context, p Params) error {
 		slog.Int("guilds", p.Guilds),
 		slog.Int("gem_num", p.GemNum),
 	)
-	rng := rand.New(rand.NewSource(randSeed)) //nolint:gosec // 再現性目的の非暗号用途
+	rng := rand.New(rand.NewPCG(randSeed, randSeedAux))
 
 	if err := s.seedItems(ctx); err != nil {
 		return fmt.Errorf("seed items: %w", err)
@@ -127,10 +129,14 @@ func (s *Seeder) Seed(ctx context.Context, p Params) error {
 	if err := s.seedGuildMembers(ctx, p.Users, p.Guilds); err != nil {
 		return fmt.Errorf("seed guild_members: %w", err)
 	}
-	if err := s.seedUserPoints(ctx, p.Users, rng); err != nil {
+	// 個人ポイントの投入と同時にギルド別の合計を積み上げ、その値をそのまま
+	// guild_scores へ投入する。乱数列を2度生成して突き合わせる作りにすると、
+	// 片方の抽選順を変えた瞬間に MySQL 内部で不整合が生まれる（エラーも出ない）。
+	guildTotals, err := s.seedUserPoints(ctx, p.Users, p.Guilds, rng)
+	if err != nil {
 		return fmt.Errorf("seed user_points: %w", err)
 	}
-	if err := s.seedGuildScores(ctx, p.Users, p.Guilds); err != nil {
+	if err := s.seedGuildScores(ctx, guildTotals); err != nil {
 		return fmt.Errorf("seed guild_scores: %w", err)
 	}
 
@@ -183,8 +189,7 @@ func (s *Seeder) seedGuildMembers(ctx context.Context, users, guilds int) error 
 	return s.chunked(ctx, users, func(from, to int) error {
 		rows := make([][]any, 0, to-from+1)
 		for id := from; id <= to; id++ {
-			guildID := int64((id-1)%guilds) + 1
-			rows = append(rows, []any{guildID, int64(id)})
+			rows = append(rows, []any{int64(guildIDForUser(id, guilds)), int64(id)})
 		}
 		return s.bulkUpsert(ctx, "guild_members",
 			[]string{"guild_id", "user_id"},
@@ -193,32 +198,34 @@ func (s *Seeder) seedGuildMembers(ctx context.Context, users, guilds int) error 
 	})
 }
 
-func (s *Seeder) seedUserPoints(ctx context.Context, users int, rng *rand.Rand) error {
-	return s.chunked(ctx, users, func(from, to int) error {
+// seedUserPoints は個人ポイントを投入し、あわせてギルド別の合計を返す。
+// 戻り値は guild_id をインデックスとする合計値（0 番は未使用）。
+func (s *Seeder) seedUserPoints(ctx context.Context, users, guilds int, rng *rand.Rand) ([]int64, error) {
+	guildTotals := make([]int64, guilds+1)
+	err := s.chunked(ctx, users, func(from, to int) error {
 		rows := make([][]any, 0, to-from+1)
 		for id := from; id <= to; id++ {
-			rows = append(rows, []any{int64(id), int64(rng.Intn(maxInitialUserPoints + 1))})
+			pts := int64(rng.IntN(maxInitialUserPoints + 1))
+			guildTotals[guildIDForUser(id, guilds)] += pts
+			rows = append(rows, []any{int64(id), pts})
 		}
 		return s.bulkUpsert(ctx, "user_points",
 			[]string{"user_id", "points"},
 			"points = VALUES(points)",
 			rows)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return guildTotals, nil
 }
 
-// seedGuildScores はギルドスコアを user_points の集計と整合させる。
-// 各ユーザーの points は seedUserPoints と同一シーケンスで再生成し、所属ギルドへ加算する。
-func (s *Seeder) seedGuildScores(ctx context.Context, users, guilds int) error {
-	rng := rand.New(rand.NewSource(randSeed)) //nolint:gosec // seedUserPoints と同一系列を再現
-	totals := make([]int64, guilds+1)
-	for id := 1; id <= users; id++ {
-		pts := int64(rng.Intn(maxInitialUserPoints + 1))
-		guildID := (id-1)%guilds + 1
-		totals[guildID] += pts
-	}
-	rows := make([][]any, 0, guilds)
-	for gid := 1; gid <= guilds; gid++ {
-		rows = append(rows, []any{int64(gid), totals[gid]})
+// seedGuildScores は seedUserPoints が積み上げたギルド別合計をそのまま投入する。
+// guildTotals は guild_id をインデックスとする合計値（0 番は未使用）。
+func (s *Seeder) seedGuildScores(ctx context.Context, guildTotals []int64) error {
+	rows := make([][]any, 0, len(guildTotals))
+	for gid := 1; gid < len(guildTotals); gid++ {
+		rows = append(rows, []any{int64(gid), guildTotals[gid]})
 	}
 	return s.bulkUpsert(ctx, "guild_scores",
 		[]string{"guild_id", "score"},
@@ -255,7 +262,8 @@ func (s *Seeder) bulkUpsert(ctx context.Context, table string, cols []string, up
 
 		placeholderRow := "(" + strings.TrimSuffix(strings.Repeat("?,", len(cols)), ",") + ")"
 		valuesClause := strings.TrimSuffix(strings.Repeat(placeholderRow+",", len(chunk)), ",")
-		//nolint:gosec // table/cols は本パッケージ内固定値でユーザー入力を含まない
+		// SQL を文字列組み立てしているが、table / cols / updateClause は本パッケージ内の
+		// 固定値のみで、外部入力は一切混ざらない（値は必ずプレースホルダで渡す）。
 		query := fmt.Sprintf("INSERT INTO %s (%s) VALUES %s ON DUPLICATE KEY UPDATE %s",
 			table, strings.Join(cols, ", "), valuesClause, updateClause)
 
@@ -268,4 +276,11 @@ func (s *Seeder) bulkUpsert(ctx context.Context, table string, cols []string, up
 		}
 	}
 	return nil
+}
+
+// guildIDForUser はユーザーの所属ギルドを決める規則。
+// guild_members の割り当てと guild_scores の集計で同じ規則を使う必要があるため、
+// 各所に剰余計算を散らさず1箇所に集約する。
+func guildIDForUser(userID, guilds int) int {
+	return (userID-1)%guilds + 1
 }

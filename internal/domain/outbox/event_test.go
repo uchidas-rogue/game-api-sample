@@ -40,19 +40,6 @@ func TestMarshalRankingScoreAddedPayload(t *testing.T) {
 	}
 }
 
-func TestMarshalRankingScoreAddedPayload_KeyNames(t *testing.T) {
-	t.Parallel()
-
-	payload := outbox.RankingScoreAddedPayload{UserID: 10, GuildID: 20, Points: 300}
-	b := outbox.MarshalRankingScoreAddedPayload(payload)
-
-	jsonStr := string(b)
-	// JSON キー名の検証（スネークケース）。
-	assert.Contains(t, jsonStr, `"user_id"`)
-	assert.Contains(t, jsonStr, `"guild_id"`)
-	assert.Contains(t, jsonStr, `"points"`)
-}
-
 func TestUnmarshalRankingScoreAddedPayload(t *testing.T) {
 	t.Parallel()
 
@@ -75,20 +62,21 @@ func TestUnmarshalRankingScoreAddedPayload(t *testing.T) {
 			errMsg:  "unmarshal ranking score added payload",
 		},
 		{
+			// 不正JSONと同じ分岐だが独立させている。payload は DB のカラム由来で
+			// 空になりうるため、「空を黙ってゼロ値として受理する」ガードが
+			// 足された場合にここだけが落ちる（§7 の基準3）。
+			// ゼロ値で受理されると、worker が 0 点のイベントを正常適用してしまう。
 			name:    "異常系: 空バイト列",
 			input:   []byte(``),
 			wantErr: true,
 			errMsg:  "unmarshal ranking score added payload",
 		},
 		{
-			name:  "部分欠落: user_idのみ指定、他はゼロ値",
+			// 未指定フィールドがゼロ値になることの確認。`{}`（全欠落）は
+			// 同じ分岐・同じ出力で、このケースが検出できない実装ミスも無いため統合した（§7）。
+			name:  "部分欠落: 未指定フィールドはゼロ値になる",
 			input: []byte(`{"user_id":99}`),
 			want:  outbox.RankingScoreAddedPayload{UserID: 99, GuildID: 0, Points: 0},
-		},
-		{
-			name:  "部分欠落: 全フィールド欠落はゼロ値",
-			input: []byte(`{}`),
-			want:  outbox.RankingScoreAddedPayload{},
 		},
 	}
 
@@ -105,17 +93,4 @@ func TestUnmarshalRankingScoreAddedPayload(t *testing.T) {
 			assert.Equal(t, tt.want, got)
 		})
 	}
-}
-
-func TestMarshalUnmarshalRoundTrip(t *testing.T) {
-	t.Parallel()
-
-	original := outbox.RankingScoreAddedPayload{UserID: 42, GuildID: 7, Points: 9999}
-
-	b := outbox.MarshalRankingScoreAddedPayload(original)
-
-	got, err := outbox.UnmarshalRankingScoreAddedPayload(b)
-	require.NoError(t, err)
-
-	assert.Equal(t, original, got)
 }

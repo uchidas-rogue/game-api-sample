@@ -6,7 +6,6 @@ package sqlc
 
 import (
 	"context"
-	"database/sql"
 )
 
 type Querier interface {
@@ -17,26 +16,31 @@ type Querier interface {
 	// SKIP LOCKED と processed_at IS NULL 条件により複数 worker が同一イベントを二重処理しない。
 	// 既に処理済み or 他 worker がロック中は sql.ErrNoRows（該当なし）。
 	ClaimPendingOutboxEventByID(ctx context.Context, id uint64) (ClaimPendingOutboxEventByIDRow, error)
-	DeleteProcessedOutboxEventsBefore(ctx context.Context, processedAt sql.NullTime) error
+	// 処理済みイベントのうち、保持期間（秒）より古いものを最大 LIMIT 件削除する。
+	//
+	// 基準時刻は Go 側から渡さず SQL 側の NOW(6) で取る。アプリ側で現在時刻を取得すると
+	// AGENTS.md §2 の Clock DI 規約に抵触し、時刻依存でテストが不安定になるため。
+	//
+	// LIMIT で分割するのは、1文で全削除すると undo ログとロック保持が肥大して
+	// 同じテーブルへの INSERT（リクエスト経路の outbox 記録）を阻害するため。
+	// ORDER BY を idx_outbox_events_pending の先頭列に合わせ、古い順に消していく。
+	//
+	// processed_at IS NULL（未処理）は対象外。恒久失敗イベントの始末は
+	// max retry / DLQ の責務であり、GC が消すとイベントが黙って失われる。
+	DeleteProcessedOutboxEventsBefore(ctx context.Context, arg DeleteProcessedOutboxEventsBeforeParams) (int64, error)
 	GetGuild(ctx context.Context, id int64) (Guild, error)
-	GetGuildScore(ctx context.Context, guildID int64) (GuildScore, error)
-	GetGuildScoreForUpdate(ctx context.Context, guildID int64) (GuildScore, error)
 	GetUser(ctx context.Context, id int64) (User, error)
 	// ユーザー行を排他ロックで取得する。10連ガチャの整合性確保用。
 	// 必ずトランザクション内から呼び出すこと。デッドロック誘発検証のため意図的に FOR UPDATE。
 	GetUserForUpdate(ctx context.Context, id int64) (User, error)
 	GetUserGuildID(ctx context.Context, userID int64) (int64, error)
 	GetUserPoints(ctx context.Context, userID int64) (UserPoint, error)
-	GetUserPointsForUpdate(ctx context.Context, userID int64) (UserPoint, error)
 	IncrementGuildScore(ctx context.Context, arg IncrementGuildScoreParams) error
 	IncrementOutboxEventRetry(ctx context.Context, arg IncrementOutboxEventRetryParams) error
 	IncrementUserPoints(ctx context.Context, arg IncrementUserPointsParams) error
-	// ガチャ履歴を1件追加する。
-	InsertGachaHistory(ctx context.Context, arg InsertGachaHistoryParams) error
 	InsertGuildScoreHistory(ctx context.Context, arg InsertGuildScoreHistoryParams) error
 	InsertOutboxEvent(ctx context.Context, arg InsertOutboxEventParams) (int64, error)
 	InsertUserPointHistory(ctx context.Context, arg InsertUserPointHistoryParams) error
-	IsUserInGuild(ctx context.Context, arg IsUserInGuildParams) (bool, error)
 	ListAllGuildScores(ctx context.Context) ([]GuildScore, error)
 	ListAllUserPoints(ctx context.Context) ([]UserPoint, error)
 	ListGuildsByIDs(ctx context.Context, ids []int64) ([]Guild, error)
@@ -49,10 +53,6 @@ type Querier interface {
 	MarkOutboxEventsProcessedByIDs(ctx context.Context, ids []uint64) error
 	// 指定ユーザーの石残高を更新する。トランザクション内から呼び出す前提。
 	UpdateUserGems(ctx context.Context, arg UpdateUserGemsParams) error
-	UpsertGuildScore(ctx context.Context, arg UpsertGuildScoreParams) error
-	// ユーザー所持アイテムを追加。既に存在する場合は所持数を加算する。
-	UpsertUserItem(ctx context.Context, arg UpsertUserItemParams) error
-	UpsertUserPoints(ctx context.Context, arg UpsertUserPointsParams) error
 }
 
 var _ Querier = (*Queries)(nil)

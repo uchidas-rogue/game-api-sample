@@ -6,6 +6,7 @@ import (
 
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	gachahandler "github.com/uchidas-rogue/game-api-sample/internal/driver/http/gacha"
@@ -33,47 +34,13 @@ func collectRoutes(e *echo.Echo) map[routeKey]struct{} {
 	return m
 }
 
-func TestRegister_HealthOnly(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	mockHealth := mock_health.NewMockUsecase(ctrl)
-	h := router.Handlers{
-		Health:  healthhandler.NewHandler(mockHealth),
-		Gacha:   nil,
-		Ranking: nil,
-	}
-
-	e := echo.New()
-	router.Register(e, h)
-	routes := collectRoutes(e)
-
-	// /healthz のみ登録されている。
-	assert.Contains(t, routes, routeKey{method: "GET", path: "/healthz"})
-
-	// Gacha / Ranking ルートは登録されない。
-	assert.NotContains(t, routes, routeKey{method: "POST", path: "/users/:userID/gacha/multi"})
-	assert.NotContains(t, routes, routeKey{method: "GET", path: "/rankings/guilds"})
-}
-
 func TestRegister_AllHandlers(t *testing.T) {
 	t.Parallel()
 
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
-
-	logger := slogtest.NewLogger(t, nil)
-
-	h := router.Handlers{
-		Health:  healthhandler.NewHandler(mock_health.NewMockUsecase(ctrl)),
-		Gacha:   gachahandler.NewHandler(mock_gacha.NewMockUsecase(ctrl), logger),
-		Ranking: rankinghandler.NewHandler(mock_ranking.NewMockUsecase(ctrl), logger),
-	}
+	h := newHandlers(t)
 
 	e := echo.New()
-	router.Register(e, h)
+	require.NoError(t, router.Register(e, h))
 	routes := collectRoutes(e)
 
 	expected := []routeKey{
@@ -88,5 +55,74 @@ func TestRegister_AllHandlers(t *testing.T) {
 
 	for _, rk := range expected {
 		assert.Contains(t, routes, rk, "期待ルートが登録されていない: %s %s", rk.method, rk.path)
+	}
+}
+
+// TestRegister_MissingHandler は組み立て漏れが起動時に露見することを検証する。
+//
+// nil のまま登録しても echo への登録自体は成功してしまう（`h.Gacha.Multi` は
+// メソッド値の生成で、nil レシーバをデリファレンスしない）。panic は最初のリクエストまで
+// 遅延し middleware.Recover() が 500 に丸めるため、明示的な検査が唯一の防波堤になる。
+// フィールドごとにケースを分けているのは、検査から1つ漏れても落ちるようにするため。
+func TestRegister_MissingHandler(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		// drop は組み立て済みの Handlers から1つを nil に落とす。
+		drop        func(*router.Handlers)
+		wantMissing string
+	}{
+		{
+			name:        "Health が nil",
+			drop:        func(h *router.Handlers) { h.Health = nil },
+			wantMissing: "Health",
+		},
+		{
+			name:        "Gacha が nil",
+			drop:        func(h *router.Handlers) { h.Gacha = nil },
+			wantMissing: "Gacha",
+		},
+		{
+			name:        "Ranking が nil",
+			drop:        func(h *router.Handlers) { h.Ranking = nil },
+			wantMissing: "Ranking",
+		},
+		{
+			name:        "全て nil: 欠けているものを全て列挙する",
+			drop:        func(h *router.Handlers) { *h = router.Handlers{} },
+			wantMissing: "Health, Gacha, Ranking",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := newHandlers(t)
+			tt.drop(&h)
+
+			e := echo.New()
+			err := router.Register(e, h)
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, router.ErrMissingHandler)
+			assert.Contains(t, err.Error(), tt.wantMissing, "欠けたフィールド名がエラーに含まれること")
+			assert.Empty(t, collectRoutes(e), "検査に落ちたらルートを1つも登録しないこと")
+		})
+	}
+}
+
+// newHandlers は全フィールドが埋まった Handlers を組み立てる。
+func newHandlers(t *testing.T) router.Handlers {
+	t.Helper()
+
+	ctrl := gomock.NewController(t)
+	logger := slogtest.NewLogger(t, nil)
+
+	return router.Handlers{
+		Health:  healthhandler.NewHandler(mock_health.NewMockUsecase(ctrl), logger),
+		Gacha:   gachahandler.NewHandler(mock_gacha.NewMockUsecase(ctrl), logger),
+		Ranking: rankinghandler.NewHandler(mock_ranking.NewMockUsecase(ctrl), logger),
 	}
 }

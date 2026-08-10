@@ -375,7 +375,7 @@ func expectSingleRankCall(kind rankingKind, uc *mockranking.MockUsecase, id int6
 			ucErr = rankingdomain.ErrScoreNotFound
 		case singleRankUnexpected:
 			ucErr = errors.New("unexpected error")
-		case singleRankNone, singleRankRejectID:
+		case singleRankNone:
 			res = result
 		}
 		uc.EXPECT().GetGuildRank(gomock.Any(), id).Return(res, ucErr)
@@ -396,7 +396,7 @@ func expectSingleRankCall(kind rankingKind, uc *mockranking.MockUsecase, id int6
 		ucErr = rankingdomain.ErrPointsNotFound
 	case singleRankUnexpected:
 		ucErr = errors.New("unexpected error")
-	case singleRankNone, singleRankRejectID:
+	case singleRankNone:
 		res = result
 	}
 	uc.EXPECT().GetUserRank(gomock.Any(), id).Return(res, ucErr)

@@ -4,7 +4,6 @@ package ranking
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 
@@ -160,6 +159,9 @@ func (u *usecase) GetGuildRank(ctx context.Context, guildID int64) (rankingdomai
 // MySQL 側の更新（個人ポイント・ギルドスコア・履歴）と Redis 反映用の outbox イベント
 // 登録を同一トランザクション内で原子的に実行する。Redis への反映は outbox-worker が
 // 非同期にポーリングして行うため、本メソッドは順位（Rank/GuildRank）を返さない。
+//
+// 返す累計（NewTotal）は加算後に読み直した実測値であり、アプリ側で足し込んだ値ではない。
+// 同一ユーザーへの同時加算でレスポンスがずれるのを防ぐため（詳細は加算直後のコメント）。
 func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (rankingdomain.UserPointAddResult, error) {
 	if !rankingdomain.IsValidScore(input.Points) {
 		return rankingdomain.UserPointAddResult{}, fmt.Errorf(
@@ -181,17 +183,6 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 			return err
 		}
 
-		// 個人ポイント現在値（応答の previous_total 用）
-		currentPoints, err := u.repo.GetUserPoints(ctx, tx, input.UserID)
-		var previousTotal int64
-		if err != nil {
-			if !errors.Is(err, rankingdomain.ErrPointsNotFound) {
-				return err
-			}
-		} else {
-			previousTotal = currentPoints.Points
-		}
-
 		// ギルド集計（guild_scores 加算・guild_score_histories 挿入）は outbox-worker へ
 		// 非同期化した。ホット行（1ギルド=1行）の排他ロックを同期リクエスト経路から完全に
 		// 除去し、同一ギルドへの同時加算がレスポンスを直列化させないようにするため。
@@ -205,6 +196,20 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 		// 個人ポイント累計加算。
 		if err := u.repo.IncrementUserPoints(ctx, tx, input.UserID, input.Points); err != nil {
 			return err
+		}
+
+		// 加算「後」の累計を同一トランザクション内で読み直す。
+		// 加算前に読んだ値へアプリ側で input.Points を足すと、同一ユーザーへの同時リクエストが
+		// 同じ previous_total を読み、双方が同じ new_total を返してしまう
+		// （MySQL 側は points = points + ? なので値は正しく、レスポンスだけが誤る）。
+		// 加算後に読み直せば、後発のトランザクションは自身の書き込み（＝先行のコミット結果に
+		// 加算した値）を見るため、返す累計が実際の DB の状態と一致する。
+		//
+		// ここで ErrPointsNotFound は正常扱いしない。IncrementUserPoints は
+		// INSERT ... ON DUPLICATE KEY UPDATE なので、成功直後に行が無いのは異常。
+		updated, err := u.repo.GetUserPoints(ctx, tx, input.UserID)
+		if err != nil {
+			return fmt.Errorf("read back user points: %w", err)
 		}
 
 		// ギルド集計と Redis 反映用のイベントを outbox に積む。worker が非同期に
@@ -222,8 +227,8 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 		result = rankingdomain.UserPointAddResult{
 			UserID:        input.UserID,
 			Points:        input.Points,
-			PreviousTotal: previousTotal,
-			NewTotal:      previousTotal + input.Points,
+			PreviousTotal: updated.Points - input.Points,
+			NewTotal:      updated.Points,
 			GuildID:       guildID,
 		}
 		return nil

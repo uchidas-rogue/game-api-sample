@@ -19,6 +19,33 @@ func slogErrorAttr(m dsl.Matcher) {
 		Report(`エラーは slog.Any("error", err) で記録する（AGENTS.md §2）。slog.String("error", err.Error()) は不可`)
 }
 
+// echoPreMiddleware は AGENTS.md §2「HTTP ミドルウェアの登録順」のうち、
+// 「`echo.Echo.Pre` は使わない」を強制する。
+//
+// 【この規則が守るもの / 既知の実例】
+// BodyLimit をアクセスログより外側に登録した実装で、413 で弾いたリクエストが
+// アクセスログにも request_id にも残らない状態になった。登録「順序」そのものは
+// TestNew_MiddlewareOrder が New の AST を読んで検証しているが、Pre で登録された
+// ミドルウェアはルーティング前・アクセスログより外側で走るため、その検査を迂回する。
+// 同じ失敗（拒否が観測できない）への、もう一方の入口をここで塞ぐ。
+//
+// 【なぜ順序そのものは ruleguard で書けないか】
+// ruleguard は式単位のマッチで、文の並び（どの e.Use が先か）を条件にできない。
+// 順序は AST を直接読むテスト側の担当（determ. §3）。ここは「呼び出しの有無」だけを見る。
+//
+// 【違反が出たときの直し方】
+// //nolint で抜けない（determ. §2）。ルーティング前の書き換えが要るなら、
+// アクセスログとの前後関係を含めて AGENTS.md §2 の規約自体を見直すこと。
+func echoPreMiddleware(m dsl.Matcher) {
+	// 型式でフルパスは書けないため、パッケージを登録して短縮名で参照する。
+	// 型を条件に入れるのは、無関係な型の Pre メソッドを巻き込まないため。
+	m.Import(`github.com/labstack/echo/v4`)
+
+	m.Match(`$e.Pre($*_)`).
+		Where(m["e"].Type.Is(`*echo.Echo`)).
+		Report(`echo.Echo.Pre は使わない（AGENTS.md §2）。Pre はアクセスログより外側で走るため、そこで短絡したリクエストはアクセスログにも request_id にも残らない。e.Use でアクセスログの後ろに登録すること`)
+}
+
 // testGlobalWrite は AGENTS.md §3 Flaky 防止「テストコードでパッケージスコープの変数を
 // 書き換えない」を強制する。
 //

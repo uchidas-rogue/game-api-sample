@@ -68,7 +68,11 @@ import (
 // 処理順序は保証しない。扱う操作がスコア加算（可換）のみのため問題ないが、
 // 順序に依存する event_type を追加する場合はこの前提を見直すこと。
 //
-// max retry 上限・DLQ・処理済みレコードの GC は本実装では未対応（後続課題）。
+// 処理済みレコードの削除は本 worker の責務ではない。processed_at を立てるだけで行は残し、
+// 保持期間を過ぎた行は GC バッチ（cmd/batch -gc-outbox）が消す
+// （docs/testing/outbox-gc.md）。
+//
+// max retry 上限・DLQ は本実装では未対応（後続課題）。
 // そのため恒久失敗イベント（poison）は ListPending に何度でも現れる。ドレインと通知駆動が
 // これを読み直し続けてビジーループにならないよう、前進件数による打ち切り（runOnce）と
 // 滞留中の通知抑止（Run）を入れてある。詳細は docs/testing/outbox-worker.md §0-2・§0-3。

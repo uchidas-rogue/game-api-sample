@@ -32,30 +32,6 @@ func TestIsValidScore(t *testing.T) {
 	}
 }
 
-func TestIsValidLimit(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name  string
-		limit int
-		want  bool
-	}{
-		{name: "有効: MinRankingLimit", limit: ranking.MinRankingLimit, want: true},
-		{name: "有効: MaxRankingLimit", limit: ranking.MaxRankingLimit, want: true},
-		{name: "有効: DefaultRankingLimit", limit: ranking.DefaultRankingLimit, want: true},
-		{name: "無効: 0", limit: 0, want: false},
-		{name: "無効: MaxRankingLimit+1", limit: ranking.MaxRankingLimit + 1, want: false},
-		{name: "無効: 負数", limit: -1, want: false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			assert.Equal(t, tt.want, ranking.IsValidLimit(tt.limit))
-		})
-	}
-}
-
 func TestNormalizeOffset(t *testing.T) {
 	t.Parallel()
 

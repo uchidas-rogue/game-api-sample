@@ -21,7 +21,9 @@
 * **Phase 3（完了）:** 層別カバレッジ目標（§3）を CI での閾値判定へ格上げ。`make test/cover/check`（判定の実体は `scripts/coverage-check.sh`）
 * **Phase 4（完了）:** `docs/testing/` に設計図（mermaid フローチャート）とテスト仕様表を導入し、Go では計測できない分岐カバレッジをパスカバレッジで代替
 * **Phase 5（完了）:** 指示書（AGENTS.md / `docs/**` / `.claude/**`）の SSoT 崩れと実態との乖離を `make docs/check` で CI 検知。判定の実体は `scripts/docs-ssot-check.sh`、記述側に置く照合条件は `ssot-assert` ディレクティブ。テスト設計原則を `docs/testing/principles/` へ移し、全 AI エージェントが同じ正本を読める配置にした（`.claude/**` は Claude 専用なので正本を置かない）
-* **次の候補:** 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に `.golangci.yml` / `scripts/` へ移す（[docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) §1）。現在の最有力は AGENTS.md §3「`t.Parallel()` 配下で pkg-global 書換禁止」——`gochecknoglobals` が `_test.go` を除外しているため人手のみで守られており、違反は flaky test という検出しにくい形で出る
+* **Phase 6（完了）:** AGENTS.md §3 Flaky 防止「テストコードでパッケージスコープの変数を書き換えない」を `scripts/ruleguard/rules.go` の `testGlobalWrite` で静的強制。`gochecknoglobals` は「宣言」を見るため読み取り専用フィクスチャまで落ちてしまい `_test.go` を除外しており、テストの書換だけが機械検証されない穴になっていた。宣言 = `gochecknoglobals`（本番コード）／書換 = ruleguard（テスト）で役割を分けている
+  <!-- ssot-assert: present-grep 'func testGlobalWrite' scripts/ruleguard/rules.go -->
+* **次の候補:** 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に `.golangci.yml` / `scripts/` へ移す（[docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) §1）。現在の最有力は AGENTS.md §2「インターフェース実装検証: 実装型の定義直前に `var _ Iface = (*Type)(nil)` を置く」——宣言の有無そのものを見る仕組みが無く、`revive` の doc コメント検査が周辺の誤り（コメントが型ではなく検証用 var に付く）を副次的に拾っているだけ。「型の直前にあるか」は文の並びなので式単位の ruleguard では表現できず、`TestNew_MiddlewareOrder` と同じく AST を直接読む形になる
 
 ---
 

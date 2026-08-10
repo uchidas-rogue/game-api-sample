@@ -2,7 +2,6 @@
 package ranking
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -63,7 +62,7 @@ func (h *Handler) GetGuildRankings(c echo.Context) error {
 		Offset: offset,
 	})
 	if err != nil {
-		return h.handleError(c, ctx, err)
+		return h.handleError(c, err)
 	}
 
 	rankings := make([]rankEntryResponse, 0, len(result.Rankings))
@@ -101,7 +100,7 @@ func (h *Handler) GetGuildRank(c echo.Context) error {
 
 	result, err := h.usecase.GetGuildRank(ctx, guildID)
 	if err != nil {
-		return h.handleError(c, ctx, err)
+		return h.handleError(c, err)
 	}
 
 	return c.JSON(http.StatusOK, guildRankResponse{
@@ -154,7 +153,7 @@ func (h *Handler) AddUserPoints(c echo.Context) error {
 		Reason: req.Reason,
 	})
 	if err != nil {
-		return h.handleError(c, ctx, err)
+		return h.handleError(c, err)
 	}
 
 	return c.JSON(http.StatusOK, addUserPointsResponse{
@@ -184,7 +183,7 @@ func (h *Handler) GetUserRankings(c echo.Context) error {
 		Offset: offset,
 	})
 	if err != nil {
-		return h.handleError(c, ctx, err)
+		return h.handleError(c, err)
 	}
 
 	rankings := make([]rankEntryResponse, 0, len(result.Rankings))
@@ -222,7 +221,7 @@ func (h *Handler) GetUserRank(c echo.Context) error {
 
 	result, err := h.usecase.GetUserRank(ctx, userID)
 	if err != nil {
-		return h.handleError(c, ctx, err)
+		return h.handleError(c, err)
 	}
 
 	return c.JSON(http.StatusOK, userRankResponse{
@@ -234,7 +233,11 @@ func (h *Handler) GetUserRank(c echo.Context) error {
 	})
 }
 
-func (h *Handler) handleError(c echo.Context, ctx context.Context, err error) error {
+// handleError は usecase のエラーを HTTP レスポンスへ変換する。
+// ctx は echo.Context から導出するため引数に取らない（context.Context を
+// 第2引数に置くと Go の慣習に反し、渡し違いの余地も残るため）。
+func (h *Handler) handleError(c echo.Context, err error) error {
+	ctx := c.Request().Context()
 	switch {
 	case errors.Is(err, rankingdomain.ErrGuildNotFound):
 		return c.JSON(http.StatusNotFound, errorResponse{Message: "guild not found"})

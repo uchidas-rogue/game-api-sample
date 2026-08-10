@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -383,6 +384,79 @@ func TestOutboxRepository_IncrementRetry(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+// TestOutboxRepository_DeleteProcessedBefore は保持期間 → クエリ引数への変換を検証する。
+//
+// このメソッドの実質的なロジックは「time.Duration を秒に落として渡す」ことだけなので、
+// Querier に渡る引数を見ないと検証したことにならない（AGENTS.md §3 の
+// 「クエリ構築引数」に相当）。基準時刻は SQL 側の NOW() が持つため、
+// テストが時刻に依存しない点もこの設計の狙い。
+func TestOutboxRepository_DeleteProcessedBefore(t *testing.T) {
+	t.Parallel()
+
+	errDB := errors.New("delete failed")
+
+	tests := []struct {
+		name      string
+		retention time.Duration
+		limit     int32
+		// wantSeconds は Querier に渡ることを期待する秒数。
+		wantSeconds int64
+		deleted     int64
+		queryErr    error
+		wantErrIs   error
+	}{
+		{
+			name:        "正常系: 保持期間が秒へ変換されて渡る",
+			retention:   72 * time.Hour,
+			limit:       1000,
+			wantSeconds: 259200,
+			deleted:     42,
+		},
+		{
+			name:        "正常系: 秒未満は切り捨てられる",
+			retention:   1500 * time.Millisecond,
+			limit:       10,
+			wantSeconds: 1,
+			deleted:     0,
+		},
+		{
+			name:        "異常系: DB エラーはラップして返す",
+			retention:   time.Hour,
+			limit:       1000,
+			wantSeconds: 3600,
+			queryErr:    errDB,
+			wantErrIs:   errDB,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			mockQ := mocksqlc.NewMockQuerier(ctrl)
+			mockQ.EXPECT().
+				DeleteProcessedOutboxEventsBefore(gomock.Any(), sqlc.DeleteProcessedOutboxEventsBeforeParams{
+					RetentionSeconds: tt.wantSeconds,
+					Limit:            tt.limit,
+				}).
+				Return(tt.deleted, tt.queryErr)
+
+			repo := repository.NewOutboxRepositoryWithQuerier(mockQ)
+			deleted, err := repo.DeleteProcessedBefore(context.Background(), dummyTx{}, tt.retention, tt.limit)
+
+			if tt.wantErrIs != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErrIs)
+				assert.Zero(t, deleted, "エラー時は削除件数を返さない")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.deleted, deleted)
 		})
 	}
 }

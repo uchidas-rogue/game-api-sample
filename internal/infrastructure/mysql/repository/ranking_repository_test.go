@@ -127,62 +127,6 @@ func TestRankingRepository_GetUser(t *testing.T) {
 	}
 }
 
-func TestRankingRepository_GetGuildScore(t *testing.T) {
-	t.Parallel()
-
-	errDB := errors.New("db error")
-	now := time.Now()
-
-	tests := []struct {
-		name      string
-		stubScore sqlc.GuildScore
-		stubErr   error
-		wantErr   error
-	}{
-		{
-			name: "正常系: ギルドスコア取得成功",
-			stubScore: sqlc.GuildScore{
-				GuildID:   1,
-				Score:     1000,
-				UpdatedAt: sql.NullTime{Time: now, Valid: true},
-			},
-		},
-		{
-			name:    "異常系: sql.ErrNoRows は ErrScoreNotFound に変換される",
-			stubErr: sql.ErrNoRows,
-			wantErr: rankingdomain.ErrScoreNotFound,
-		},
-		{
-			name:    "異常系: その他の DB エラーはラップして返す",
-			stubErr: errDB,
-			wantErr: errDB,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().GetGuildScore(gomock.Any(), int64(1)).Return(tt.stubScore, tt.stubErr)
-
-			repo := repository.NewRankingRepositoryWithQuerier(mockQ)
-			got, err := repo.GetGuildScore(context.Background(), dummyTx{}, 1)
-
-			if tt.wantErr != nil {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, tt.wantErr)
-				assert.Equal(t, rankingdomain.GuildScore{}, got)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.stubScore.GuildID, got.GuildID)
-			assert.Equal(t, tt.stubScore.Score, got.Score)
-		})
-	}
-}
-
 func TestRankingRepository_IncrementGuildScore(t *testing.T) {
 	t.Parallel()
 
@@ -424,48 +368,6 @@ func TestRankingRepository_BulkInsertGuildScoreHistories(t *testing.T) {
 	})
 }
 
-func TestRankingRepository_IsUserInGuild(t *testing.T) {
-	t.Parallel()
-
-	errDB := errors.New("db error")
-
-	tests := []struct {
-		name       string
-		stubResult bool
-		stubErr    error
-		wantResult bool
-		wantErr    bool
-	}{
-		{name: "正常系: メンバーである", stubResult: true, wantResult: true},
-		{name: "正常系: メンバーでない", stubResult: false, wantResult: false},
-		{name: "異常系: DB エラーはラップして返す", stubErr: errDB, wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctrl := gomock.NewController(t)
-			mockQ := mocksqlc.NewMockQuerier(ctrl)
-			mockQ.EXPECT().IsUserInGuild(gomock.Any(), sqlc.IsUserInGuildParams{
-				GuildID: int64(1),
-				UserID:  int64(2),
-			}).Return(tt.stubResult, tt.stubErr)
-
-			repo := repository.NewRankingRepositoryWithQuerier(mockQ)
-			got, err := repo.IsUserInGuild(context.Background(), dummyTx{}, 2, 1)
-
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.ErrorIs(t, err, errDB)
-			} else {
-				require.NoError(t, err)
-				assert.Equal(t, tt.wantResult, got)
-			}
-		})
-	}
-}
-
 func TestRankingRepository_GetUserGuildID(t *testing.T) {
 	t.Parallel()
 
@@ -558,7 +460,18 @@ func TestRankingRepository_ListGuildsByIDs(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Len(t, got, tt.wantCount)
+			require.Len(t, got, tt.wantCount)
+			// 件数だけでは sqlc 型 → domain 型のフィールド取り違え（Name の欠落等）を
+			// 検出できない（testing-principles.md §10）。この変換を検証できるのは
+			// infrastructure 層のここだけなので、要素の中身まで突合する。
+			for _, want := range tt.stubGuilds {
+				g, ok := got[want.ID]
+				require.Truef(t, ok, "guild_id=%d がキーとして存在すること", want.ID)
+				assert.Equal(t, want.ID, g.ID)
+				assert.Equal(t, want.Name, g.Name)
+				assert.Equal(t, want.CreatedAt.Time, g.CreatedAt)
+				assert.Equal(t, want.UpdatedAt.Time, g.UpdatedAt)
+			}
 		})
 	}
 }
@@ -613,7 +526,14 @@ func TestRankingRepository_ListAllGuildScores(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Len(t, got, tt.wantCount)
+			require.Len(t, got, tt.wantCount)
+			// 添字を揃えて突合することで、フィールドの取り違えに加えて
+			// SQL の ORDER BY 由来の並びが崩れる不具合も検出する（§10）。
+			for i, want := range tt.stubScores {
+				assert.Equal(t, want.GuildID, got[i].GuildID, "%d 件目", i+1)
+				assert.Equal(t, want.Score, got[i].Score, "%d 件目", i+1)
+				assert.Equal(t, want.UpdatedAt.Time, got[i].UpdatedAt, "%d 件目", i+1)
+			}
 		})
 	}
 }
@@ -859,7 +779,14 @@ func TestRankingRepository_ListAllUserPoints(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Len(t, got, tt.wantCount)
+			require.Len(t, got, tt.wantCount)
+			// ListAllGuildScores と同じ理由で添字を揃えて突合する（§10）。
+			// 対になる2メソッドで検証の厚みを揃える（§8 対称性チェック）。
+			for i, want := range tt.stubPoints {
+				assert.Equal(t, want.UserID, got[i].UserID, "%d 件目", i+1)
+				assert.Equal(t, want.Points, got[i].Points, "%d 件目", i+1)
+				assert.Equal(t, want.UpdatedAt.Time, got[i].UpdatedAt, "%d 件目", i+1)
+			}
 		})
 	}
 }

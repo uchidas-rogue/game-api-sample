@@ -11,7 +11,6 @@ package mock_sqlc
 
 import (
 	context "context"
-	sql "database/sql"
 	reflect "reflect"
 
 	sqlc "github.com/uchidas-rogue/game-api-sample/internal/infrastructure/mysql/sqlc"
@@ -58,17 +57,18 @@ func (mr *MockQuerierMockRecorder) ClaimPendingOutboxEventByID(ctx, id any) *gom
 }
 
 // DeleteProcessedOutboxEventsBefore mocks base method.
-func (m *MockQuerier) DeleteProcessedOutboxEventsBefore(ctx context.Context, processedAt sql.NullTime) error {
+func (m *MockQuerier) DeleteProcessedOutboxEventsBefore(ctx context.Context, arg sqlc.DeleteProcessedOutboxEventsBeforeParams) (int64, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DeleteProcessedOutboxEventsBefore", ctx, processedAt)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret := m.ctrl.Call(m, "DeleteProcessedOutboxEventsBefore", ctx, arg)
+	ret0, _ := ret[0].(int64)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // DeleteProcessedOutboxEventsBefore indicates an expected call of DeleteProcessedOutboxEventsBefore.
-func (mr *MockQuerierMockRecorder) DeleteProcessedOutboxEventsBefore(ctx, processedAt any) *gomock.Call {
+func (mr *MockQuerierMockRecorder) DeleteProcessedOutboxEventsBefore(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteProcessedOutboxEventsBefore", reflect.TypeOf((*MockQuerier)(nil).DeleteProcessedOutboxEventsBefore), ctx, processedAt)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteProcessedOutboxEventsBefore", reflect.TypeOf((*MockQuerier)(nil).DeleteProcessedOutboxEventsBefore), ctx, arg)
 }
 
 // GetGuild mocks base method.
@@ -84,36 +84,6 @@ func (m *MockQuerier) GetGuild(ctx context.Context, id int64) (sqlc.Guild, error
 func (mr *MockQuerierMockRecorder) GetGuild(ctx, id any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGuild", reflect.TypeOf((*MockQuerier)(nil).GetGuild), ctx, id)
-}
-
-// GetGuildScore mocks base method.
-func (m *MockQuerier) GetGuildScore(ctx context.Context, guildID int64) (sqlc.GuildScore, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetGuildScore", ctx, guildID)
-	ret0, _ := ret[0].(sqlc.GuildScore)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetGuildScore indicates an expected call of GetGuildScore.
-func (mr *MockQuerierMockRecorder) GetGuildScore(ctx, guildID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGuildScore", reflect.TypeOf((*MockQuerier)(nil).GetGuildScore), ctx, guildID)
-}
-
-// GetGuildScoreForUpdate mocks base method.
-func (m *MockQuerier) GetGuildScoreForUpdate(ctx context.Context, guildID int64) (sqlc.GuildScore, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetGuildScoreForUpdate", ctx, guildID)
-	ret0, _ := ret[0].(sqlc.GuildScore)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetGuildScoreForUpdate indicates an expected call of GetGuildScoreForUpdate.
-func (mr *MockQuerierMockRecorder) GetGuildScoreForUpdate(ctx, guildID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGuildScoreForUpdate", reflect.TypeOf((*MockQuerier)(nil).GetGuildScoreForUpdate), ctx, guildID)
 }
 
 // GetUser mocks base method.
@@ -176,21 +146,6 @@ func (mr *MockQuerierMockRecorder) GetUserPoints(ctx, userID any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserPoints", reflect.TypeOf((*MockQuerier)(nil).GetUserPoints), ctx, userID)
 }
 
-// GetUserPointsForUpdate mocks base method.
-func (m *MockQuerier) GetUserPointsForUpdate(ctx context.Context, userID int64) (sqlc.UserPoint, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "GetUserPointsForUpdate", ctx, userID)
-	ret0, _ := ret[0].(sqlc.UserPoint)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// GetUserPointsForUpdate indicates an expected call of GetUserPointsForUpdate.
-func (mr *MockQuerierMockRecorder) GetUserPointsForUpdate(ctx, userID any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserPointsForUpdate", reflect.TypeOf((*MockQuerier)(nil).GetUserPointsForUpdate), ctx, userID)
-}
-
 // IncrementGuildScore mocks base method.
 func (m *MockQuerier) IncrementGuildScore(ctx context.Context, arg sqlc.IncrementGuildScoreParams) error {
 	m.ctrl.T.Helper()
@@ -231,20 +186,6 @@ func (m *MockQuerier) IncrementUserPoints(ctx context.Context, arg sqlc.Incremen
 func (mr *MockQuerierMockRecorder) IncrementUserPoints(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IncrementUserPoints", reflect.TypeOf((*MockQuerier)(nil).IncrementUserPoints), ctx, arg)
-}
-
-// InsertGachaHistory mocks base method.
-func (m *MockQuerier) InsertGachaHistory(ctx context.Context, arg sqlc.InsertGachaHistoryParams) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "InsertGachaHistory", ctx, arg)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// InsertGachaHistory indicates an expected call of InsertGachaHistory.
-func (mr *MockQuerierMockRecorder) InsertGachaHistory(ctx, arg any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertGachaHistory", reflect.TypeOf((*MockQuerier)(nil).InsertGachaHistory), ctx, arg)
 }
 
 // InsertGuildScoreHistory mocks base method.
@@ -288,21 +229,6 @@ func (m *MockQuerier) InsertUserPointHistory(ctx context.Context, arg sqlc.Inser
 func (mr *MockQuerierMockRecorder) InsertUserPointHistory(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "InsertUserPointHistory", reflect.TypeOf((*MockQuerier)(nil).InsertUserPointHistory), ctx, arg)
-}
-
-// IsUserInGuild mocks base method.
-func (m *MockQuerier) IsUserInGuild(ctx context.Context, arg sqlc.IsUserInGuildParams) (bool, error) {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "IsUserInGuild", ctx, arg)
-	ret0, _ := ret[0].(bool)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
-}
-
-// IsUserInGuild indicates an expected call of IsUserInGuild.
-func (mr *MockQuerierMockRecorder) IsUserInGuild(ctx, arg any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsUserInGuild", reflect.TypeOf((*MockQuerier)(nil).IsUserInGuild), ctx, arg)
 }
 
 // ListAllGuildScores mocks base method.
@@ -435,46 +361,4 @@ func (m *MockQuerier) UpdateUserGems(ctx context.Context, arg sqlc.UpdateUserGem
 func (mr *MockQuerierMockRecorder) UpdateUserGems(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateUserGems", reflect.TypeOf((*MockQuerier)(nil).UpdateUserGems), ctx, arg)
-}
-
-// UpsertGuildScore mocks base method.
-func (m *MockQuerier) UpsertGuildScore(ctx context.Context, arg sqlc.UpsertGuildScoreParams) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpsertGuildScore", ctx, arg)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpsertGuildScore indicates an expected call of UpsertGuildScore.
-func (mr *MockQuerierMockRecorder) UpsertGuildScore(ctx, arg any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertGuildScore", reflect.TypeOf((*MockQuerier)(nil).UpsertGuildScore), ctx, arg)
-}
-
-// UpsertUserItem mocks base method.
-func (m *MockQuerier) UpsertUserItem(ctx context.Context, arg sqlc.UpsertUserItemParams) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpsertUserItem", ctx, arg)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpsertUserItem indicates an expected call of UpsertUserItem.
-func (mr *MockQuerierMockRecorder) UpsertUserItem(ctx, arg any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertUserItem", reflect.TypeOf((*MockQuerier)(nil).UpsertUserItem), ctx, arg)
-}
-
-// UpsertUserPoints mocks base method.
-func (m *MockQuerier) UpsertUserPoints(ctx context.Context, arg sqlc.UpsertUserPointsParams) error {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "UpsertUserPoints", ctx, arg)
-	ret0, _ := ret[0].(error)
-	return ret0
-}
-
-// UpsertUserPoints indicates an expected call of UpsertUserPoints.
-func (mr *MockQuerierMockRecorder) UpsertUserPoints(ctx, arg any) *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpsertUserPoints", reflect.TypeOf((*MockQuerier)(nil).UpsertUserPoints), ctx, arg)
 }

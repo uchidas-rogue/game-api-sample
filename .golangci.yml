@@ -48,6 +48,8 @@ linters:
     - forbidigo # 禁止 API の検出（Context 伝播 / logger DI / 時刻）
     - gocritic # ruleguard 経由の自前 AST ルール（引数まで見る規約）
     - mnd # マジックナンバー検出（AGENTS.md §2）
+    - nolintlint # 効いていない //nolint の検出（下記 settings に採用理由）
+    - revive # 公開要素の doc コメント強制（下記 settings に採用範囲）
 
   # 【採用を検討して見送った linter】判断の再現性のため理由を残す（determ. §2）。
   #
@@ -61,8 +63,50 @@ linters:
   #   規約が守りたい対象と linter の判定対象がずれているため採用しない。
   #   ビジネスエラーが sentinel であることは depguard（domain 以外から domain の
   #   エラー定義を作れない構造）と errorlint（判定は errors.Is/As で行う）で間接的に守る。
+  #
+  # gosec: セキュリティ観点の静的解析。採用は保留（見送りではない）。
+  #   採用したい動機は G115（整数の縮小変換）で、`int32(newGems)` / `int32(it.Num)` /
+  #   `int32(w.batchSize)` のような変換が実測で複数ある。いずれも現状は domain の
+  #   制約や設定値の検証で範囲が担保されているが、担保は**呼び出し側にあって型には無い**。
+  #   一方 G201/G202（SQL の文字列組み立て）は、本リポジトリが意図的に採用している
+  #   「プレースホルダを組み立てるパラメータ化生 SQL」（AGENTS.md §4 の例外）に
+  #   一律で当たるため、抑制の運用方針をセットで決めないと //nolint が量産される。
+  #   有効化は「G115 への対応方針を決める」タスクとして切り出す。
 
   settings:
+    # 公開要素に doc コメントを強制する。exported ルールのみを使い、revive の他の
+    # ルール（命名・複雑度等）は有効にしない。
+    #
+    # 【採用理由 / 捕捉した既知の実例】
+    # ranking_repository.go の公開メソッド 14 個に doc コメントが無く、同じ層の
+    # gacha / outbox リポジトリとだけ様式が食い違っていた。レビューで毎回指摘する形の
+    # 規約なので機械検証へ回す（determ. §1）。
+    # 加えて、AGENTS.md §2 の `var _ Iface = (*Type)(nil)` を型の直前に置く規約と
+    # doc コメントが衝突し、**コメントが型ではなく var に付いてしまう**誤りを 5 件検出した
+    # （`go doc` に出ない状態だった）。検証用の var には var 自身の説明を書き、
+    # 型の説明は型の直前に置くこと。
+    #
+    # 【disableStutteringCheck にしている理由】
+    # 型名の重複（health.HealthStatus / ranking.RankingStore）も検出されるが、
+    # 解消には公開型のリネームが必要で、AGENTS.md §6 の「公開インターフェース・
+    # ドメインモデルの変更」に該当する。掃除の副産物として黙って行う変更ではないため、
+    # 別タスクとしてユーザー確認のうえ判断する。それまでこのサブチェックは無効にし、
+    # 「指摘が出ているのに放置されている」状態を作らない。
+    revive:
+      rules:
+        - name: exported
+          arguments:
+            - disableStutteringCheck
+
+    # 効いていない //nolint（対象の linter が無効・指摘が既に解消済み）を検出する。
+    #
+    # 【採用理由 / 捕捉した既知の実例】
+    # gosec を有効にしていないのに `//nolint:gosec` が 3 箇所残っていた。
+    # 抑制として機能しないまま「ここは検査済み」という誤った印象だけを与える状態で、
+    # 人手では気づけない。require-specific で `//nolint`（linter 名なしの全部抑制）も禁じる。
+    nolintlint:
+      require-specific: true
+      allow-unused: false
     # AGENTS.md §2 の「〜してはならない」規約を判定に落とす。
     #
     # forbidigo は AST 上の識別子に対する **正規表現** マッチであり、determ. §3 が推奨する
@@ -218,6 +262,15 @@ linters:
             - go.uber.org/mock
             - github.com/DATA-DOG/go-sqlmock # Transactor のコミット/ロールバック検証
             - github.com/alicebob/miniredis/v2 # Redis 実体を使わない単体テスト
+            # go/ast・go/parser・go/token は標準ライブラリだが $gostd の展開に含まれないため個別に許可する。
+            # 用途は TestNew_MiddlewareOrder（server パッケージ）ただ1つ。
+            # ミドルウェアの登録「順序」は文の並びであり、ruleguard（式単位のマッチ）では
+            # 表現できないため、New の AST を直接読んで検証している（determ. §3）。
+            # 他のテストで構文解析を始めたくなったら、まず scripts/ 配下の独立した検査に
+            # 切り出すことを検討する（層のテストが自分のソースを読むのは例外的な用途のため）。
+            - go/ast
+            - go/parser
+            - go/token
         internal-infrastructure:
           files:
             - "**/internal/infrastructure/**"

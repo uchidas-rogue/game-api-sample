@@ -28,33 +28,6 @@ func (q *Queries) GetGuild(ctx context.Context, id int64) (Guild, error) {
 	return i, err
 }
 
-const getGuildScore = `-- name: GetGuildScore :one
-SELECT guild_id, score, updated_at
-FROM guild_scores
-WHERE guild_id = ?
-`
-
-func (q *Queries) GetGuildScore(ctx context.Context, guildID int64) (GuildScore, error) {
-	row := q.db.QueryRowContext(ctx, getGuildScore, guildID)
-	var i GuildScore
-	err := row.Scan(&i.GuildID, &i.Score, &i.UpdatedAt)
-	return i, err
-}
-
-const getGuildScoreForUpdate = `-- name: GetGuildScoreForUpdate :one
-SELECT guild_id, score, updated_at
-FROM guild_scores
-WHERE guild_id = ?
-FOR UPDATE
-`
-
-func (q *Queries) GetGuildScoreForUpdate(ctx context.Context, guildID int64) (GuildScore, error) {
-	row := q.db.QueryRowContext(ctx, getGuildScoreForUpdate, guildID)
-	var i GuildScore
-	err := row.Scan(&i.GuildID, &i.Score, &i.UpdatedAt)
-	return i, err
-}
-
 const getUser = `-- name: GetUser :one
 SELECT id, name, gem_num, created_at, updated_at
 FROM users
@@ -96,20 +69,6 @@ WHERE user_id = ?
 
 func (q *Queries) GetUserPoints(ctx context.Context, userID int64) (UserPoint, error) {
 	row := q.db.QueryRowContext(ctx, getUserPoints, userID)
-	var i UserPoint
-	err := row.Scan(&i.UserID, &i.Points, &i.UpdatedAt)
-	return i, err
-}
-
-const getUserPointsForUpdate = `-- name: GetUserPointsForUpdate :one
-SELECT user_id, points, updated_at
-FROM user_points
-WHERE user_id = ?
-FOR UPDATE
-`
-
-func (q *Queries) GetUserPointsForUpdate(ctx context.Context, userID int64) (UserPoint, error) {
-	row := q.db.QueryRowContext(ctx, getUserPointsForUpdate, userID)
 	var i UserPoint
 	err := row.Scan(&i.UserID, &i.Points, &i.UpdatedAt)
 	return i, err
@@ -177,24 +136,6 @@ type InsertUserPointHistoryParams struct {
 func (q *Queries) InsertUserPointHistory(ctx context.Context, arg InsertUserPointHistoryParams) error {
 	_, err := q.db.ExecContext(ctx, insertUserPointHistory, arg.UserID, arg.Points, arg.Reason)
 	return err
-}
-
-const isUserInGuild = `-- name: IsUserInGuild :one
-SELECT COUNT(*) > 0 AS is_member
-FROM guild_members
-WHERE guild_id = ? AND user_id = ?
-`
-
-type IsUserInGuildParams struct {
-	GuildID int64
-	UserID  int64
-}
-
-func (q *Queries) IsUserInGuild(ctx context.Context, arg IsUserInGuildParams) (bool, error) {
-	row := q.db.QueryRowContext(ctx, isUserInGuild, arg.GuildID, arg.UserID)
-	var is_member bool
-	err := row.Scan(&is_member)
-	return is_member, err
 }
 
 const listAllGuildScores = `-- name: ListAllGuildScores :many
@@ -342,36 +283,4 @@ func (q *Queries) ListUsersByIDs(ctx context.Context, ids []int64) ([]User, erro
 		return nil, err
 	}
 	return items, nil
-}
-
-const upsertGuildScore = `-- name: UpsertGuildScore :exec
-INSERT INTO guild_scores (guild_id, score)
-VALUES (?, ?)
-ON DUPLICATE KEY UPDATE score = VALUES(score)
-`
-
-type UpsertGuildScoreParams struct {
-	GuildID int64
-	Score   int64
-}
-
-func (q *Queries) UpsertGuildScore(ctx context.Context, arg UpsertGuildScoreParams) error {
-	_, err := q.db.ExecContext(ctx, upsertGuildScore, arg.GuildID, arg.Score)
-	return err
-}
-
-const upsertUserPoints = `-- name: UpsertUserPoints :exec
-INSERT INTO user_points (user_id, points)
-VALUES (?, ?)
-ON DUPLICATE KEY UPDATE points = VALUES(points)
-`
-
-type UpsertUserPointsParams struct {
-	UserID int64
-	Points int64
-}
-
-func (q *Queries) UpsertUserPoints(ctx context.Context, arg UpsertUserPointsParams) error {
-	_, err := q.db.ExecContext(ctx, upsertUserPoints, arg.UserID, arg.Points)
-	return err
 }

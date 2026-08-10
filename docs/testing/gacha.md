@@ -20,23 +20,23 @@
 flowchart TD
     A[Multi 開始] --> B{pullCount が妥当か<br/>IsValidPullCount}
     B -- No --> E1((ErrInvalidPullCount))
-    B -- Yes --> C[gemCost 算出<br/>GemCostFor]
-    C --> D[[DoInTx トランザクション境界に入る]]
+    B -- Yes --> H[ListItems<br/>アイテムマスタ取得<br/>**トランザクションの外**]
 
-    D -- 境界の確立/確定に失敗 --> E2((DoInTx のエラー<br/>fn は実行されない))
-    D -- fn 実行 --> F[GetUserForUpdate<br/>users を FOR UPDATE]
-
-    F -- err --> E3((repo のエラーをそのまま返す))
-    F -- ok --> G{石が足りるか<br/>HasEnoughGemsFor}
-
-    G -- No --> E4((ErrInsufficientGems))
-    G -- Yes --> H[ListItems<br/>アイテムマスタ取得]
-
-    H -- err --> E5((repo のエラー))
+    H -- err --> E2((repo のエラー))
     H -- ok --> I{items が空か}
 
-    I -- Yes --> E6((ErrNoItemsAvailable))
-    I -- No --> J[draw<br/>重み付き抽選を pullCount 回]
+    I -- Yes --> E3((ErrNoItemsAvailable))
+    I -- No --> C[gemCost 算出<br/>GemCostFor]
+    C --> D[[DoInTx トランザクション境界に入る]]
+
+    D -- 境界の確立/確定に失敗 --> E4((DoInTx のエラー<br/>fn は実行されない))
+    D -- fn 実行 --> F[GetUserForUpdate<br/>users を FOR UPDATE]
+
+    F -- err --> E5((repo のエラーをそのまま返す))
+    F -- ok --> G{石が足りるか<br/>HasEnoughGemsFor}
+
+    G -- No --> E6((ErrInsufficientGems))
+    G -- Yes --> J[draw<br/>重み付き抽選を pullCount 回]
 
     J -- totalWeight ≤ 0 --> E7((ErrInvalidItemWeights))
     J -- ok --> K[UpdateUserGems<br/>石を消費]
@@ -56,7 +56,18 @@ flowchart TD
 `L` の昇順は `sortedKeys` が保証し、デッドロック回避のための不変条件なのでテストで順序を検証する（ケース 16）。
 単行ループではなく**可変行数の bulk INSERT**（`UpsertUserItems` / `InsertGachaHistories`）に集約しており、
 トランザクション内の DB 往復とロック保持時間を削減している（AGENTS.md §4 の生 SQL 例外）。
-`H`（items）はマスタ参照のみで更新しないため、ロック順序の対象外。
+
+**`H`（ListItems）をトランザクションの外に置く理由**: items はマスタ参照のみで更新せず、
+ロック順序の対象外。トランザクションの中に置くと、users の行ロックを保持したまま
+マスタ参照の往復を1回はさむことになり、ロック保持時間がそのぶん伸びる。
+外に出すことで、マスタデータ不備（`E2` / `E3`）のときにトランザクションを張らず
+行ロックも取らずに弾ける（マスタ不備は全リクエストが等しく踏むため、
+DB を叩かずに失敗させる価値が大きい）。
+
+読み取りが tx の外になるぶん、読んだ後にマスタが変わる余地は残る。ただし
+`items` 行を削除されれば user_items / gacha_histories の FK 制約で弾かれるため、
+不整合なデータが書き込まれることはない（tx 内で読んでいた頃も、FK の検査は
+コミット時点の状態に対して行われるため事情は同じ）。
 
 ### 1-2. `draw` のサブフロー
 
@@ -81,14 +92,14 @@ flowchart TD
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
-| 1 | `pullCount` が範囲外（0） | `A→B→E1` | `ErrInvalidPullCount` | `DoInTx` が呼ばれない |
-| 2 | `pullCount` が範囲外（上限超え） | `A→B→E1` | `ErrInvalidPullCount` | `DoInTx` が呼ばれない |
-| 3 | `DoInTx` 自体がエラー | `A→B→C→D→E2` | `DoInTx` のエラーがそのまま返る | `fn` が実行されない（repo が一切呼ばれない） |
-| 4 | `GetUserForUpdate` がエラー | `A→B→C→D→F→E3` | repo のエラーがそのまま返る（変換しない） | 後続の repo 呼び出しが無い |
-| 5 | 石が不足 | `…→F→G→E4` | `ErrInsufficientGems` | `ListItems` 以降が呼ばれない |
-| 6 | `ListItems` がエラー | `…→G→H→E5` | repo のエラー | `UpdateUserGems` 以降が呼ばれない |
-| 7 | `items` が空 | `…→H→I→E6` | `ErrNoItemsAvailable` | 同上 |
-| 8 | 全アイテムの `Weight` が 0 | `…→I→J→E7`（`D1→D2→DE`） | `ErrInvalidItemWeights` | 同上 |
+| 1 | `pullCount` が範囲外（0） | `A→B→E1` | `ErrInvalidPullCount` | **`ListItems` も `DoInTx` も呼ばれない** |
+| 2 | `pullCount` が範囲外（上限超え） | `A→B→E1` | `ErrInvalidPullCount` | 同上 |
+| 3 | `ListItems` がエラー | `A→B→H→E2` | repo のエラー | **`DoInTx` が呼ばれない**（行ロックを取らない） |
+| 4 | `items` が空 | `A→B→H→I→E3` | `ErrNoItemsAvailable` | 同上 |
+| 5 | `DoInTx` 自体がエラー | `…→I→C→D→E4` | `DoInTx` のエラーがそのまま返る | `fn` が実行されない（tx 内の repo が一切呼ばれない） |
+| 6 | `GetUserForUpdate` がエラー | `…→D→F→E5` | repo のエラーがそのまま返る（変換しない） | 後続の repo 呼び出しが無い |
+| 7 | 石が不足 | `…→F→G→E6` | `ErrInsufficientGems` | `UpdateUserGems` 以降が呼ばれない |
+| 8 | 全アイテムの `Weight` が 0 | `…→G→J→E7`（`D1→D2→DE`） | `ErrInvalidItemWeights` | 同上 |
 | 9 | `UpdateUserGems` がエラー | `…→J→K→E8` | repo のエラー | `UpsertUserItems` 以降が呼ばれない |
 | 10 | `UpsertUserItems` がエラー | `…→K→L→E9` | repo のエラー | `InsertGachaHistories` が呼ばれない |
 | 11 | `InsertGachaHistories` がエラー | `…→L→M→E10` | repo のエラー | — |

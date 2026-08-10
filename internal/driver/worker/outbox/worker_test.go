@@ -21,12 +21,35 @@ import (
 	mockshared "github.com/uchidas-rogue/game-api-sample/internal/usecase/shared/mock"
 )
 
+// assertReadCommitted は worker が張る tx がすべて READ COMMITTED で開始されることを検証する。
+//
+// 既定の REPEATABLE READ に戻ると ListPending の SELECT ... FOR UPDATE がギャップロックを取り、
+// API 側の InsertOutboxEvent が INSERT_INTENTION 待ちでブロックされる
+// （実測で API の p95 が 108ms → 4.6s に悪化。docs/testing/outbox-worker.md §0）。
+// SKIP LOCKED はレコードロックを飛ばすだけでギャップロックは回避しないため、
+// 分離レベルの明示が唯一の回避手段になる。
+//
+// DoInTx の可変長オプションを gomock.Any() で受けたまま中身を見ないと、
+// worker.go から WithIsolation を削っても全テストが通ってしまう（回帰が素通りする）。
+// 同じ不変条件を持つ outbox GC は internal/driver/batch/outbox_gc_test.go で
+// 同名のヘルパーが担保している。
+//
+// worker goroutine から呼ばれるが、assert 系は t.Errorf 経由で並行呼び出し安全。
+// 呼び出し元は必ず worker の終了を待ってからテストを抜ける。
+func assertReadCommitted(t *testing.T, opts []shared.TxOption) {
+	t.Helper()
+	assert.Equal(t, shared.IsolationReadCommitted, shared.NewTxOptions(opts...).Isolation,
+		"worker の tx は READ COMMITTED で開始すること")
+}
+
 // invokeDoInTx は DoInTx 呼び出しごとに fn(nil) を実行するだけのヘルパー。
 // Worker のメソッドを直接呼ぶ（Run を経由しない）テストで使う。
-func invokeDoInTx(tx *mockshared.MockTransactor) {
+func invokeDoInTx(t *testing.T, tx *mockshared.MockTransactor) {
+	t.Helper()
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, opts ...shared.TxOption) error {
+			assertReadCommitted(t, opts)
 			return fn(nil)
 		}).
 		AnyTimes()
@@ -38,10 +61,12 @@ func invokeDoInTx(tx *mockshared.MockTransactor) {
 // called チャネルの受信数を見て検証する。
 // wall-clock sleep に頼らず「N 回呼ばれるまで待つ」同期点を作るために使う。
 // なお applyRedisAfterCommit は tx の外で走るため、この回数には現れない。
-func invokeDoInTxAndSignal(tx *mockshared.MockTransactor, called chan<- struct{}) {
+func invokeDoInTxAndSignal(t *testing.T, tx *mockshared.MockTransactor, called chan<- struct{}) {
+	t.Helper()
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, opts ...shared.TxOption) error {
+			assertReadCommitted(t, opts)
 			err := fn(nil)
 			called <- struct{}{}
 			return err
@@ -51,10 +76,12 @@ func invokeDoInTxAndSignal(tx *mockshared.MockTransactor, called chan<- struct{}
 
 // invokeDoInTxAndSignalTimes は呼び出し回数を厳密に固定したいケース向けの signal 付きヘルパー。
 // batchSize による打ち切りなど「ちょうど N 回だけ呼ばれる」ことを strict モックで担保したい場合に使う。
-func invokeDoInTxAndSignalTimes(tx *mockshared.MockTransactor, called chan<- struct{}, times int) {
+func invokeDoInTxAndSignalTimes(t *testing.T, tx *mockshared.MockTransactor, called chan<- struct{}, times int) {
+	t.Helper()
 	tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, opts ...shared.TxOption) error {
+			assertReadCommitted(t, opts)
 			err := fn(nil)
 			called <- struct{}{}
 			return err
@@ -220,7 +247,7 @@ func TestWorker_applyBatch_pending無しは即座に終了する(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	runWorkerAndWaitCalls(t, d.newWorker(t, 100), called, 1)
@@ -235,7 +262,7 @@ func TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ば�
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
 		Return([]outboxdomain.Event{newUnknownEvent(99)}, nil)
@@ -256,7 +283,7 @@ func TestWorker_applyBatch_IncrementRetry失敗はログのみ(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
 		Return([]outboxdomain.Event{newUnknownEvent(50)}, nil)
@@ -281,7 +308,7 @@ func TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォール
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	ev := newScoreEvent(t, 1, 1, 10, 100)
 	// Times は既定で1回。フォールバックに落ちれば listCandidates が2回目を呼ぶため失敗する。
@@ -357,7 +384,7 @@ func TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォ
 			ctrl := gomock.NewController(t)
 			d := newDeps(ctrl)
 			called := make(chan struct{}, 16)
-			invokeDoInTxAndSignal(d.tx, called)
+			invokeDoInTxAndSignal(t, d.tx, called)
 
 			ev := newScoreEvent(t, 1, 1, 10, 100)
 			// applyBatch（主経路）と listCandidates（フォールバック）で1回ずつ呼ばれる。
@@ -394,7 +421,7 @@ func TestWorker_applyBatch_デコード不能イベントは除外され個別�
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	ok := newScoreEvent(t, 1, 1, 10, 100)
 	unknownType := outboxdomain.Event{ID: 2, Type: "unknown_event", Payload: []byte("{}"), RetryCount: 3}
@@ -454,7 +481,8 @@ func TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後�
 	committed := make(chan struct{})
 	d.tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, opts ...shared.TxOption) error {
+			assertReadCommitted(t, opts)
 			err := fn(nil)
 			close(committed)
 			called <- struct{}{}
@@ -511,7 +539,7 @@ func TestWorker_applyBatch_同一ギルドは合算され履歴はイベント�
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	// guild=1 に2件、guild=2 に1件。user=10 は guild をまたいで2件。
 	events := []outboxdomain.Event{
@@ -586,7 +614,7 @@ func TestWorker_runOnce_ListPendingエラー(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
 		Return(nil, errors.New("db down")).AnyTimes()
@@ -607,7 +635,8 @@ func TestWorker_runOnce_appliesTickTimeout(t *testing.T) {
 	gotDeadline := make(chan bool, 1)
 	d.tx.EXPECT().
 		DoInTx(gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(ctx context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
+		DoAndReturn(func(ctx context.Context, fn func(shared.Tx) error, opts ...shared.TxOption) error {
+			assertReadCommitted(t, opts)
 			_, ok := ctx.Deadline()
 			select {
 			case gotDeadline <- ok:
@@ -659,7 +688,7 @@ func TestWorker_runOnce_全件前進しなければドレインを打ち切る(t
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	// 取得件数はちょうど batchSize だが、全件デコード不能なので前進件数は 0。
 	d.outboxRepo.EXPECT().
@@ -690,7 +719,7 @@ func TestWorker_runOnce_候補が枯れるまでドレインする(t *testing.T)
 	// 1巡目: ちょうど batchSize 件かつ前進あり → 継続、2巡目: batchSize 未満 → 打ち切り。
 	// Times(2) により3巡目が走らない（＝打ち切っている）ことも担保する。
 	const wantDoInTx = 2
-	invokeDoInTxAndSignalTimes(d.tx, called, wantDoInTx)
+	invokeDoInTxAndSignalTimes(t, d.tx, called, wantDoInTx)
 
 	// 集約結果を決定的にするため全イベントを同一 guild/user にする。
 	ev1, ev2, ev3 := newScoreEvent(t, 1, 1, 1, 10), newScoreEvent(t, 2, 1, 1, 10), newScoreEvent(t, 3, 1, 1, 10)
@@ -733,7 +762,7 @@ func TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替�
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	// 集約結果を決定的にするため同一 guild/user のイベントを2件用意する。
 	ev1 := newScoreEvent(t, 1, 1, 10, 100)
@@ -806,7 +835,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 				pendingEmptyAnyTimes(d.outboxRepo)
 
 				return d.newWorker(t, 100)
@@ -819,7 +848,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 5, 1, 10, 500)
 				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
@@ -840,7 +869,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := newUnknownEvent(99)
 				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
@@ -863,7 +892,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := outboxdomain.Event{
 					ID: 100, Type: outboxdomain.EventTypeRankingScoreAdded, Payload: []byte("{broken"),
@@ -884,7 +913,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := newUnknownEvent(50)
 				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
@@ -903,7 +932,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 7, 1, 10, 500)
 				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
@@ -925,7 +954,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 8, 2, 11, 300)
 				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
@@ -950,7 +979,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 9, 3, 12, 200)
 				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
@@ -976,7 +1005,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 1, 1, 10, 500)
 				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
@@ -1004,7 +1033,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
 				d := newDeps(ctrl)
-				invokeDoInTx(d.tx)
+				invokeDoInTx(t, d.tx)
 
 				poison := newScoreEvent(t, 1, 2, 20, 100)
 				ok := newScoreEvent(t, 2, 3, 21, 200)
@@ -1051,7 +1080,7 @@ func TestWorker_applyPerEvent_フォールバック経路_ListPendingエラー(t
 
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
-	invokeDoInTx(d.tx)
+	invokeDoInTx(t, d.tx)
 
 	errDB := errors.New("db down")
 	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).Return(nil, errDB)
@@ -1072,7 +1101,7 @@ func TestWorker_applyPerEvent_フォールバック経路_ClaimByIDエラー(t *
 
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
-	invokeDoInTx(d.tx)
+	invokeDoInTx(t, d.tx)
 
 	ev := newScoreEvent(t, 42, 1, 1, 100)
 	errClaim := errors.New("claim db down")
@@ -1097,7 +1126,7 @@ func TestWorker_applyPerEvent_フォールバック経路_MarkProcessedエラー
 
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
-	invokeDoInTx(d.tx)
+	invokeDoInTx(t, d.tx)
 
 	ev1 := newScoreEvent(t, 42, 1, 1, 100)
 	ev2 := newScoreEvent(t, 43, 2, 2, 200)
@@ -1135,7 +1164,7 @@ func TestWorker_applyPerEvent_フォールバック経路_並列処理(t *testin
 
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
-	invokeDoInTx(d.tx)
+	invokeDoInTx(t, d.tx)
 
 	events := make([]outboxdomain.Event, 0, batchSize)
 	for id := uint64(1); id <= batchSize; id++ {
@@ -1173,7 +1202,7 @@ func TestWorker_applyPerEvent_フォールバック経路_claim不可はスキ�
 
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
-	invokeDoInTx(d.tx)
+	invokeDoInTx(t, d.tx)
 
 	ev1 := newScoreEvent(t, 1, 1, 1, 10)
 	ev2 := newScoreEvent(t, 2, 1, 1, 10)
@@ -1211,7 +1240,7 @@ func TestWorker_Run_Subscribe_failure(t *testing.T) {
 
 	sub.EXPECT().Subscribe(gomock.Any()).Return(nil, errors.New("subscribe failed"))
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	w := workeroutbox.New(workeroutbox.Config{
@@ -1236,7 +1265,7 @@ func TestWorker_Run_notify_channel_closed(t *testing.T) {
 	sub.EXPECT().Subscribe(gomock.Any()).Return((<-chan struct{})(notifyCh), nil)
 
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	w := workeroutbox.New(workeroutbox.Config{
@@ -1263,7 +1292,7 @@ func TestWorker_Run_notify_triggered(t *testing.T) {
 	sub.EXPECT().Subscribe(gomock.Any()).Return((<-chan struct{})(notifyCh), nil)
 
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	w := workeroutbox.New(workeroutbox.Config{
@@ -1283,7 +1312,7 @@ func TestWorker_Run_ticker_driven(t *testing.T) {
 	d := newDeps(ctrl)
 
 	called := make(chan struct{}, 16)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1344,7 +1373,7 @@ func TestWorker_Run_ティック処理の失敗はループを止めない(t *te
 			tx := mockshared.NewMockTransactor(ctrl)
 
 			called := make(chan struct{}, 16)
-			invokeDoInTxAndSignal(tx, called)
+			invokeDoInTxAndSignal(t, tx, called)
 			// 毎ティック失敗させる。Run はエラーを返さずログのみで継続するはず。
 			repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
 				Return(nil, errors.New("db down")).
@@ -1404,9 +1433,12 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 
 	// stalledDeps は「取得件数 = batchSize かつ全件デコード不能」を返す依存一式を作る。
 	// 1ドレインあたり DoInTx は「バッチ tx 1 + retry 記録 tx 1」= 2 回。
-	stalledDeps := func(ctrl *gomock.Controller, called chan struct{}, listTimes int) deps {
+	// t は呼び出し元のサブテストのものを受け取る（外側の t を閉じ込めると、
+	// 分離レベル検証の失敗が親テストに紐づいてしまうため）。
+	stalledDeps := func(t *testing.T, ctrl *gomock.Controller, called chan struct{}, listTimes int) deps {
+		t.Helper()
 		d := newDeps(ctrl)
-		invokeDoInTxAndSignal(d.tx, called)
+		invokeDoInTxAndSignal(t, d.tx, called)
 		ev := newUnknownEvent(1)
 		list := d.outboxRepo.EXPECT().
 			ListPending(gomock.Any(), gomock.Any(), int32(1)).
@@ -1431,7 +1463,7 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 		called := make(chan struct{}, 16)
 		// ListPending はちょうど1回（初回ドレイン）だけ。通知で再入すれば2回目が発生し、
 		// strict モックが未設定呼び出しとして検知する。
-		d := stalledDeps(ctrl, called, 1)
+		d := stalledDeps(t, ctrl, called, 1)
 
 		notifyCh := make(chan struct{}, 1)
 		sub := mockoutbox.NewMockSubscriber(ctrl)
@@ -1471,7 +1503,7 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 
 		ctrl := gomock.NewController(t)
 		called := make(chan struct{}, 64)
-		d := stalledDeps(ctrl, called, 0)
+		d := stalledDeps(t, ctrl, called, 0)
 
 		w := workeroutbox.New(workeroutbox.Config{
 			Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
@@ -1500,7 +1532,7 @@ func TestWorker_drainNow_ティック期限切れ後も自走する(t *testing.T
 	ctrl := gomock.NewController(t)
 	d := newDeps(ctrl)
 	called := make(chan struct{}, 64)
-	invokeDoInTxAndSignal(d.tx, called)
+	invokeDoInTxAndSignal(t, d.tx, called)
 
 	ev := newScoreEvent(t, 1, 1, 1, 10)
 

@@ -35,6 +35,9 @@
 - マジックナンバー禁止: ビジネス上の状態コードや業務固定値は `domain` 層で `const` 定義する。各層固有の定数はその層で定義してよい
 - Context 伝播: batch/worker などバックグラウンドジョブのエントリポイントを除き、リクエストスコープ内で `context.Background()`/`context.TODO()` を生成しない
 - インターフェース実装検証: 実装型の定義直前に `var _ Iface = (*Type)(nil)` を記述する（値レシーバのみは `Type{}` 可）
+- HTTP ミドルウェアの登録順: 観測系（`RequestID` → アクセスログ）を**先頭**に登録し、リクエストを短絡しうるミドルウェア（ボディ上限・認証・レート制限等）は必ずその**後ろ**に置く。前に置くと、弾いたリクエストがアクセスログにも request_id にも残らず、拒否されている事実を運用側から観測できなくなる
+  - `echo.Echo.Pre` は使わない。`Pre` はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う
+  - 判定: 登録順は `TestNew_MiddlewareOrder`（`New` の AST を検査）、`Pre` の不使用は `.golangci.yml` の ruleguard が強制する
 - 時刻: `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
   - 現時点で Clock インターフェースの実装は存在しない（`time.Now()` を使う機能がまだ無いため）。時刻依存の機能を追加する際に、`usecase` 層へ interface を定義し `infrastructure` 層に実装を置いて DI する
     <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal cmd configs --include=*.go --exclude=*_test.go -->

@@ -44,15 +44,36 @@ func (q *Queries) ClaimPendingOutboxEventByID(ctx context.Context, id uint64) (C
 	return i, err
 }
 
-const deleteProcessedOutboxEventsBefore = `-- name: DeleteProcessedOutboxEventsBefore :exec
+const deleteProcessedOutboxEventsBefore = `-- name: DeleteProcessedOutboxEventsBefore :execrows
 DELETE FROM outbox_events
 WHERE processed_at IS NOT NULL
-  AND processed_at < ?
+  AND processed_at < NOW(6) - INTERVAL ? SECOND
+ORDER BY processed_at
+LIMIT ?
 `
 
-func (q *Queries) DeleteProcessedOutboxEventsBefore(ctx context.Context, processedAt sql.NullTime) error {
-	_, err := q.db.ExecContext(ctx, deleteProcessedOutboxEventsBefore, processedAt)
-	return err
+type DeleteProcessedOutboxEventsBeforeParams struct {
+	RetentionSeconds interface{}
+	Limit            int32
+}
+
+// 処理済みイベントのうち、保持期間（秒）より古いものを最大 LIMIT 件削除する。
+//
+// 基準時刻は Go 側から渡さず SQL 側の NOW(6) で取る。アプリ側で現在時刻を取得すると
+// AGENTS.md §2 の Clock DI 規約に抵触し、時刻依存でテストが不安定になるため。
+//
+// LIMIT で分割するのは、1文で全削除すると undo ログとロック保持が肥大して
+// 同じテーブルへの INSERT（リクエスト経路の outbox 記録）を阻害するため。
+// ORDER BY を idx_outbox_events_pending の先頭列に合わせ、古い順に消していく。
+//
+// processed_at IS NULL（未処理）は対象外。恒久失敗イベントの始末は
+// max retry / DLQ の責務であり、GC が消すとイベントが黙って失われる。
+func (q *Queries) DeleteProcessedOutboxEventsBefore(ctx context.Context, arg DeleteProcessedOutboxEventsBeforeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteProcessedOutboxEventsBefore, arg.RetentionSeconds, arg.Limit)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const incrementOutboxEventRetry = `-- name: IncrementOutboxEventRetry :exec

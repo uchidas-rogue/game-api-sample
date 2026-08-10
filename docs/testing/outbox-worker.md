@@ -339,6 +339,12 @@ flowchart TD
 
 ## 4. 未対応（本実装の範囲外）
 
+### 処理済みレコードの削除 — GC バッチへ分離
+
+worker は `processed_at` を立てるだけで行を消さない。保持期間を過ぎた処理済み行の削除は
+GC バッチ（`cmd/batch -gc-outbox`）の責務で、設計は [outbox-gc.md](outbox-gc.md) にある。
+worker 側の設計には影響しないため、本ファイルではこれ以上扱わない。
+
 ### 【要対応】ポイズンメッセージ — max retry / DLQ（優先度: 高）
 
 §2-2 の表のケース 4 で明らかになったとおり、**payload が壊れたイベントは `IncrementRetry` され

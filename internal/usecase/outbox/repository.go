@@ -5,6 +5,7 @@ package outbox
 
 import (
 	"context"
+	"time"
 
 	outboxdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/outbox"
 	"github.com/uchidas-rogue/game-api-sample/internal/usecase/shared"
@@ -38,4 +39,14 @@ type Repository interface {
 
 	// IncrementRetry は失敗時のリトライ回数を加算し、エラーメッセージを記録する。
 	IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error
+
+	// DeleteProcessedBefore は処理済みイベントのうち retention より古いものを
+	// 最大 limit 件削除し、削除件数を返す。未処理イベントは対象にしない。
+	//
+	// 基準時刻ではなく保持期間を受け取るのは、実装が SQL 側の NOW() を使い
+	// アプリ側で現在時刻を取得しないようにするため（AGENTS.md §2 の Clock 規約）。
+	// limit で分割するのは、1文で全削除すると undo ログとロック保持が肥大し、
+	// リクエスト経路の InsertEvent を阻害するため。呼び出し側は
+	// 「削除件数 < limit」になるまで繰り返す。
+	DeleteProcessedBefore(ctx context.Context, tx shared.Tx, retention time.Duration, limit int32) (deleted int64, err error)
 }

@@ -1,6 +1,6 @@
 # データベース系（sqlc 生成 / マイグレーション / スキーマダンプ）
 
-.PHONY: db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/cli db/schema/dump tools/sqlc db/gen/check
+.PHONY: db/sqlc/gen db/migrate/up db/migrate/down db/migrate/new db/cli db/schema/dump tools/sqlc db/gen/check db/outbox/gc
 
 # sqlc のバージョンは .sqlc-version 単一箇所で管理する（ローカルと CI の等価性のため）。
 # 固定しないと、各自の PATH 上のバージョン差がそのまま生成物の差になり、
@@ -76,3 +76,7 @@ db/gen/check:
 		exit 1; \
 	fi; \
 	echo "DB 生成物は最新です。"
+
+## 処理済み outbox イベントの削除（保持期間は OUTBOX_RETENTION、既定 72h）
+db/outbox/gc:
+	go run ./cmd/batch -gc-outbox
