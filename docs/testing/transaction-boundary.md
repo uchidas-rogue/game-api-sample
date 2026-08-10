@@ -42,6 +42,7 @@
 | 利用箇所 | 分離レベル | 理由 |
 | --- | --- | --- |
 | outbox worker の全 tx | READ COMMITTED | REPEATABLE READ だと `ListPending` の `SELECT ... FOR UPDATE` がギャップロックを取り、API 側の outbox INSERT を `INSERT_INTENTION` 待ちでブロックする（[outbox-worker.md](outbox-worker.md)）。worker は同一 tx 内の読み取り一貫性に依存しない |
+| outbox GC の全 tx | READ COMMITTED | 同じギャップを反対側から掴む。新規 INSERT は `idx_outbox_events_pending` の NULL ブロック末尾に着地し、GC の `processed_at IS NOT NULL` はその直後のレコードから走査を始めるため、REPEATABLE READ では最初の next-key ロックが着地点のギャップを含む（[outbox-gc.md](outbox-gc.md)）。GC もスナップショット一貫性に依存しない |
 | `RankingSyncer` | 既定（REPEATABLE READ） | `guild_scores` と `user_points` のスナップショットが互いに整合している必要がある（[ranking-sync-batch.md](ranking-sync-batch.md)） |
 | API リクエスト経路 | 既定 | 明示が必要な事情が無い |
 

@@ -66,7 +66,10 @@ func main() {
 	// Echoインスタンス生成 + DI解決 + ルーティング登録
 	e := server.New(log)
 	container := di.Build(db, redisClient, log)
-	router.Register(e, container.Handlers)
+	if err := router.Register(e, container.Handlers); err != nil {
+		log.Error("failed to register routes", slog.Any("error", err))
+		os.Exit(1)
+	}
 
 	// サーバ起動（ctxキャンセルでグレースフルシャットダウン）
 	if err := server.Run(ctx, e, cfg.Port, log); err != nil {

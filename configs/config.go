@@ -45,7 +45,12 @@ const (
 	// （実測 約400 events/sec）では1日あたり約3,400万行が積み上がるため、
 	// 長くしすぎるとテーブルが肥大する。
 	defaultOutboxRetention = 72 * time.Hour
-	envOutboxTickTimeout   = "OUTBOX_TICK_TIMEOUT"
+	// minOutboxRetention は保持期間の下限。
+	// GC の SQL は INTERVAL ? SECOND で比較するため、repository が保持期間を秒へ落とす際に
+	// 1秒未満はゼロ方向に切り捨てられる。`500ms` を許すと INTERVAL 0 SECOND となり、
+	// 経過時間に関係なく処理済みイベントを全削除してしまう（復旧不能）。
+	minOutboxRetention   = time.Second
+	envOutboxTickTimeout = "OUTBOX_TICK_TIMEOUT"
 	// defaultOutboxTickTimeout は1ティック（runOnce）の処理時間上限。
 	// DB/Redis のブロッキングで worker のループがハングするのを防ぐ。
 	defaultOutboxTickTimeout = 30 * time.Second
@@ -179,8 +184,8 @@ func Load() (*Config, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid %s %q: %w", envOutboxRetention, v, err)
 		}
-		if parsed <= 0 {
-			return nil, fmt.Errorf("invalid %s: must be positive", envOutboxRetention)
+		if parsed < minOutboxRetention {
+			return nil, fmt.Errorf("invalid %s: must be >= %s", envOutboxRetention, minOutboxRetention)
 		}
 		retention = parsed
 	}

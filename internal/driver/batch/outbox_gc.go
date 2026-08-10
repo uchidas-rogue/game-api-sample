@@ -31,6 +31,7 @@ const outboxGCChunkSize = 1000
 //     （AGENTS.md §2 の Clock 規約）ため、repository には時刻ではなく保持期間を渡す。
 //   - 未処理イベント（processed_at IS NULL）は削除しない。恒久失敗イベントの始末は
 //     max retry / DLQ の責務であり、ここで消すとイベントが黙って失われる。
+//   - トランザクションは READ COMMITTED で開始する（理由は Run のコメント）。
 type OutboxGC struct {
 	repo      outboxusecase.Repository
 	tx        shared.Transactor
@@ -55,6 +56,16 @@ func NewOutboxGC(
 
 // Run は保持期間を過ぎた処理済みイベントを、対象が尽きるまでチャンク単位で削除する。
 // 途中で失敗した場合はその時点で打ち切ってエラーを返す（残りは次回の実行で消せる）。
+//
+// 各チャンクのトランザクションは READ COMMITTED で開始する。
+// idx_outbox_events_pending は (processed_at, id) で、NULL がインデックス先頭に並ぶ。
+// 新規 INSERT は processed_at = NULL かつ id 最大なので「NULL ブロックの末尾」、
+// すなわち最初の非 NULL レコードの直前のギャップに着地する。一方 DELETE の
+// processed_at IS NOT NULL 条件はその非 NULL レコードから走査を始めるため、
+// 既定の REPEATABLE READ では最初の next-key ロックが同じギャップを掴み、
+// API 側の InsertOutboxEvent を INSERT_INTENTION 待ちでブロックする。
+// outbox worker が RC で回っているのと同じ理由（docs/testing/transaction-boundary.md）。
+// GC は同一トランザクション内の読み取り一貫性に依存しないため RC で問題ない。
 func (g *OutboxGC) Run(ctx context.Context) error {
 	g.logger.InfoContext(ctx, "starting outbox gc",
 		slog.Duration("retention", g.retention),
@@ -71,7 +82,7 @@ func (g *OutboxGC) Run(ctx context.Context) error {
 			}
 			deleted = d
 			return nil
-		}); err != nil {
+		}, shared.WithIsolation(shared.IsolationReadCommitted)); err != nil {
 			return fmt.Errorf("outbox gc tx (deleted=%d): %w", total, err)
 		}
 		total += deleted

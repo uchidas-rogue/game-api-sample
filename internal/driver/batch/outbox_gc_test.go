@@ -148,13 +148,19 @@ func expectGCCalls(
 
 	// B: トランザクション境界
 	if tc.failAt == gcStepBeginTx {
-		tx.EXPECT().DoInTx(gomock.Any(), gomock.Any()).Return(errDB)
+		tx.EXPECT().
+			DoInTx(gomock.Any(), gomock.Any(), gomock.Any()).
+			DoAndReturn(func(_ context.Context, _ func(shared.Tx) error, opts ...shared.TxOption) error {
+				assertReadCommitted(t, opts)
+				return errDB
+			})
 		return &calls
 	}
 	// チャンクごとに1回ずつ境界に入る。
 	tx.EXPECT().
-		DoInTx(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error {
+		DoInTx(gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, opts ...shared.TxOption) error {
+			assertReadCommitted(t, opts)
 			return fn(nil)
 		}).
 		Times(chunkCount(tc))
@@ -179,6 +185,15 @@ func expectGCCalls(
 			})
 	}
 	return &calls
+}
+
+// assertReadCommitted は全チャンクの境界が READ COMMITTED で開かれることを検証する。
+// 既定の REPEATABLE READ に戻ると idx_outbox_events_pending のギャップロックで
+// API 側の outbox INSERT を止めるため、性能上の必須条件（outbox_gc.go の Run 参照）。
+func assertReadCommitted(t *testing.T, opts []shared.TxOption) {
+	t.Helper()
+	assert.Equal(t, shared.IsolationReadCommitted, shared.NewTxOptions(opts...).Isolation,
+		"GC の tx は READ COMMITTED で開始すること")
 }
 
 // chunkCount は台本から DoInTx が呼ばれる回数を求める。
