@@ -24,11 +24,6 @@ func IsValidScore(score int64) bool {
 	return score >= MinScore && score <= MaxScore
 }
 
-// IsValidLimit はlimitパラメータが有効範囲内かを判定する。
-func IsValidLimit(limit int) bool {
-	return limit >= MinRankingLimit && limit <= MaxRankingLimit
-}
-
 // NormalizeLimit はlimitを有効範囲に正規化する。
 func NormalizeLimit(limit int) int {
 	if limit < MinRankingLimit {

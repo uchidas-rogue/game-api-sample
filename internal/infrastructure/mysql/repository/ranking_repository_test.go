@@ -460,7 +460,18 @@ func TestRankingRepository_ListGuildsByIDs(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Len(t, got, tt.wantCount)
+			require.Len(t, got, tt.wantCount)
+			// 件数だけでは sqlc 型 → domain 型のフィールド取り違え（Name の欠落等）を
+			// 検出できない（testing-principles.md §10）。この変換を検証できるのは
+			// infrastructure 層のここだけなので、要素の中身まで突合する。
+			for _, want := range tt.stubGuilds {
+				g, ok := got[want.ID]
+				require.Truef(t, ok, "guild_id=%d がキーとして存在すること", want.ID)
+				assert.Equal(t, want.ID, g.ID)
+				assert.Equal(t, want.Name, g.Name)
+				assert.Equal(t, want.CreatedAt.Time, g.CreatedAt)
+				assert.Equal(t, want.UpdatedAt.Time, g.UpdatedAt)
+			}
 		})
 	}
 }
@@ -515,7 +526,14 @@ func TestRankingRepository_ListAllGuildScores(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Len(t, got, tt.wantCount)
+			require.Len(t, got, tt.wantCount)
+			// 添字を揃えて突合することで、フィールドの取り違えに加えて
+			// SQL の ORDER BY 由来の並びが崩れる不具合も検出する（§10）。
+			for i, want := range tt.stubScores {
+				assert.Equal(t, want.GuildID, got[i].GuildID, "%d 件目", i+1)
+				assert.Equal(t, want.Score, got[i].Score, "%d 件目", i+1)
+				assert.Equal(t, want.UpdatedAt.Time, got[i].UpdatedAt, "%d 件目", i+1)
+			}
 		})
 	}
 }
@@ -761,7 +779,14 @@ func TestRankingRepository_ListAllUserPoints(t *testing.T) {
 				return
 			}
 			require.NoError(t, err)
-			assert.Len(t, got, tt.wantCount)
+			require.Len(t, got, tt.wantCount)
+			// ListAllGuildScores と同じ理由で添字を揃えて突合する（§10）。
+			// 対になる2メソッドで検証の厚みを揃える（§8 対称性チェック）。
+			for i, want := range tt.stubPoints {
+				assert.Equal(t, want.UserID, got[i].UserID, "%d 件目", i+1)
+				assert.Equal(t, want.Points, got[i].Points, "%d 件目", i+1)
+				assert.Equal(t, want.UpdatedAt.Time, got[i].UpdatedAt, "%d 件目", i+1)
+			}
 		})
 	}
 }

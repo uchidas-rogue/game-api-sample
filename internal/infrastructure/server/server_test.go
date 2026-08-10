@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -39,11 +38,11 @@ func parseLogLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
 	dec := json.NewDecoder(bytes.NewReader(buf.Bytes()))
 	for {
 		var m map[string]any
-		if err := dec.Decode(&m); errors.Is(err, nil) {
-			result = append(result, m)
-		} else {
+		// 末尾に到達すると io.EOF が返る。デコードできた行だけを積む。
+		if err := dec.Decode(&m); err != nil {
 			break
 		}
+		result = append(result, m)
 	}
 	return result
 }

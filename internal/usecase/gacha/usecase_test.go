@@ -395,7 +395,7 @@ func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で渡され�
 		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error { return fn(nil) })
 	repo.EXPECT().GetUserForUpdate(gomock.Any(), gomock.Any(), testUserID).
 		Return(gachadomain.User{ID: testUserID, GemNum: gems}, nil)
-	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
+	repo.EXPECT().ListItems(gomock.Any(), nil).Return(items, nil)
 	repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), testUserID, gems-gachadomain.GemCostFor(pullCount)).Return(nil)
 
 	// 抽選順は ID 2 → ID 1 だが、upsert の行は ID 1 → ID 2 の昇順でなければならない。
@@ -435,7 +435,7 @@ func TestNewUsecase_Randomizerがnilなら既定実装を使う(t *testing.T) {
 		DoAndReturn(func(_ context.Context, fn func(shared.Tx) error, _ ...shared.TxOption) error { return fn(nil) })
 	repo.EXPECT().GetUserForUpdate(gomock.Any(), gomock.Any(), testUserID).
 		Return(gachadomain.User{ID: testUserID, GemNum: gems}, nil)
-	repo.EXPECT().ListItems(gomock.Any(), gomock.Any()).Return(items, nil)
+	repo.EXPECT().ListItems(gomock.Any(), nil).Return(items, nil)
 	repo.EXPECT().UpdateUserGems(gomock.Any(), gomock.Any(), testUserID, gems-gachadomain.GemCostFor(pullCount)).Return(nil)
 	// 当選内訳は乱数依存なので、bulk 呼び出しの中身までは期待しない。
 	repo.EXPECT().UpsertUserItems(gomock.Any(), gomock.Any(), testUserID, gomock.Any()).Return(nil)
