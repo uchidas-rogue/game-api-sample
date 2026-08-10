@@ -44,9 +44,9 @@ func (m *MockRepository) EXPECT() *MockRepositoryMockRecorder {
 }
 
 // ClaimByID mocks base method.
-func (m *MockRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64) (outbox.Event, bool, error) {
+func (m *MockRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64, maxRetry uint32) (outbox.Event, bool, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ClaimByID", ctx, tx, id)
+	ret := m.ctrl.Call(m, "ClaimByID", ctx, tx, id, maxRetry)
 	ret0, _ := ret[0].(outbox.Event)
 	ret1, _ := ret[1].(bool)
 	ret2, _ := ret[2].(error)
@@ -54,9 +54,9 @@ func (m *MockRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64)
 }
 
 // ClaimByID indicates an expected call of ClaimByID.
-func (mr *MockRepositoryMockRecorder) ClaimByID(ctx, tx, id any) *gomock.Call {
+func (mr *MockRepositoryMockRecorder) ClaimByID(ctx, tx, id, maxRetry any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimByID", reflect.TypeOf((*MockRepository)(nil).ClaimByID), ctx, tx, id)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimByID", reflect.TypeOf((*MockRepository)(nil).ClaimByID), ctx, tx, id, maxRetry)
 }
 
 // DeleteProcessedBefore mocks base method.
@@ -104,18 +104,18 @@ func (mr *MockRepositoryMockRecorder) InsertEvent(ctx, tx, eventType, payload an
 }
 
 // ListPending mocks base method.
-func (m *MockRepository) ListPending(ctx context.Context, tx shared.Tx, limit int32) ([]outbox.Event, error) {
+func (m *MockRepository) ListPending(ctx context.Context, tx shared.Tx, limit int32, maxRetry uint32) ([]outbox.Event, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListPending", ctx, tx, limit)
+	ret := m.ctrl.Call(m, "ListPending", ctx, tx, limit, maxRetry)
 	ret0, _ := ret[0].([]outbox.Event)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ListPending indicates an expected call of ListPending.
-func (mr *MockRepositoryMockRecorder) ListPending(ctx, tx, limit any) *gomock.Call {
+func (mr *MockRepositoryMockRecorder) ListPending(ctx, tx, limit, maxRetry any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListPending", reflect.TypeOf((*MockRepository)(nil).ListPending), ctx, tx, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListPending", reflect.TypeOf((*MockRepository)(nil).ListPending), ctx, tx, limit, maxRetry)
 }
 
 // MarkProcessed mocks base method.

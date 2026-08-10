@@ -48,12 +48,16 @@ func (r *OutboxRepository) InsertEvent(ctx context.Context, tx shared.Tx, eventT
 }
 
 // ListPending は未処理イベントを古い順に取得する（FOR UPDATE SKIP LOCKED）。
-func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit int32) ([]outboxdomain.Event, error) {
+// retry_count が maxRetry に達したイベントは候補に含めない。
+func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit int32, maxRetry uint32) ([]outboxdomain.Event, error) {
 	q, err := r.querier(tx)
 	if err != nil {
 		return nil, fmt.Errorf("ListPending: %w", err)
 	}
-	rows, err := q.ListPendingOutboxEvents(ctx, limit)
+	rows, err := q.ListPendingOutboxEvents(ctx, sqlc.ListPendingOutboxEventsParams{
+		MaxRetry: maxRetry,
+		Limit:    limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list pending outbox events: %w", err)
 	}
@@ -70,13 +74,17 @@ func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit 
 }
 
 // ClaimByID は指定 ID の未処理イベントを FOR UPDATE SKIP LOCKED で確保する。
-// 該当なし（処理済み or 他 worker がロック中 = sql.ErrNoRows）は found=false を返し、エラーにはしない。
-func (r *OutboxRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64) (outboxdomain.Event, bool, error) {
+// 該当なし（処理済み / 他 worker がロック中 / retry 上限到達 = sql.ErrNoRows）は
+// found=false を返し、エラーにはしない。
+func (r *OutboxRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64, maxRetry uint32) (outboxdomain.Event, bool, error) {
 	q, err := r.querier(tx)
 	if err != nil {
 		return outboxdomain.Event{}, false, fmt.Errorf("ClaimByID: %w", err)
 	}
-	row, err := q.ClaimPendingOutboxEventByID(ctx, id)
+	row, err := q.ClaimPendingOutboxEventByID(ctx, sqlc.ClaimPendingOutboxEventByIDParams{
+		ID:       id,
+		MaxRetry: maxRetry,
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return outboxdomain.Event{}, false, nil

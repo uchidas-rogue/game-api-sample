@@ -42,18 +42,18 @@ func (m *MockQuerier) EXPECT() *MockQuerierMockRecorder {
 }
 
 // ClaimPendingOutboxEventByID mocks base method.
-func (m *MockQuerier) ClaimPendingOutboxEventByID(ctx context.Context, id uint64) (sqlc.ClaimPendingOutboxEventByIDRow, error) {
+func (m *MockQuerier) ClaimPendingOutboxEventByID(ctx context.Context, arg sqlc.ClaimPendingOutboxEventByIDParams) (sqlc.ClaimPendingOutboxEventByIDRow, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ClaimPendingOutboxEventByID", ctx, id)
+	ret := m.ctrl.Call(m, "ClaimPendingOutboxEventByID", ctx, arg)
 	ret0, _ := ret[0].(sqlc.ClaimPendingOutboxEventByIDRow)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ClaimPendingOutboxEventByID indicates an expected call of ClaimPendingOutboxEventByID.
-func (mr *MockQuerierMockRecorder) ClaimPendingOutboxEventByID(ctx, id any) *gomock.Call {
+func (mr *MockQuerierMockRecorder) ClaimPendingOutboxEventByID(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimPendingOutboxEventByID", reflect.TypeOf((*MockQuerier)(nil).ClaimPendingOutboxEventByID), ctx, id)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ClaimPendingOutboxEventByID", reflect.TypeOf((*MockQuerier)(nil).ClaimPendingOutboxEventByID), ctx, arg)
 }
 
 // DeleteProcessedOutboxEventsBefore mocks base method.
@@ -292,18 +292,18 @@ func (mr *MockQuerierMockRecorder) ListItems(ctx any) *gomock.Call {
 }
 
 // ListPendingOutboxEvents mocks base method.
-func (m *MockQuerier) ListPendingOutboxEvents(ctx context.Context, limit int32) ([]sqlc.ListPendingOutboxEventsRow, error) {
+func (m *MockQuerier) ListPendingOutboxEvents(ctx context.Context, arg sqlc.ListPendingOutboxEventsParams) ([]sqlc.ListPendingOutboxEventsRow, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "ListPendingOutboxEvents", ctx, limit)
+	ret := m.ctrl.Call(m, "ListPendingOutboxEvents", ctx, arg)
 	ret0, _ := ret[0].([]sqlc.ListPendingOutboxEventsRow)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // ListPendingOutboxEvents indicates an expected call of ListPendingOutboxEvents.
-func (mr *MockQuerierMockRecorder) ListPendingOutboxEvents(ctx, limit any) *gomock.Call {
+func (mr *MockQuerierMockRecorder) ListPendingOutboxEvents(ctx, arg any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListPendingOutboxEvents", reflect.TypeOf((*MockQuerier)(nil).ListPendingOutboxEvents), ctx, limit)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ListPendingOutboxEvents", reflect.TypeOf((*MockQuerier)(nil).ListPendingOutboxEvents), ctx, arg)
 }
 
 // ListUsersByIDs mocks base method.

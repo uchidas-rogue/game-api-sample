@@ -4,9 +4,19 @@ VALUES (?, ?);
 
 -- name: ListPendingOutboxEvents :many
 -- 複数 worker をスケールアウトしたときの競合回避で skip locked を付与する。
+--
+-- retry_count が上限に達したイベント（poison）は候補から外す。除外しないと、
+-- 決して成功しないイベントが窓の先頭を占め続けて後続が永久に処理されない
+-- （head-of-line blocking）。詳細は docs/testing/outbox-worker.md §0-4。
+--
+-- インデックスは idx_outbox_events_pending (processed_at, id) のまま使い、
+-- retry_count は index に足さない。足すと ORDER BY id の順序走査が崩れ、
+-- 「古い順に処理する」ために別途ソートが必要になる。除外対象は例外的に少ない前提で、
+-- index で絞った行に対する後段フィルタとして評価させる。
 SELECT id, event_type, payload, retry_count
 FROM outbox_events
 WHERE processed_at IS NULL
+  AND retry_count < sqlc.arg(max_retry)
 ORDER BY id ASC
 LIMIT ?
 FOR UPDATE SKIP LOCKED;
@@ -17,10 +27,15 @@ FOR UPDATE SKIP LOCKED;
 -- MarkProcessed を同一 tx でコミットして exactly-once を担保する。
 -- ID 指定にすることで、先頭イベントが恒久失敗しても後続を処理でき（head-of-line blocking 回避）、
 -- SKIP LOCKED と processed_at IS NULL 条件により複数 worker が同一イベントを二重処理しない。
--- 既に処理済み or 他 worker がロック中は sql.ErrNoRows（該当なし）。
+-- 既に処理済み or 他 worker がロック中 or retry 上限到達は sql.ErrNoRows（該当なし）。
+--
+-- retry_count の条件を ListPending と揃えるのは、候補取得と claim のあいだに別 worker が
+-- 上限へ到達させた場合に打ち切り済みイベントを掴まないようにするため。
 SELECT id, event_type, payload, retry_count
 FROM outbox_events
-WHERE id = ? AND processed_at IS NULL
+WHERE id = ?
+  AND processed_at IS NULL
+  AND retry_count < sqlc.arg(max_retry)
 FOR UPDATE SKIP LOCKED;
 
 -- name: MarkOutboxEventProcessed :exec

@@ -21,13 +21,21 @@ type Repository interface {
 
 	// ListPending は未処理イベントを古い順に候補として取得する。worker はこの候補を1件ずつ
 	// ClaimByID で確保して処理する。tx 内で行をロックしつつ取得するため tx は必須。
-	ListPending(ctx context.Context, tx shared.Tx, limit int32) ([]outboxdomain.Event, error)
+	//
+	// maxRetry は失敗許容回数の上限で、retry_count がこれに達したイベントは候補に含めない。
+	// 決して成功しないイベント（poison）が窓の先頭を占め続けるのを防ぐため
+	// （docs/testing/outbox-worker.md §0-4）。方針は設定値なので repository には持たせず、
+	// DeleteProcessedBefore の retention と同じく引数で受け取る。
+	ListPending(ctx context.Context, tx shared.Tx, limit int32, maxRetry uint32) ([]outboxdomain.Event, error)
 
 	// ClaimByID は指定 ID の未処理イベントを FOR UPDATE SKIP LOCKED で確保する。
 	// worker はイベント単位トランザクションで処理するため本メソッドで1件ずつロックする。
-	// 該当なし（処理済み or 他 worker がロック中）は found=false（エラーにしない）。
+	// 該当なし（処理済み / 他 worker がロック中 / retry 上限到達）は found=false（エラーにしない）。
 	// ID 指定にすることで先頭イベントの恒久失敗が後続を止めない（head-of-line blocking 回避）。
-	ClaimByID(ctx context.Context, tx shared.Tx, id uint64) (event outboxdomain.Event, found bool, err error)
+	//
+	// maxRetry の意味は ListPending と同じ。候補取得と claim のあいだに別 worker が
+	// 上限へ到達させた場合に、打ち切り済みイベントを掴まないよう条件を揃える。
+	ClaimByID(ctx context.Context, tx shared.Tx, id uint64, maxRetry uint32) (event outboxdomain.Event, found bool, err error)
 
 	// MarkProcessed は指定 ID のイベントを処理済みにマークする。
 	MarkProcessed(ctx context.Context, tx shared.Tx, id uint64) error
