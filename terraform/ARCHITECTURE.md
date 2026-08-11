@@ -266,9 +266,14 @@ boundary の `DenyCreateWithoutBoundary` は「boundary を継承しない `iam:
 
 ```bash
 make tf/init
-terraform -chdir=terraform/environments/dev apply -target=aws_iam_role.<新規ロール>
+# -target にはルートから見た完全なリソースアドレスを渡す（モジュール内のリソースは module.<モジュール名>. を前置する）
+terraform -chdir=terraform/environments/dev apply -target=module.<モジュール名>.aws_iam_role.<新規ロール>
 # 以降は CI の apply が通常どおり流れる
 ```
+
+**適用されるのは環境が構築済みの場合だけ。** state が空（未構築 or destroy 済み）の状態では、そもそも CI が assume する OIDC provider と `tf_plan` / `tf_apply` ロール自体が存在せず CI は動かない。この場合は `-target` を使わず、初回のフル apply（`terraform -chdir=terraform/environments/dev apply`）を人手で回す。その中で全 IAM ロールがまとめて作られ、以降が本ルールの対象になる。
+
+`module.` の前置を忘れて `-target=aws_iam_role.<新規ロール>` と書くと、ルートモジュールに該当リソースが無いため **何も作らずに正常終了する**（`Warning: Resource targeting is in effect` と「変更なし」が出るだけでエラーにならない）。適用後は `terraform plan` で当該ロールの差分が消えたことを必ず確認する。アドレスは `terraform -chdir=terraform/environments/dev state list | grep iam_role` で確認できる。
 
 **boundary ARN を `compute_ecs` へ引き回す案は採らない。** `environments/dev/main.tf` で `module.iam_oidc` が `ecs_cluster_arn = module.compute_ecs.cluster_arn` を受け取っており依存は compute_ecs → iam_oidc の向きなので、boundary ARN を逆向きに渡すとモジュール間で循環参照になる。解消するには boundary ポリシーを `iam_oidc` の外（環境ルートか専用モジュール）へ切り出す再編が要る。IAM ロールの追加頻度は低く、上記の1コマンドで足りるため、再編のコストに見合わないと判断した。追加頻度が上がったらこの判断を見直す。
 
