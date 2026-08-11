@@ -23,6 +23,10 @@ env:
   ECS_WAIT_MIGRATE_TIMEOUT: 600
   ECS_WAIT_SERVICE_TIMEOUT: 900
 
+# AWS 環境が未構築のあいだは全ジョブをスキップする（terraform.yml と同じ INFRA_ENABLED ゲート）。
+# 環境が無い状態では OIDC provider と tf_plan / deploy ロールが存在せず、main へマージするたびに
+# "Configure AWS credentials" で失敗し続ける。有効化手順と理由は
+# terraform/ARCHITECTURE.md「【運用ルール】AWS 環境が無い間は terraform / deploy を止める」。
 jobs:
   # deploy.yml は describe-task-definition で現在のタスク定義を読み image だけ書き換える。
   # terraform apply はしないため、未適用の差分があると「新コード × 旧インフラ」でデプロイされる。
@@ -32,7 +36,7 @@ jobs:
     name: Verify infrastructure is in sync with Terraform
     runs-on: ubuntu-latest
     # CI が成功で完了したとき、または手動実行のときだけ実行する
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ vars.INFRA_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
     permissions:
       id-token: write
       contents: read
@@ -89,7 +93,7 @@ jobs:
     needs: precheck
     runs-on: ubuntu-24.04-arm
     # CI が成功で完了したとき、または手動実行のときだけデプロイする
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    if: ${{ vars.INFRA_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
     permissions:
       id-token: write
       contents: read

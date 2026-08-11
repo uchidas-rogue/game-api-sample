@@ -243,6 +243,7 @@ sequenceDiagram
 | 安全装置 | 内容 | 防ぐ事象 |
 |---|---|---|
 | **CI ゲート** | `deploy.yml` は `workflow_run` トリガで `ci.yml` の成功完了時のみ起動する | テスト未通過のコードが本番デプロイされる |
+| **環境有無ゲート** | `terraform.yml` / `deploy.yml` の全ジョブはリポジトリ変数 `INFRA_ENABLED == 'true'` のときだけ実行する（下記【運用ルール】参照） | AWS 環境が無い間、OIDC assume の失敗で CI の赤が常態化しレビューのシグナルが死ぬ |
 | **concurrency 共有** | `terraform.yml` と `deploy.yml` は同一 concurrency グループ（`infra-deploy-${ref}`）。先着が走り他方は待機 | インフラ変更とアプリデプロイが同時に ECS を書き換える競合 |
 | **Terraform ドリフト検査** | `deploy.yml` の `precheck` ジョブが `terraform plan` を実行し、未適用差分（no-op 以外の全リソース変更）が1件でもあればデプロイを停止 | terraform 側の未適用変更（タスク定義の env/secrets、ALB リスナー、SG ルール等）のまま「新コード × 旧インフラ」でデプロイされる |
 | **マイグレーション先行** | `deploy.yml` は ECS サービス更新前に migrate タスクを RunTask し、exit code≠0 で停止 | スキーマ不整合のままアプリが起動する |
@@ -253,6 +254,24 @@ sequenceDiagram
 `tf_plan` の信頼ポリシー（assume 条件）は OIDC sub クレームを `StringEquals` で `repo:${owner}/${repo}:pull_request`（terraform.yml の `plan`）と `repo:${owner}/${repo}:ref:refs/heads/main`（deploy.yml の `precheck` / main 上の dispatch）の2値のみに限定する。以前は `StringLike` + `repo:${owner}/${repo}:*` で全 ref を許可しており、リポジトリ内の任意ブランチ・PR・environment コンテキスト（細工された任意ワークフロー含む）が同ロールを assume して Aurora 認証情報を読み取れる状態だった。これを塞ぐためワイルドカードを排した（`deploy` / `tf_apply` は元から `StringEquals` 限定）。なお非 main ブランチからの `workflow_dispatch` による手動 plan は assume 不可となるため、plan は PR か main 文脈で実行する。
 
 `tf_apply` は `PowerUserAccess` + `IAMFullAccess`（実質 admin 相当）を付与しており、IAMFull により「admin 権限を持つ別 role を作って assume する」等の**権限昇格**が原理上可能になる。assume を `environment:production-apply` に限定し、GitHub Environment の承認（required reviewers）を歯止めとしているが、この承認設定はリポジトリの IaC では検知できない GitHub 側設定であるため、唯一の歯止めが Terraform 管理外にある状態だった。これを補うため `tf_apply` ロールに **permissions boundary**（`${name_prefix}-tf-apply-boundary`）を付与する。boundary は実効権限の上限であり、Terraform 運用に必要な広範な権限（`Allow *`）は残しつつ、(1) boundary を継承しない IAM エンティティの作成、(2) boundary の付替・剥奪、(3) boundary ポリシー自身の改変、を `Deny` で封じる。これにより GitHub 側設定に依存せず、コード（IaC）で昇格経路を遮断する。GitHub Environment 側の保護（承認者・wait timer）は引き続き併用すること。
+
+### 【運用ルール】AWS 環境が無い間は terraform / deploy を止める
+
+`terraform.yml` と `deploy.yml` の全ジョブは、リポジトリ変数 `INFRA_ENABLED` が `true` のときだけ実行する（未設定なら全ジョブ skip）。
+
+AWS 環境が未構築（state が空、または全 destroy 済み）の状態では、CI が assume する OIDC provider と `tf_plan` / `tf_apply` / `deploy` ロールがそもそも存在しない。この状態で両ワークフローを回すと、terraform に到達する前の `Configure AWS credentials` が `Could not assume role with OIDC` で必ず失敗する。PR ごと・main マージごとに赤が出続け、**CI がレビューのシグナルとして機能しなくなる**（本当の失敗と区別できなくなる）ため、明示的なフラグで止める。
+
+AWS 側を実際に照会して自動判定する案は採らない。判定に必要な AWS 認証がまさに失敗している対象であり、鶏と卵になる。
+
+| 操作 | コマンド |
+|---|---|
+| 有効化（環境をフル apply した後） | `gh variable set INFRA_ENABLED --body true` |
+| 無効化（環境を destroy した後） | `gh variable delete INFRA_ENABLED` |
+| 現在値の確認 | `gh variable list` |
+
+スキップ中も `make tf/check`（`fmt -check` + `validate`）はローカルで有効で、terraform コードの構文・整形の検証はこちらが担う。**環境をフル apply したら `INFRA_ENABLED` の設定を忘れないこと**。忘れるとインフラ変更が CI で apply されないまま、`deploy.yml` のドリフト検査も走らない状態になる。
+
+なお `INFRA_ENABLED` を GitHub のブランチ保護で required status check に指定していると、skip されたジョブが待機扱いでマージをブロックする可能性がある。止めている間は `terraform plan` を required から外す。
 
 ### 【運用ルール】新規 IAM ロールを追加する変更は初回だけ人手で apply する
 

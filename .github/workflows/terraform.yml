@@ -28,10 +28,16 @@ concurrency:
   group: infra-deploy-${{ github.ref }}
   cancel-in-progress: false
 
+# AWS 環境が未構築のあいだは全ジョブをスキップする（リポジトリ変数 INFRA_ENABLED での明示ゲート）。
+# 環境が無い状態では OIDC provider と tf_plan / tf_apply ロール自体が存在せず、
+# terraform に到達する前の "Configure AWS credentials" で必ず失敗する。放置すると
+# 全 PR で赤が常態化し、CI がレビューのシグナルとして機能しなくなるため明示的に止める。
+# 有効化: gh variable set INFRA_ENABLED --body true（環境をフル apply した後に実行する）
+# 詳細は terraform/ARCHITECTURE.md「【運用ルール】AWS 環境が無い間は terraform / deploy を止める」。
 jobs:
   plan:
     name: terraform plan
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
+    if: vars.INFRA_ENABLED == 'true' && (github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -74,7 +80,7 @@ jobs:
 
   apply:
     name: terraform apply (production-apply)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: vars.INFRA_ENABLED == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: production-apply
     steps:
