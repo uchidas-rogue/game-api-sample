@@ -23,6 +23,7 @@ flowchart TB
         RoleTfApply["IAM Role<br/>role-terraform-apply<br/>(main + manual approval)"]
 
         ECR["ECR<br/>game-api-api<br/>game-api-batch<br/>game-api-outbox-worker<br/>game-api-migrate"]
+        Scheduler["EventBridge Scheduler<br/>outbox-gc"]
 
         subgraph VPC["VPC 10.0.0.0/16"]
             subgraph PubAZ["Public Subnets (multi-AZ)"]
@@ -34,6 +35,7 @@ flowchart TB
                     SvcAPI["Service: api<br/>(desiredCount=N)"]
                     SvcWorker["Service: outbox-worker"]
                     TaskBatch["RunTask: batch<br/>(回復用 / 手動実行)"]
+                    TaskGC["ScheduledTask: outbox-gc<br/>(既定 03:00 JST 毎日)"]
                     TaskMigrate["RunTask: migrate<br/>(deploy 前に1回)"]
                 end
                 Aurora[("Aurora MySQL<br/>Serverless v2<br/>Multi-AZ, KMS")]
@@ -60,6 +62,8 @@ flowchart TB
     GHA -- "RunTask migrate<br/>(deploy 前)" --> TaskMigrate
     GHA -- "UpdateService" --> SvcAPI
     GHA -- "UpdateService" --> SvcWorker
+    GHA -- "RegisterTaskDefinition<br/>(batch / outbox-gc)" --> TaskGC
+    Scheduler -- "RunTask (定期)" --> TaskGC
 
     User["エンドユーザー / k6"] -- "HTTP" --> ALB
     ALB --> SvcAPI
@@ -151,6 +155,43 @@ flowchart LR
 アプリ（api/outbox-worker/batch）は `configs/config.go` が単一の `MYSQL_DSN`（go-sql-driver 形式 `user:pass@tcp(host:3306)/db?parseTime=true&loc=Local`）を読み、migrate は `MIGRATE_DSN`（golang-migrate URL 形式 `mysql://...?multiStatements=true`）を読む。いずれもパスワードを含む合成文字列だが、**ECS は Secrets Manager の値を単独の env としてしか注入できず、env 文字列への補間ができない**ため、task def 側で `host:user:pass:db` から DSN を組み立てることはできない。
 
 そこで Aurora のパスワードを生成している `database` モジュールが、完全な DSN を組み立てて Secrets Manager に格納する（`${name_prefix}/aurora/dsn`、JSON で `app` / `migrate` の2キーを同梱）。task def は `valueFrom = "<dsn_secret_arn>:app::"`（api/worker/batch → `MYSQL_DSN`）/ `:migrate::`（migrate → `MIGRATE_DSN`）で JSON キー抽出注入する。app と migrate で DSN 形式・クエリ（`parseTime` vs `multiStatements`）が異なるため2キーに分けている。ECS task execution role には当該 secret の `GetSecretValue` と暗号化 CMK の `kms:Decrypt` のみを許可する。
+
+## イメージタグの扱い（terraform と CI の役割分担）
+
+**ECR は `image_tag_mutability = "IMMUTABLE"`**（`modules/registry`）。同じタグへの再 push は
+`ImageTagAlreadyExistsException` で失敗するため、`latest` のような可変タグは運用に使えない。
+`deploy.yml` が push するのはコミット SHA 由来の `sha-<12桁>` タグだけ。
+
+その結果、イメージ参照は次の二層構造になる。
+
+| 層 | 何を持つか | イメージ参照 |
+|---|---|---|
+| terraform（`compute_ecs`） | TaskDefinition の**形**（cpu/memory/env/secrets/ログ設定/セキュリティ） | `var.image_tags[...]`（既定 `latest`）。**配線用のプレースホルダで、この revision は起動できない** |
+| `deploy.yml` | 実際に動く**イメージのバージョン** | `sha-<12桁>` タグで TaskDefinition を register し直した revision |
+
+`deploy.yml` は4種すべてを sha タグで登録し直す。api / outbox-worker は登録後に
+`update-service`、migrate は登録後に `RunTask`、batch / outbox-gc は**登録のみ**行う
+（起動主体がそれぞれ手動と EventBridge Scheduler のため）。
+
+この構造にしている理由は、CI から terraform へ `-var` でタグを渡す方式が
+`terraform.yml`（タグを知らないまま plan/apply する）と両立しないため。渡す方式にすると
+terraform 側が毎回 `latest` へ戻す差分を出し、`deploy.yml` の precheck が要求する
+「plan が no-op」を永久に満たせなくなる。
+
+**帰結として次の順序依存がある**（承知のうえで受け入れている）。
+
+- outbox-gc の EventBridge Scheduler は **revision を含まない TaskDefinition ARN** を参照し、
+  実行時に最新 ACTIVE revision を解決する。通常は `deploy.yml` が登録した sha revision が最新
+- terraform 側で outbox-gc の TaskDefinition の設定（cpu / memory / env 等）を変更して
+  apply すると、`latest` を参照するプレースホルダ revision が最新 ACTIVE になる。
+  `latest` は存在しないため、**次のスケジュール実行だけがイメージ pull で失敗する**
+- 通常は `terraform.yml` の apply → `deploy.yml` の順に流れて解消する。apply だけで止めると
+  窓が残るので、TaskDefinition を触る変更のあとは deploy を1回流すこと
+- 失敗はタスクの stopped reason と CloudWatch Logs に出る（黙って壊れはしない）
+
+ECR ライフサイクルは tagged を直近 30 件保持する（`image_retention_count`）。デプロイ頻度が
+上がって古い sha タグが expire すると、その revision を指したままの起動は pull に失敗する。
+毎デプロイで登録し直すため通常は問題にならない。
 
 ## 後続フェーズへの前方互換（Phase 2 設計に組み込む配慮）
 

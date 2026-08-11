@@ -46,8 +46,11 @@ jobs:
           role-to-assume: ${{ secrets.AWS_TF_PLAN_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      # 検査対象は terraform/ 全体（make tf/fmt と同じ）。TF_WORKING_DIR
+      # （environments/dev）に絞ると modules/** が検査されず、モジュール側の整形崩れが
+      # そのまま通ってしまう。ローカルとCIで判定を一致させる。
       - name: terraform fmt
-        run: terraform -chdir=${{ env.TF_WORKING_DIR }} fmt -check -recursive
+        run: terraform -chdir=terraform fmt -check -recursive
 
       - name: terraform init
         working-directory: ${{ env.TF_WORKING_DIR }}

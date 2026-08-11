@@ -9,6 +9,22 @@
 worker は `processed_at` を立てるだけで行を消さないため、これが無いとテーブルが単調増加する。
 負荷試験の実測（約 400 events/sec）では 1 日あたり約 3,400 万行が積み上がる。
 
+## 起動経路
+
+| 環境 | 起動 | 実体 |
+| --- | --- | --- |
+| ローカル | 手動 | `make db/outbox/gc`（`go run ./cmd/batch -gc-outbox`） |
+| AWS | 定期 | EventBridge Scheduler → ECS RunTask（既定 03:00 JST 毎日） |
+
+AWS 側は `outbox-gc` 専用の TaskDefinition に `command = ["-gc-outbox"]` を焼き込んである
+（`terraform/modules/compute_ecs`）。スケジュール側で `containerOverrides` を渡さないのは、
+フラグ文字列が JSON に埋もれると typo が実行時の異常終了でしか分からないため。
+スケジュールの間隔・有効化は `outbox_gc_schedule_expression` / `outbox_gc_enabled` で変えられる。
+
+保持期間は `OUTBOX_RETENTION`（`configs`、既定 72h）が正本で terraform では設定しない。
+イメージタグの解決順序には注意点があるので
+[terraform/ARCHITECTURE.md](../../terraform/ARCHITECTURE.md) の「イメージタグの扱い」を参照。
+
 ## フローチャート
 
 ```mermaid

@@ -235,3 +235,31 @@ jobs:
             fi
             echo "$svc deploy OK: $PRIMARY_TD"
           done
+
+      # Service を持たない TaskDefinition（RunTask で起動するもの）にも新しいイメージを
+      # 行き渡らせる。terraform 側の定義は image が var.image_tags["batch"]（既定 latest）を
+      # 指すプレースホルダで、latest は ECR が IMMUTABLE のため push されない。
+      # ここで sha タグの revision を登録し直さないと、
+      #   - outbox-gc: EventBridge Scheduler の定期実行がイメージ pull で失敗する
+      #   - batch:     手動 RunTask（seed / sync-rankings）が同じく失敗する
+      # 起動はしない（outbox-gc はスケジューラ、batch は手動が起動主体）。
+      # 詳細は terraform/ARCHITECTURE.md「イメージタグの扱い」。
+      - name: Register RunTask task definitions (batch / outbox-gc)
+        env:
+          PREFIX: ${{ env.PROJECT }}-${{ env.ENVIRONMENT }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          # どちらも cmd/batch のイメージを使う（TaskDefinition ごとに command が違うだけ）。
+          for td in batch outbox-gc; do
+            aws ecs describe-task-definition --task-definition $PREFIX-$td \
+              --query 'taskDefinition' --output json > runtask-td.json
+            jq --arg img "$REGISTRY/$PREFIX-batch:$TAG" '
+              .containerDefinitions[0].image = $img
+              | del(.taskDefinitionArn, .revision, .status, .requiresAttributes,
+                    .compatibilities, .registeredAt, .registeredBy)
+            ' runtask-td.json > runtask-td.new.json
+            NEW_TD=$(aws ecs register-task-definition --cli-input-json file://runtask-td.new.json \
+              --query 'taskDefinition.taskDefinitionArn' --output text)
+            echo "Registered $td -> $NEW_TD"
+          done
