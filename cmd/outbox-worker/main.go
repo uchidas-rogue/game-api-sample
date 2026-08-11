@@ -74,6 +74,7 @@ func main() {
 		BatchSize:    cfg.OutboxBatchSize,
 		Concurrency:  cfg.OutboxConcurrency,
 		TickTimeout:  cfg.OutboxTickTimeout,
+		MaxRetry:     cfg.OutboxMaxRetry,
 	})
 
 	if err := w.Run(ctx); err != nil {

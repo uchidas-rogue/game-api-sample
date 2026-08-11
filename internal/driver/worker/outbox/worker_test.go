@@ -131,6 +131,15 @@ func newScoreEvent(t *testing.T, id uint64, guildID, userID, points int64) outbo
 	}
 }
 
+// newUnknownEventWithRetry は retry_count を指定した poison イベントを組み立てる。
+// 「この失敗で上限に達するか」は claim 時点の retry_count で決まるため、
+// dead-letter の判定を検証するテストはここから作る。
+func newUnknownEventWithRetry(id uint64, retryCount uint32) outboxdomain.Event {
+	ev := newUnknownEvent(id)
+	ev.RetryCount = retryCount
+	return ev
+}
+
 // newUnknownEvent は event_type が未知の（＝デコード不能な）イベントを1件組み立てる。
 // 恒久失敗イベント（poison）を模すために使う。
 func newUnknownEvent(id uint64) outboxdomain.Event {
@@ -173,6 +182,11 @@ func runWorkerAndWaitCalls(t *testing.T, w *workeroutbox.Worker, called <-chan s
 	<-drained
 }
 
+// testMaxRetry はテストで使う失敗許容回数。retry_count がこれに達したイベントは
+// ListPending / ClaimByID の対象から外れる（docs/testing/outbox-worker.md §0-4）。
+// 「上限未満」「上限到達」を1回の IncrementRetry で作り分けられるよう、小さい値にしてある。
+const testMaxRetry = 3
+
 // deps はテスト用のモック依存一式。
 type deps struct {
 	outboxRepo  *mockoutbox.MockRepository
@@ -210,13 +224,32 @@ func (d deps) newWorkerWithConcurrency(t *testing.T, batchSize, concurrency int)
 		PollInterval: time.Hour,
 		BatchSize:    batchSize,
 		Concurrency:  concurrency,
+		MaxRetry:     testMaxRetry,
 	})
+}
+
+// newWorkerWithRecorder は逐次処理の Worker を、ログを捕捉する Logger 付きで生成する。
+// 「特定のログが出た / 出ていない」こと自体が仕様になっている検証にだけ使う。
+func (d deps) newWorkerWithRecorder(t *testing.T, batchSize int) (*workeroutbox.Worker, *slogtest.Recorder) {
+	t.Helper()
+	logger, rec := slogtest.NewRecordingLogger(t, nil)
+	return workeroutbox.New(workeroutbox.Config{
+		Repo:         d.outboxRepo,
+		RankingRepo:  d.rankingRepo,
+		RankingStore: d.store,
+		Tx:           d.tx,
+		Logger:       logger,
+		PollInterval: time.Hour,
+		BatchSize:    batchSize,
+		Concurrency:  1,
+		MaxRetry:     testMaxRetry,
+	}), rec
 }
 
 // pendingEmptyAnyTimes は ListPending が「候補なし」を任意回数返すよう設定する。
 func pendingEmptyAnyTimes(outboxRepo *mockoutbox.MockRepository) {
 	outboxRepo.EXPECT().
-		ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
+		ListPending(gomock.Any(), gomock.Any(), gomock.Any(), uint32(testMaxRetry)).
 		Return(nil, nil).
 		AnyTimes()
 }
@@ -224,7 +257,7 @@ func pendingEmptyAnyTimes(outboxRepo *mockoutbox.MockRepository) {
 // expectPerEventApply はフォールバック経路（イベント単位 tx）が1イベントを処理しきる
 // 一連の呼び出しを登録する。Redis 反映は COMMIT 後に ApplyScoreDeltas 1本で行う。
 func expectPerEventApply(d deps, ev outboxdomain.Event, guildID, userID, points int64) {
-	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), ev.ID).Return(ev, true, nil)
+	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), ev.ID, uint32(testMaxRetry)).Return(ev, true, nil)
 	d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), guildID, points).Return(nil)
 	d.rankingRepo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), guildID, userID, points).Return(nil)
 	d.outboxRepo.EXPECT().MarkProcessed(gomock.Any(), gomock.Any(), ev.ID).Return(nil)
@@ -264,11 +297,11 @@ func TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ば�
 	called := make(chan struct{}, 16)
 	invokeDoInTxAndSignal(t, d.tx, called)
 
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{newUnknownEvent(99)}, nil)
 	// bulk 系 / ApplyScoreDeltas / MarkProcessedByIDs は EXPECT しない
 	// （呼ばれたら gomock が未設定呼び出しとして落とす）。
-	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(99), gomock.Any()).Return(nil)
+	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(99), gomock.Any()).Return(uint32(1), nil)
 
 	// バッチ tx 1回 + retry 記録 tx 1回。
 	runWorkerAndWaitCalls(t, d.newWorker(t, 100), called, 2)
@@ -285,10 +318,10 @@ func TestWorker_applyBatch_IncrementRetry失敗はログのみ(t *testing.T) {
 	called := make(chan struct{}, 16)
 	invokeDoInTxAndSignal(t, d.tx, called)
 
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{newUnknownEvent(50)}, nil)
 	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(50), gomock.Any()).
-		Return(errors.New("retry failed"))
+		Return(uint32(0), errors.New("retry failed"))
 
 	runWorkerAndWaitCalls(t, d.newWorker(t, 100), called, 2)
 }
@@ -312,7 +345,7 @@ func TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォール
 
 	ev := newScoreEvent(t, 1, 1, 10, 100)
 	// Times は既定で1回。フォールバックに落ちれば listCandidates が2回目を呼ぶため失敗する。
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{ev}, nil)
 
 	d.rankingRepo.EXPECT().BulkIncrementGuildScores(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
@@ -388,7 +421,7 @@ func TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォ
 
 			ev := newScoreEvent(t, 1, 1, 10, 100)
 			// applyBatch（主経路）と listCandidates（フォールバック）で1回ずつ呼ばれる。
-			d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+			d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 				Return([]outboxdomain.Event{ev}, nil).Times(2)
 
 			tt.setup(d,
@@ -429,7 +462,7 @@ func TestWorker_applyBatch_デコード不能イベントは除外され個別�
 		ID: 3, Type: outboxdomain.EventTypeRankingScoreAdded, Payload: []byte("{broken"),
 	}
 
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{ok, unknownType, brokenPayload}, nil)
 
 	// 正常な1件だけが適用され、マーク対象も ID=1 のみ。
@@ -444,14 +477,14 @@ func TestWorker_applyBatch_デコード不能イベントは除外され個別�
 
 	var unknownErr, brokenErr string
 	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(2), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ shared.Tx, _ uint64, lastError string) error {
+		DoAndReturn(func(_ context.Context, _ shared.Tx, _ uint64, lastError string) (uint32, error) {
 			unknownErr = lastError
-			return nil
+			return 1, nil
 		})
 	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(3), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ shared.Tx, _ uint64, lastError string) error {
+		DoAndReturn(func(_ context.Context, _ shared.Tx, _ uint64, lastError string) (uint32, error) {
 			brokenErr = lastError
-			return nil
+			return 1, nil
 		})
 
 	// バッチ tx 1回 + デコード不能 2件の retry 記録 tx 2回。
@@ -491,7 +524,7 @@ func TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後�
 		Times(1)
 
 	ev := newScoreEvent(t, 1, 1, 10, 100)
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{ev}, nil)
 
 	// 1件だけなので集約結果は決定的。引数まで含めて順序を固定する。
@@ -547,7 +580,7 @@ func TestWorker_applyBatch_同一ギルドは合算され履歴はイベント�
 		newScoreEvent(t, 2, 1, 11, 200),
 		newScoreEvent(t, 3, 2, 10, 50),
 	}
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).Return(events, nil)
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).Return(events, nil)
 
 	var (
 		gotGuildDeltas    []rankingdomain.GuildScoreDelta
@@ -616,7 +649,7 @@ func TestWorker_runOnce_ListPendingエラー(t *testing.T) {
 	called := make(chan struct{}, 16)
 	invokeDoInTxAndSignal(t, d.tx, called)
 
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return(nil, errors.New("db down")).AnyTimes()
 	// bulk 系 / IncrementRetry / MarkProcessedByIDs は呼ばれない
 
@@ -648,7 +681,8 @@ func TestWorker_runOnce_appliesTickTimeout(t *testing.T) {
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	w := workeroutbox.New(workeroutbox.Config{
-		Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
+		MaxRetry: testMaxRetry,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 		TickTimeout: time.Minute,
 	})
@@ -692,10 +726,10 @@ func TestWorker_runOnce_全件前進しなければドレインを打ち切る(t
 
 	// 取得件数はちょうど batchSize だが、全件デコード不能なので前進件数は 0。
 	d.outboxRepo.EXPECT().
-		ListPending(gomock.Any(), gomock.Any(), int32(batchSize)).
+		ListPending(gomock.Any(), gomock.Any(), int32(batchSize), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{newUnknownEvent(1), newUnknownEvent(2)}, nil)
-	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(1), gomock.Any()).Return(nil)
-	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(2), gomock.Any()).Return(nil)
+	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(1), gomock.Any()).Return(uint32(1), nil)
+	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(2), gomock.Any()).Return(uint32(1), nil)
 	// bulk 系 / MarkProcessedByIDs / ApplyScoreDeltas は呼ばれない。
 
 	// バッチ tx 1回 + retry 記録 tx 2回。以降ドレインは打ち切られる。
@@ -728,10 +762,10 @@ func TestWorker_runOnce_候補が枯れるまでドレインする(t *testing.T)
 	// 「batchSize 未満 → 打ち切り」の順で返ることを gomock.InOrder で固定する。
 	gomock.InOrder(
 		d.outboxRepo.EXPECT().
-			ListPending(gomock.Any(), gomock.Any(), int32(batchSize)).
+			ListPending(gomock.Any(), gomock.Any(), int32(batchSize), uint32(testMaxRetry)).
 			Return([]outboxdomain.Event{ev1, ev2}, nil),
 		d.outboxRepo.EXPECT().
-			ListPending(gomock.Any(), gomock.Any(), int32(batchSize)).
+			ListPending(gomock.Any(), gomock.Any(), int32(batchSize), uint32(testMaxRetry)).
 			Return([]outboxdomain.Event{ev3}, nil),
 	)
 
@@ -768,7 +802,7 @@ func TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替�
 	ev1 := newScoreEvent(t, 1, 1, 10, 100)
 	ev2 := newScoreEvent(t, 2, 1, 10, 100)
 	events := []outboxdomain.Event{ev1, ev2}
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).Return(events, nil).Times(2)
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).Return(events, nil).Times(2)
 
 	// 主経路のバッチ適用は失敗する（例: 一括 upsert のデッドロック）。
 	d.rankingRepo.EXPECT().BulkIncrementGuildScores(gomock.Any(), gomock.Any(),
@@ -779,7 +813,7 @@ func TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替�
 	// フォールバック経路で各イベントが個別に claim → 適用 → MarkProcessed → Redis される。
 	marked := make(chan uint64, len(events))
 	for _, ev := range events {
-		d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), ev.ID).Return(ev, true, nil)
+		d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), ev.ID, uint32(testMaxRetry)).Return(ev, true, nil)
 		d.outboxRepo.EXPECT().MarkProcessed(gomock.Any(), gomock.Any(), ev.ID).
 			DoAndReturn(func(_ context.Context, _ shared.Tx, id uint64) error {
 				marked <- id
@@ -851,9 +885,9 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 5, 1, 10, 500)
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(5)).
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(5), uint32(testMaxRetry)).
 					Return(outboxdomain.Event{}, false, nil)
 				// 副作用 / MarkProcessed / IncrementRetry は呼ばれない
 
@@ -872,14 +906,14 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				invokeDoInTx(t, d.tx)
 
 				ev := newUnknownEvent(99)
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(99)).Return(ev, true, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(99), uint32(testMaxRetry)).Return(ev, true, nil)
 				// last_error には ErrUnknownEventType のセンチネル文言が残る。
 				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(99),
 					gomock.Cond(func(s string) bool {
 						return strings.Contains(s, outboxdomain.ErrUnknownEventType.Error())
-					})).Return(nil)
+					})).Return(uint32(1), nil)
 
 				return d.newWorker(t, 100)
 			},
@@ -897,10 +931,10 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				ev := outboxdomain.Event{
 					ID: 100, Type: outboxdomain.EventTypeRankingScoreAdded, Payload: []byte("{broken"),
 				}
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(100)).Return(ev, true, nil)
-				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(100), gomock.Any()).Return(nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(100), uint32(testMaxRetry)).Return(ev, true, nil)
+				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(100), gomock.Any()).Return(uint32(1), nil)
 
 				return d.newWorker(t, 100)
 			},
@@ -916,11 +950,11 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				invokeDoInTx(t, d.tx)
 
 				ev := newUnknownEvent(50)
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(50)).Return(ev, true, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(50), uint32(testMaxRetry)).Return(ev, true, nil)
 				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(50), gomock.Any()).
-					Return(errors.New("retry failed"))
+					Return(uint32(0), errors.New("retry failed"))
 
 				return d.newWorker(t, 100)
 			},
@@ -935,14 +969,14 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 7, 1, 10, 500)
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(7)).Return(ev, true, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(7), uint32(testMaxRetry)).Return(ev, true, nil)
 
 				d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), int64(1), int64(500)).
 					Return(errors.New("mysql down"))
 				// InsertGuildScoreHistory / MarkProcessed / Redis は呼ばれない
-				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(7), gomock.Any()).Return(nil)
+				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(7), gomock.Any()).Return(uint32(1), nil)
 
 				return d.newWorker(t, 100)
 			},
@@ -957,15 +991,15 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 8, 2, 11, 300)
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(8)).Return(ev, true, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(8), uint32(testMaxRetry)).Return(ev, true, nil)
 
 				d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), int64(2), int64(300)).Return(nil)
 				d.rankingRepo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), int64(2), int64(11), int64(300)).
 					Return(errors.New("mysql history down"))
 				// MarkProcessed / Redis は呼ばれない
-				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(8), gomock.Any()).Return(nil)
+				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(8), gomock.Any()).Return(uint32(1), nil)
 
 				return d.newWorker(t, 100)
 			},
@@ -982,9 +1016,9 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 9, 3, 12, 200)
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(9)).Return(ev, true, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(9), uint32(testMaxRetry)).Return(ev, true, nil)
 
 				d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), int64(3), int64(200)).Return(nil)
 				d.rankingRepo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), int64(3), int64(12), int64(200)).Return(nil)
@@ -1008,9 +1042,9 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				invokeDoInTx(t, d.tx)
 
 				ev := newScoreEvent(t, 1, 1, 10, 500)
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{ev}, nil)
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(1)).Return(ev, true, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(1), uint32(testMaxRetry)).Return(ev, true, nil)
 
 				gomock.InOrder(
 					d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), int64(1), int64(500)).Return(nil),
@@ -1038,14 +1072,14 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 				poison := newScoreEvent(t, 1, 2, 20, 100)
 				ok := newScoreEvent(t, 2, 3, 21, 200)
 
-				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+				d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 					Return([]outboxdomain.Event{poison, ok}, nil)
 
 				// 先頭イベント: claim 成功だが MySQL 加算が失敗 → IncrementRetry。
-				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(1)).Return(poison, true, nil)
+				d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(1), uint32(testMaxRetry)).Return(poison, true, nil)
 				d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), int64(2), int64(100)).
 					Return(errors.New("mysql down (poison)"))
-				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(1), gomock.Any()).Return(nil)
+				d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(1), gomock.Any()).Return(uint32(1), nil)
 
 				// 後続イベント: 先頭の失敗の影響を受けず claim → 適用 → MarkProcessed → Redis が成功する。
 				expectPerEventApply(d, ok, 3, 21, 200)
@@ -1083,7 +1117,7 @@ func TestWorker_applyPerEvent_フォールバック経路_ListPendingエラー(t
 	invokeDoInTx(t, d.tx)
 
 	errDB := errors.New("db down")
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).Return(nil, errDB)
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).Return(nil, errDB)
 	// ClaimByID / IncrementRetry / MarkProcessed は呼ばれない
 
 	listed, applied, err := d.newWorker(t, 100).ApplyPerEventForTest(context.Background())
@@ -1105,9 +1139,9 @@ func TestWorker_applyPerEvent_フォールバック経路_ClaimByIDエラー(t *
 
 	ev := newScoreEvent(t, 42, 1, 1, 100)
 	errClaim := errors.New("claim db down")
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{ev}, nil)
-	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(42)).
+	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(42), uint32(testMaxRetry)).
 		Return(outboxdomain.Event{}, false, errClaim)
 	// IncrementRetry / MarkProcessed は呼ばれない
 
@@ -1132,9 +1166,9 @@ func TestWorker_applyPerEvent_フォールバック経路_MarkProcessedエラー
 	ev2 := newScoreEvent(t, 43, 2, 2, 200)
 	errMark := errors.New("mark failed")
 
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{ev1, ev2}, nil)
-	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(42)).Return(ev1, true, nil)
+	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(42), uint32(testMaxRetry)).Return(ev1, true, nil)
 	d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), int64(1), int64(100)).Return(nil)
 	d.rankingRepo.EXPECT().InsertGuildScoreHistory(gomock.Any(), gomock.Any(), int64(1), int64(1), int64(100)).Return(nil)
 	d.outboxRepo.EXPECT().MarkProcessed(gomock.Any(), gomock.Any(), uint64(42)).Return(errMark)
@@ -1147,6 +1181,100 @@ func TestWorker_applyPerEvent_フォールバック経路_MarkProcessedエラー
 	assert.ErrorIs(t, err, errMark)
 	assert.Equal(t, 0, listed)
 	assert.Equal(t, 0, applied)
+}
+
+// TestWorker_recordRetry_上限到達でdeadLetterログを出す は max retry / DLQ の観測面を検証する
+// （docs/testing/outbox-worker.md §0-4）。retry_count が maxRetry に達したイベントは以降
+// ListPending / ClaimByID から外れるため、運用が気づける唯一の手がかりがこの ERROR ログになる。
+//
+// 「出る／出ない」のケースを同じ関数にまとめているのは、判定条件
+// （IncrementRetry の成否 × 加算後の値が上限とちょうど一致するか）の組み合わせを1箇所で見るため。
+//
+// 判定に使うのは IncrementRetry が返す加算後の値で、claim 時点の retry_count ではない。
+// 複数 worker が同一イベントを再 claim すると claim 時点の値は古くなりうるため
+// （docs/testing/outbox-worker.md §0-4）、テストもその2つを意図的に食い違わせて確認する。
+func TestWorker_recordRetry_上限到達でdeadLetterログを出す(t *testing.T) {
+	t.Parallel()
+
+	const deadLetterMsg = "outbox event dead-lettered"
+
+	tests := []struct {
+		name string
+		// claimedCount は claim した時点の retry_count。
+		claimedCount uint32
+		// incrementedCount は IncrementRetry が返す加算後の値（DB 上の実際の値）。
+		incrementedCount uint32
+		incrementErr     error
+		wantDeadLetter   int
+	}{
+		{
+			name:             "上限未満: dead-letter ログを出さない",
+			claimedCount:     0,
+			incrementedCount: 1,
+			wantDeadLetter:   0,
+		},
+		{
+			// testMaxRetry=3 なので 2 からの加算でちょうど上限に達する（境界）。
+			name:             "上限にちょうど到達: dead-letter ログを1回出す",
+			claimedCount:     testMaxRetry - 1,
+			incrementedCount: testMaxRetry,
+			wantDeadLetter:   1,
+		},
+		{
+			// 別 worker が先に加算し、こちらの加算で上限を追い越した状況。
+			// 上限ちょうどを観測した側が既にログを出しているので、ここでは出さない
+			// （判定が >= だと二重ログになる）。
+			name:             "競合で上限を追い越した: dead-letter ログを出さない",
+			claimedCount:     testMaxRetry - 1,
+			incrementedCount: testMaxRetry + 1,
+			wantDeadLetter:   0,
+		},
+		{
+			// claim 時点の値では上限未満だが、別 worker の加算と合わさって上限に達した状況。
+			// claim 時点の値で判定していると、ここでログが出ず静かに DLQ 化してしまう。
+			name:             "競合で claim 時点より進んで上限に到達: dead-letter ログを1回出す",
+			claimedCount:     testMaxRetry - 2,
+			incrementedCount: testMaxRetry,
+			wantDeadLetter:   1,
+		},
+		{
+			// 記録できていない = retry_count は据え置きで、まだ打ち切られていない。
+			// ここでログを出すと「打ち切った」という誤った信号になる。
+			name:           "上限相当だが IncrementRetry が失敗: dead-letter ログを出さない",
+			claimedCount:   testMaxRetry - 1,
+			incrementErr:   errors.New("increment failed"),
+			wantDeadLetter: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			d := newDeps(ctrl)
+			invokeDoInTx(t, d.tx)
+
+			poison := newUnknownEventWithRetry(1, tt.claimedCount)
+			d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
+				Return([]outboxdomain.Event{poison}, nil)
+			d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(1), uint32(testMaxRetry)).
+				Return(poison, true, nil)
+			d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(1), gomock.Any()).
+				Return(tt.incrementedCount, tt.incrementErr)
+
+			w, rec := d.newWorkerWithRecorder(t, 100)
+			listed, applied, err := w.ApplyPerEventForTest(context.Background())
+			require.NoError(t, err)
+			assert.Equal(t, 1, listed)
+			assert.Equal(t, 0, applied)
+
+			assert.Equal(t, tt.wantDeadLetter, rec.Count("level=ERROR", deadLetterMsg),
+				"dead-letter ログの回数")
+			// 失敗そのものの記録（WARN）は打ち切りの有無に関係なく必ず出る。
+			assert.Equal(t, 1, rec.Count("level=WARN", "outbox event handling failed"))
+		})
+	}
 }
 
 // TestWorker_applyPerEvent_フォールバック経路_並列処理 は concurrency > 1 のとき候補が並列に
@@ -1170,11 +1298,11 @@ func TestWorker_applyPerEvent_フォールバック経路_並列処理(t *testin
 	for id := uint64(1); id <= batchSize; id++ {
 		events = append(events, newScoreEvent(t, id, 1, 1, 10))
 	}
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(batchSize)).Return(events, nil)
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(batchSize), uint32(testMaxRetry)).Return(events, nil)
 
 	// 各 ID はちょうど1回ずつ claim / mark されること（Times は既定で1回）。
 	for _, ev := range events {
-		d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), ev.ID).Return(ev, true, nil)
+		d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), ev.ID, uint32(testMaxRetry)).Return(ev, true, nil)
 		d.outboxRepo.EXPECT().MarkProcessed(gomock.Any(), gomock.Any(), ev.ID).Return(nil)
 	}
 	d.rankingRepo.EXPECT().IncrementGuildScore(gomock.Any(), gomock.Any(), int64(1), int64(10)).Return(nil).Times(batchSize)
@@ -1206,11 +1334,11 @@ func TestWorker_applyPerEvent_フォールバック経路_claim不可はスキ�
 
 	ev1 := newScoreEvent(t, 1, 1, 1, 10)
 	ev2 := newScoreEvent(t, 2, 1, 1, 10)
-	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(batchSize)).
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(batchSize), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{ev1, ev2}, nil)
 
 	// ev1 は確保できる、ev2 は他が処理済み（found=false）。
-	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(2)).
+	d.outboxRepo.EXPECT().ClaimByID(gomock.Any(), gomock.Any(), uint64(2), uint32(testMaxRetry)).
 		Return(outboxdomain.Event{}, false, nil)
 	// 副作用は ev1 のぶんだけ発生し、ev2 では一切発生しない。
 	expectPerEventApply(d, ev1, 1, 1, 10)
@@ -1244,7 +1372,8 @@ func TestWorker_Run_Subscribe_failure(t *testing.T) {
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	w := workeroutbox.New(workeroutbox.Config{
-		Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+		MaxRetry: testMaxRetry,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 	})
 
@@ -1269,7 +1398,8 @@ func TestWorker_Run_notify_channel_closed(t *testing.T) {
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	w := workeroutbox.New(workeroutbox.Config{
-		Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+		MaxRetry: testMaxRetry,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 	})
 
@@ -1296,7 +1426,8 @@ func TestWorker_Run_notify_triggered(t *testing.T) {
 	pendingEmptyAnyTimes(d.outboxRepo)
 
 	w := workeroutbox.New(workeroutbox.Config{
-		Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+		MaxRetry: testMaxRetry,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 	})
 
@@ -1317,7 +1448,8 @@ func TestWorker_Run_ticker_driven(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	w := workeroutbox.New(workeroutbox.Config{
-		Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
+		MaxRetry: testMaxRetry,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
 		// 短い間隔にしても wall-clock 依存ではなくシグナル待ちで同期するため flaky にならない。
 		Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
 	})
@@ -1375,12 +1507,13 @@ func TestWorker_Run_ティック処理の失敗はループを止めない(t *te
 			called := make(chan struct{}, 16)
 			invokeDoInTxAndSignal(t, tx, called)
 			// 毎ティック失敗させる。Run はエラーを返さずログのみで継続するはず。
-			repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any()).
+			repo.EXPECT().ListPending(gomock.Any(), gomock.Any(), gomock.Any(), uint32(testMaxRetry)).
 				Return(nil, errors.New("db down")).
 				AnyTimes()
 
 			cfg := workeroutbox.Config{
-				Repo: repo, RankingStore: store, Tx: tx,
+				MaxRetry: testMaxRetry,
+				Repo:     repo, RankingStore: store, Tx: tx,
 				Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
 			}
 
@@ -1441,11 +1574,11 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 		invokeDoInTxAndSignal(t, d.tx, called)
 		ev := newUnknownEvent(1)
 		list := d.outboxRepo.EXPECT().
-			ListPending(gomock.Any(), gomock.Any(), int32(1)).
+			ListPending(gomock.Any(), gomock.Any(), int32(1), uint32(testMaxRetry)).
 			Return([]outboxdomain.Event{ev}, nil)
 		retry := d.outboxRepo.EXPECT().
 			IncrementRetry(gomock.Any(), gomock.Any(), uint64(1), gomock.Any()).
-			Return(nil)
+			Return(uint32(1), nil)
 		if listTimes > 0 {
 			list.Times(listTimes)
 			retry.Times(listTimes)
@@ -1470,7 +1603,8 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 		sub.EXPECT().Subscribe(gomock.Any()).Return((<-chan struct{})(notifyCh), nil)
 
 		w := workeroutbox.New(workeroutbox.Config{
-			Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+			MaxRetry: testMaxRetry,
+			Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
 			// ticker では再開してしまうので、この部分テストでは発火させない。
 			Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 1, Concurrency: 1,
 		})
@@ -1506,7 +1640,8 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 		d := stalledDeps(t, ctrl, called, 0)
 
 		w := workeroutbox.New(workeroutbox.Config{
-			Repo: d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
+			MaxRetry: testMaxRetry,
+			Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
 			Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond,
 			BatchSize: 1, Concurrency: 1,
 		})
@@ -1540,7 +1675,7 @@ func TestWorker_drainNow_ティック期限切れ後も自走する(t *testing.T
 	// tickTimeout を 1ns にすることで runOnce は毎回「期限切れで未枯渇のまま復帰」する。
 	// wall-clock sleep に頼らず deadline を確実に踏ませるための値。
 	d.outboxRepo.EXPECT().
-		ListPending(gomock.Any(), gomock.Any(), int32(batchSize)).
+		ListPending(gomock.Any(), gomock.Any(), int32(batchSize), uint32(testMaxRetry)).
 		Return([]outboxdomain.Event{ev}, nil).
 		AnyTimes()
 	d.rankingRepo.EXPECT().BulkIncrementGuildScores(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
@@ -1549,6 +1684,7 @@ func TestWorker_drainNow_ティック期限切れ後も自走する(t *testing.T
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 
 	w := workeroutbox.New(workeroutbox.Config{
+		MaxRetry:     testMaxRetry,
 		Repo:         d.outboxRepo,
 		RankingRepo:  d.rankingRepo,
 		RankingStore: d.store,

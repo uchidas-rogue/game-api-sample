@@ -72,10 +72,11 @@ import (
 // 保持期間を過ぎた行は GC バッチ（cmd/batch -gc-outbox）が消す
 // （docs/testing/outbox-gc.md）。
 //
-// max retry 上限・DLQ は本実装では未対応（後続課題）。
-// そのため恒久失敗イベント（poison）は ListPending に何度でも現れる。ドレインと通知駆動が
-// これを読み直し続けてビジーループにならないよう、前進件数による打ち切り（runOnce）と
-// 滞留中の通知抑止（Run）を入れてある。詳細は docs/testing/outbox-worker.md §0-2・§0-3。
+// 恒久失敗イベント（poison）は retry_count が maxRetry に達した時点で ListPending / ClaimByID
+// の対象から外れる（DLQ 相当）。上限に達した瞬間だけ ERROR ログを出し、以降は静かになる。
+// 上限に達するまでのあいだと一時的な失敗では同じイベントが再取得されるため、ドレインと
+// 通知駆動がビジーループにならないよう、前進件数による打ち切り（runOnce）と滞留中の
+// 通知抑止（Run）も併せて必要。詳細は docs/testing/outbox-worker.md §0-2〜§0-4。
 type Worker struct {
 	repo         outboxusecase.Repository
 	rankingRepo  rankingusecase.Repository
@@ -87,6 +88,7 @@ type Worker struct {
 	batchSize    int
 	concurrency  int
 	tickTimeout  time.Duration
+	maxRetry     uint32
 }
 
 // Config は Worker のコンストラクタ引数。
@@ -106,6 +108,9 @@ type Config struct {
 	// TickTimeout は1ティック（runOnce）の処理時間上限。
 	// DB/Redis のブロッキングでループがハングするのを防ぐ。0 の場合は無制限。
 	TickTimeout time.Duration
+	// MaxRetry は1イベントの失敗を許容する回数。retry_count がこれに達したイベントは
+	// 取得対象から外れる（DLQ 相当）。1 未満の場合は 1 に丸める。
+	MaxRetry int
 }
 
 // New は Worker を生成する。Config.Logger は呼び出し側で必ず初期化済みのものを渡す。
@@ -113,6 +118,12 @@ func New(cfg Config) *Worker {
 	concurrency := cfg.Concurrency
 	if concurrency < 1 {
 		concurrency = 1
+	}
+	// 丸めてから uint32 へ変換する。負値をそのまま変換すると巨大な上限になり、
+	// 打ち切りが事実上効かなくなるため。
+	maxRetry := cfg.MaxRetry
+	if maxRetry < 1 {
+		maxRetry = 1
 	}
 	return &Worker{
 		repo:         cfg.Repo,
@@ -125,6 +136,7 @@ func New(cfg Config) *Worker {
 		batchSize:    cfg.BatchSize,
 		concurrency:  concurrency,
 		tickTimeout:  cfg.TickTimeout,
+		maxRetry:     uint32(maxRetry),
 	}
 }
 
@@ -230,9 +242,9 @@ type tickResult struct {
 // 各バッチは単一 tx（フォールバック時は concurrency 本の goroutine で並列）で処理する。
 //
 // 枯渇判定には「取得件数（listed）」ではなく「前進件数（applied）」を使う。
-// ListPendingOutboxEvents は retry_count を条件に含めないため、デコード不能な恒久失敗
-// イベントは何度でも取得される。取得件数だけで判定すると、それが batchSize 件以上
-// 滞留したときに毎回ちょうど batchSize 件が返り続けてドレインが終わらない。
+// 失敗したイベントは retry_count が maxRetry に達するまで何度でも取得される（一時的な
+// DB/Redis 障害でも同様）。取得件数だけで判定すると、それが batchSize 件以上滞留したときに
+// 毎回ちょうど batchSize 件が返り続けてドレインが終わらない。
 //
 //	listed == 0 / listed < batchSize      → 枯渇
 //	listed == batchSize && applied == 0   → 滞留。打ち切って Run に通知抑止させる
@@ -353,7 +365,7 @@ func (w *Worker) applyBatch(ctx context.Context) (listed, applied int, err error
 	)
 
 	if err = w.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		events, lerr := w.repo.ListPending(ctx, tx, int32(w.batchSize))
+		events, lerr := w.repo.ListPending(ctx, tx, int32(w.batchSize), w.maxRetry)
 		if lerr != nil {
 			return fmt.Errorf("list pending: %w", lerr)
 		}
@@ -474,7 +486,7 @@ func (w *Worker) absorbTickDeadline(ctx, tickCtx context.Context, err error) err
 func (w *Worker) listCandidates(ctx context.Context) ([]outboxdomain.Event, error) {
 	var candidates []outboxdomain.Event
 	if err := w.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		events, err := w.repo.ListPending(ctx, tx, int32(w.batchSize))
+		events, err := w.repo.ListPending(ctx, tx, int32(w.batchSize), w.maxRetry)
 		if err != nil {
 			return fmt.Errorf("list pending: %w", err)
 		}
@@ -569,7 +581,7 @@ func (w *Worker) processOne(ctx context.Context, id uint64) (progressed bool, er
 	)
 
 	if err = w.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		ev, found, cerr := w.repo.ClaimByID(ctx, tx, id)
+		ev, found, cerr := w.repo.ClaimByID(ctx, tx, id, w.maxRetry)
 		if cerr != nil {
 			return fmt.Errorf("claim id=%d: %w", id, cerr)
 		}
@@ -609,6 +621,20 @@ func (w *Worker) processOne(ctx context.Context, id uint64) (progressed bool, er
 // recordRetry は失敗イベントの retry_count と last_error を独立したトランザクションで記録する。
 // 業務側の tx とは分離する（業務 tx をロールバックさせつつ retry だけ残すため）。
 // 記録自体の失敗はログのみに留める。イベントは pending のままなので次ティックで再処理される。
+//
+// 記録が成功して retry_count が maxRetry に達した場合は、そのイベントが以降 ListPending /
+// ClaimByID から外れる（DLQ 相当）。運用が気づけるよう、この遷移の瞬間だけ ERROR ログを出す。
+// 記録に失敗した場合は retry_count が据え置きで打ち切られていないため、ログを出さない。
+//
+// 打ち切りの判定には IncrementRetry が返す**加算後の値**を使い、claim 時点の retryCount に
+// +1 して代用しない。claim tx はロールバック済みでロックが解放されているため、本メソッドが
+// 加算するまでの間に別 worker が同一イベントを再 claim して加算しうる。スナップショット値で
+// 判定すると、その競合で「同じ遷移のログが二重に出る」または「一度も出ないまま静かに
+// DLQ 化する」が起きる（後者は障害が輻輳しているときに観測が抜ける）。
+//
+// 判定を == にしているのは、加算が UPDATE の行ロックで直列化されるため、競合しても
+// ちょうど1つの worker だけが maxRetry と等しい値を観測するから。>= にすると後から
+// 加算した側（maxRetry+1 以降）も条件を満たしてしまい、二重ログが復活する。
 func (w *Worker) recordRetry(
 	ctx context.Context,
 	id uint64,
@@ -616,18 +642,35 @@ func (w *Worker) recordRetry(
 	retryCount uint32,
 	cause error,
 ) {
+	// retryCount は claim 時点の値。この WARN は「拾った時点で何回失敗していたか」を残す。
 	w.logger.WarnContext(ctx, "outbox event handling failed",
 		slog.Uint64("event_id", id),
 		slog.String("event_type", string(eventType)),
 		slog.Uint64("retry_count", uint64(retryCount)),
 		slog.Any("error", cause),
 	)
+	var newRetryCount uint32
 	if rerr := w.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		return w.repo.IncrementRetry(ctx, tx, id, cause.Error())
+		n, err := w.repo.IncrementRetry(ctx, tx, id, cause.Error())
+		if err != nil {
+			return err
+		}
+		newRetryCount = n
+		return nil
 	}, shared.WithIsolation(shared.IsolationReadCommitted)); rerr != nil {
 		w.logger.ErrorContext(ctx, "outbox increment retry failed",
 			slog.Uint64("event_id", id),
 			slog.Any("error", rerr),
+		)
+		return
+	}
+	if newRetryCount == w.maxRetry {
+		w.logger.ErrorContext(ctx, "outbox event dead-lettered",
+			slog.Uint64("event_id", id),
+			slog.String("event_type", string(eventType)),
+			slog.Uint64("retry_count", uint64(newRetryCount)),
+			slog.Uint64("max_retry", uint64(w.maxRetry)),
+			slog.Any("error", cause),
 		)
 	}
 }

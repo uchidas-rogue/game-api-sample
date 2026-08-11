@@ -14,8 +14,11 @@ type Querier interface {
 	// MarkProcessed を同一 tx でコミットして exactly-once を担保する。
 	// ID 指定にすることで、先頭イベントが恒久失敗しても後続を処理でき（head-of-line blocking 回避）、
 	// SKIP LOCKED と processed_at IS NULL 条件により複数 worker が同一イベントを二重処理しない。
-	// 既に処理済み or 他 worker がロック中は sql.ErrNoRows（該当なし）。
-	ClaimPendingOutboxEventByID(ctx context.Context, id uint64) (ClaimPendingOutboxEventByIDRow, error)
+	// 既に処理済み or 他 worker がロック中 or retry 上限到達は sql.ErrNoRows（該当なし）。
+	//
+	// retry_count の条件を ListPending と揃えるのは、候補取得と claim のあいだに別 worker が
+	// 上限へ到達させた場合に打ち切り済みイベントを掴まないようにするため。
+	ClaimPendingOutboxEventByID(ctx context.Context, arg ClaimPendingOutboxEventByIDParams) (ClaimPendingOutboxEventByIDRow, error)
 	// 処理済みイベントのうち、保持期間（秒）より古いものを最大 LIMIT 件削除する。
 	//
 	// 基準時刻は Go 側から渡さず SQL 側の NOW(6) で取る。アプリ側で現在時刻を取得すると
@@ -29,6 +32,13 @@ type Querier interface {
 	// max retry / DLQ の責務であり、GC が消すとイベントが黙って失われる。
 	DeleteProcessedOutboxEventsBefore(ctx context.Context, arg DeleteProcessedOutboxEventsBeforeParams) (int64, error)
 	GetGuild(ctx context.Context, id int64) (Guild, error)
+	// 加算後の retry_count を読み直すためのクエリ。IncrementOutboxEventRetry と同一
+	// トランザクションで呼ぶ前提で、UPDATE が取った排他ロックの下で自分の更新結果を読む。
+	//
+	// MySQL には UPDATE ... RETURNING が無いため2文に分ける。呼び出し側が claim 時点の
+	// スナップショット値に +1 して代用すると、複数 worker が同じイベントを再 claim した際に
+	// 実際の値とずれる（打ち切り遷移の検知が二重に出る / 一度も出ない）。
+	GetOutboxEventRetryCount(ctx context.Context, id uint64) (uint32, error)
 	GetUser(ctx context.Context, id int64) (User, error)
 	// ユーザー行を排他ロックで取得する。10連ガチャの整合性確保用。
 	// 必ずトランザクション内から呼び出すこと。デッドロック誘発検証のため意図的に FOR UPDATE。
@@ -47,7 +57,16 @@ type Querier interface {
 	// アイテムマスタ全件を取得する（排出抽選用）。
 	ListItems(ctx context.Context) ([]Item, error)
 	// 複数 worker をスケールアウトしたときの競合回避で skip locked を付与する。
-	ListPendingOutboxEvents(ctx context.Context, limit int32) ([]ListPendingOutboxEventsRow, error)
+	//
+	// retry_count が上限に達したイベント（poison）は候補から外す。除外しないと、
+	// 決して成功しないイベントが窓の先頭を占め続けて後続が永久に処理されない
+	// （head-of-line blocking）。詳細は docs/testing/outbox-worker.md §0-4。
+	//
+	// インデックスは idx_outbox_events_pending (processed_at, id) のまま使い、
+	// retry_count は index に足さない。足すと ORDER BY id の順序走査が崩れ、
+	// 「古い順に処理する」ために別途ソートが必要になる。除外対象は例外的に少ない前提で、
+	// index で絞った行に対する後段フィルタとして評価させる。
+	ListPendingOutboxEvents(ctx context.Context, arg ListPendingOutboxEventsParams) ([]ListPendingOutboxEventsRow, error)
 	ListUsersByIDs(ctx context.Context, ids []int64) ([]User, error)
 	MarkOutboxEventProcessed(ctx context.Context, id uint64) error
 	MarkOutboxEventsProcessedByIDs(ctx context.Context, ids []uint64) error
