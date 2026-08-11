@@ -48,12 +48,16 @@ func (r *OutboxRepository) InsertEvent(ctx context.Context, tx shared.Tx, eventT
 }
 
 // ListPending は未処理イベントを古い順に取得する（FOR UPDATE SKIP LOCKED）。
-func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit int32) ([]outboxdomain.Event, error) {
+// retry_count が maxRetry に達したイベントは候補に含めない。
+func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit int32, maxRetry uint32) ([]outboxdomain.Event, error) {
 	q, err := r.querier(tx)
 	if err != nil {
 		return nil, fmt.Errorf("ListPending: %w", err)
 	}
-	rows, err := q.ListPendingOutboxEvents(ctx, limit)
+	rows, err := q.ListPendingOutboxEvents(ctx, sqlc.ListPendingOutboxEventsParams{
+		MaxRetry: maxRetry,
+		Limit:    limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list pending outbox events: %w", err)
 	}
@@ -70,13 +74,17 @@ func (r *OutboxRepository) ListPending(ctx context.Context, tx shared.Tx, limit 
 }
 
 // ClaimByID は指定 ID の未処理イベントを FOR UPDATE SKIP LOCKED で確保する。
-// 該当なし（処理済み or 他 worker がロック中 = sql.ErrNoRows）は found=false を返し、エラーにはしない。
-func (r *OutboxRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64) (outboxdomain.Event, bool, error) {
+// 該当なし（処理済み / 他 worker がロック中 / retry 上限到達 = sql.ErrNoRows）は
+// found=false を返し、エラーにはしない。
+func (r *OutboxRepository) ClaimByID(ctx context.Context, tx shared.Tx, id uint64, maxRetry uint32) (outboxdomain.Event, bool, error) {
 	q, err := r.querier(tx)
 	if err != nil {
 		return outboxdomain.Event{}, false, fmt.Errorf("ClaimByID: %w", err)
 	}
-	row, err := q.ClaimPendingOutboxEventByID(ctx, id)
+	row, err := q.ClaimPendingOutboxEventByID(ctx, sqlc.ClaimPendingOutboxEventByIDParams{
+		ID:       id,
+		MaxRetry: maxRetry,
+	})
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return outboxdomain.Event{}, false, nil
@@ -139,16 +147,23 @@ func (r *OutboxRepository) DeleteProcessedBefore(
 }
 
 // IncrementRetry は retry_count をインクリメントし last_error を記録する。
-func (r *OutboxRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error {
+// 加算後の retry_count は同一トランザクション内で読み直して返す。MySQL には
+// UPDATE ... RETURNING が無いため2文になるが、UPDATE が取った排他ロックの下で読むので
+// 他 worker の加算が割り込むことはなく、返す値は自分の加算結果そのものになる。
+func (r *OutboxRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) (uint32, error) {
 	q, err := r.querier(tx)
 	if err != nil {
-		return fmt.Errorf("IncrementRetry: %w", err)
+		return 0, fmt.Errorf("IncrementRetry: %w", err)
 	}
 	if err := q.IncrementOutboxEventRetry(ctx, sqlc.IncrementOutboxEventRetryParams{
 		ID:        id,
 		LastError: sql.NullString{String: lastError, Valid: lastError != ""},
 	}); err != nil {
-		return fmt.Errorf("increment outbox event retry: %w", err)
+		return 0, fmt.Errorf("increment outbox event retry: %w", err)
 	}
-	return nil
+	retryCount, err := q.GetOutboxEventRetryCount(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("get outbox event retry count id=%d: %w", id, err)
+	}
+	return retryCount, nil
 }

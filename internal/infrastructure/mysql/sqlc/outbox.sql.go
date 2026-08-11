@@ -15,9 +15,16 @@ import (
 const claimPendingOutboxEventByID = `-- name: ClaimPendingOutboxEventByID :one
 SELECT id, event_type, payload, retry_count
 FROM outbox_events
-WHERE id = ? AND processed_at IS NULL
+WHERE id = ?
+  AND processed_at IS NULL
+  AND retry_count < ?
 FOR UPDATE SKIP LOCKED
 `
+
+type ClaimPendingOutboxEventByIDParams struct {
+	ID       uint64
+	MaxRetry uint32
+}
 
 type ClaimPendingOutboxEventByIDRow struct {
 	ID         uint64
@@ -31,9 +38,12 @@ type ClaimPendingOutboxEventByIDRow struct {
 // MarkProcessed を同一 tx でコミットして exactly-once を担保する。
 // ID 指定にすることで、先頭イベントが恒久失敗しても後続を処理でき（head-of-line blocking 回避）、
 // SKIP LOCKED と processed_at IS NULL 条件により複数 worker が同一イベントを二重処理しない。
-// 既に処理済み or 他 worker がロック中は sql.ErrNoRows（該当なし）。
-func (q *Queries) ClaimPendingOutboxEventByID(ctx context.Context, id uint64) (ClaimPendingOutboxEventByIDRow, error) {
-	row := q.db.QueryRowContext(ctx, claimPendingOutboxEventByID, id)
+// 既に処理済み or 他 worker がロック中 or retry 上限到達は sql.ErrNoRows（該当なし）。
+//
+// retry_count の条件を ListPending と揃えるのは、候補取得と claim のあいだに別 worker が
+// 上限へ到達させた場合に打ち切り済みイベントを掴まないようにするため。
+func (q *Queries) ClaimPendingOutboxEventByID(ctx context.Context, arg ClaimPendingOutboxEventByIDParams) (ClaimPendingOutboxEventByIDRow, error) {
+	row := q.db.QueryRowContext(ctx, claimPendingOutboxEventByID, arg.ID, arg.MaxRetry)
 	var i ClaimPendingOutboxEventByIDRow
 	err := row.Scan(
 		&i.ID,
@@ -76,6 +86,25 @@ func (q *Queries) DeleteProcessedOutboxEventsBefore(ctx context.Context, arg Del
 	return result.RowsAffected()
 }
 
+const getOutboxEventRetryCount = `-- name: GetOutboxEventRetryCount :one
+SELECT retry_count
+FROM outbox_events
+WHERE id = ?
+`
+
+// 加算後の retry_count を読み直すためのクエリ。IncrementOutboxEventRetry と同一
+// トランザクションで呼ぶ前提で、UPDATE が取った排他ロックの下で自分の更新結果を読む。
+//
+// MySQL には UPDATE ... RETURNING が無いため2文に分ける。呼び出し側が claim 時点の
+// スナップショット値に +1 して代用すると、複数 worker が同じイベントを再 claim した際に
+// 実際の値とずれる（打ち切り遷移の検知が二重に出る / 一度も出ない）。
+func (q *Queries) GetOutboxEventRetryCount(ctx context.Context, id uint64) (uint32, error) {
+	row := q.db.QueryRowContext(ctx, getOutboxEventRetryCount, id)
+	var retry_count uint32
+	err := row.Scan(&retry_count)
+	return retry_count, err
+}
+
 const incrementOutboxEventRetry = `-- name: IncrementOutboxEventRetry :exec
 UPDATE outbox_events
 SET retry_count = retry_count + 1,
@@ -115,10 +144,16 @@ const listPendingOutboxEvents = `-- name: ListPendingOutboxEvents :many
 SELECT id, event_type, payload, retry_count
 FROM outbox_events
 WHERE processed_at IS NULL
+  AND retry_count < ?
 ORDER BY id ASC
 LIMIT ?
 FOR UPDATE SKIP LOCKED
 `
+
+type ListPendingOutboxEventsParams struct {
+	MaxRetry uint32
+	Limit    int32
+}
 
 type ListPendingOutboxEventsRow struct {
 	ID         uint64
@@ -128,8 +163,17 @@ type ListPendingOutboxEventsRow struct {
 }
 
 // 複数 worker をスケールアウトしたときの競合回避で skip locked を付与する。
-func (q *Queries) ListPendingOutboxEvents(ctx context.Context, limit int32) ([]ListPendingOutboxEventsRow, error) {
-	rows, err := q.db.QueryContext(ctx, listPendingOutboxEvents, limit)
+//
+// retry_count が上限に達したイベント（poison）は候補から外す。除外しないと、
+// 決して成功しないイベントが窓の先頭を占め続けて後続が永久に処理されない
+// （head-of-line blocking）。詳細は docs/testing/outbox-worker.md §0-4。
+//
+// インデックスは idx_outbox_events_pending (processed_at, id) のまま使い、
+// retry_count は index に足さない。足すと ORDER BY id の順序走査が崩れ、
+// 「古い順に処理する」ために別途ソートが必要になる。除外対象は例外的に少ない前提で、
+// index で絞った行に対する後段フィルタとして評価させる。
+func (q *Queries) ListPendingOutboxEvents(ctx context.Context, arg ListPendingOutboxEventsParams) ([]ListPendingOutboxEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, listPendingOutboxEvents, arg.MaxRetry, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

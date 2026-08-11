@@ -21,7 +21,7 @@ MySQL の outbox テーブルに積まれたイベントを読み、**MySQL の�
 一方 `RankingSyncer`（[ranking-sync-batch.md](ranking-sync-batch.md)）はスナップショット
 一貫性が必要なため、意図的に既定のままにしてある。
 
-## 0. 全経路にまたがる2つの不変条件
+## 0. 全経路にまたがる不変条件
 
 個々の図に何度も現れるため、先に理由をまとめておく。
 
@@ -51,11 +51,15 @@ COMMIT 後の Redis 失敗は**再試行しない**。MySQL は確定済みで�
 `runOnce` は候補が枯れるまで `ListPending` を繰り返す（ドレイン）。この打ち切り条件を
 **取得件数**（`ListPending` が返した件数）だけで見てはならない。
 
-`ListPendingOutboxEvents` は `retry_count` を条件に含めず `ORDER BY id ASC` で拾うため、
-デコード不能な恒久失敗イベント（poison）は何度でも取得される。取得件数だけで判定すると、
-poison が `batchSize` 件以上先頭に滞留したときに毎回ちょうど `batchSize` 件が返り続け、
+`ListPendingOutboxEvents` は `ORDER BY id ASC` で拾うため、失敗イベントは
+**上限（§0-4）に到達するまで**何度でも取得される。取得件数だけで判定すると、
+失敗イベントが `batchSize` 件以上先頭に滞留したときに毎回ちょうど `batchSize` 件が返り続け、
 **ドレインが永久に終わらない**（`tickTimeout` で打ち切られても `drainNow` がスリープなしで
 再入するため、`ListPending` と `IncrementRetry` を連打するビジーループになる）。
+
+max retry 上限（§0-4）を入れた後も本判定は必要。上限は**恒久失敗が窓を占め続けること**を
+有限回で終わらせるだけで、上限到達までの再取得と、一時的な失敗（MySQL/Redis 障害）で
+`applied == 0` になる状況は残るため。
 
 そこで各経路は `listed`（取得件数）と `applied`（処理済みマークまで到達した件数）を
 別々に返し、`runOnce` は次の条件で判定する。
@@ -79,7 +83,7 @@ poison が `batchSize` 件以上先頭に滞留したときに毎回ちょうど
 
 そのため `Run` は直近のドレインが滞留で終わったかを保持し、**滞留中は通知を捨てて ticker まで待つ**。
 滞留中は新規イベントも窓の外にあって処理できないため、通知を捨てても失うものはない。
-ticker では必ず再試行するので、運用側で poison を除去すれば `pollInterval` 以内に復帰する。
+ticker では必ず再試行するので、poison が上限に到達して窓から外れれば `pollInterval` 以内に復帰する。
 
 > **時間ベースのバックオフを採らない理由**: `.golangci.yml` の forbidigo が `time.Now` を禁止しており、Clock インターフェースは未実装。
 > <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal cmd configs --include=*.go --exclude=*_test.go -->
@@ -87,9 +91,59 @@ ticker では必ず再試行するので、運用側で poison を除去すれ�
 > 必要になり、変更の範囲が本質から外れる。既存の ticker を再開トリガに使えば
 > 新しい依存を作らずに済む。
 
-**根治ではない。** 窓が poison で埋まると後続イベントが処理されない head-of-line blocking は
-残ったままで、本節が止めるのは「そのあいだ DB を叩き続けること」だけ。根治は
-`ListPending` から `retry_count` 上限超過を除外する max retry / DLQ（§4）。
+本節が止めるのは「滞留しているあいだ DB を叩き続けること」だけで、head-of-line blocking
+そのものを解くのは次節の max retry 上限。両者は役割が違うので、上限を入れた後も本節の抑止は残す。
+
+### 0-4. 恒久失敗は `retry_count` 上限で窓から外す（max retry / DLQ）
+
+`ListPendingOutboxEvents` と `ClaimPendingOutboxEventByID` は `retry_count < maxRetry` を
+条件に含める。上限に達したイベントは以降 worker から見えなくなり、DLQ に置いたのと同じ扱いになる。
+
+これが無いと、payload が壊れたイベント（poison）は `IncrementRetry` されるだけで
+`processed_at IS NULL` のまま何度でも拾われ、次の2つが起きる。
+
+| 症状 | 内容 |
+| --- | --- |
+| head-of-line blocking | poison が `batchSize` 件以上先頭を占めると、後続の正常なイベントが**永久に**処理されない |
+| retry 記録の再実行 | ドレインのたびに poison 件数ぶんの `IncrementRetry` tx が発行される |
+
+**上限は `ClaimByID` にも掛ける。** 候補取得と claim のあいだに別 worker が上限へ到達させた場合、
+`found=false` になって `processOne` が前進として数える（滞留を作らない）。
+
+**打ち切りの観測は「閾値に到達した瞬間の ERROR ログ」1点に絞る**（`outbox event dead-lettered`）。
+`recordRetry` が `IncrementRetry` の tx に**成功した後**、`IncrementRetry` が返す
+**加算後の値**が `maxRetry` と**ちょうど一致**したら出す。成功後に判定するのは、記録できなかった
+イベントは `retry_count` が据え置きのまま次ティックで再処理され、まだ打ち切られていないため。
+以降そのイベントは `ListPending` に現れないので同じログが繰り返し出ることもない。
+
+**claim 時点の `retry_count` に +1 して代用してはならない。** claim tx はロールバック済みで
+行ロックが解放されているため、`recordRetry` が加算するまでの間に別 worker が同一イベントを
+再 claim して加算しうる（複数 worker 構成は `SKIP LOCKED` の設計意図どおり想定内）。
+スナップショット値で判定すると次の2つが起きる。
+
+| 競合の形 | スナップショット判定の結果 |
+| --- | --- |
+| 2 worker が `maxRetry-1` を読んで両方加算 | 同じ遷移の ERROR ログが**二重に出る** |
+| 2 worker が `maxRetry-2` を読んで両方加算 | どちらも上限未満と判定し、**ログが一度も出ないまま**静かに DLQ 化する |
+
+後者は障害が輻輳して再試行が集中する場面、つまりこのログが最も必要なときに観測が抜ける。
+
+`IncrementRetry` は加算後の値を返す。MySQL には `UPDATE ... RETURNING` が無いため
+`infrastructure` 層が同一トランザクション内で UPDATE → SELECT の2文を発行するが、UPDATE が
+取った行ロックの下で読むので他 worker の加算は割り込めず、返る値は自分の加算結果そのものになる。
+
+判定を `>=` ではなく **`==`** にしているのも競合対策。加算は行ロックで直列化されるため、
+競合してもちょうど1つの worker だけが `maxRetry` と等しい値を観測する。`>=` にすると
+後から加算した側（`maxRetry+1` 以降）も条件を満たし、二重ログが復活する。
+
+滞留件数を数える COUNT クエリは**置かない**。`processed_at IS NULL` の行を index 走査するため、
+バックログが大きいときのコストが読めない（実測で 8,959 件の滞留が発生した経緯がある）。
+
+**トレードオフ**: `retry_count` は失敗の種類を区別しないため、MySQL/Redis の障害が続くと
+健全なイベントも回数を消費して打ち切られうる。時間ベースのバックオフで緩和できない事情は
+§0-3 と同じ（Clock を新設せずに済ませたい）なので、既定値（`OUTBOX_MAX_RETRY`）を
+大きめに取ったうえで、復旧は
+`UPDATE outbox_events SET retry_count = 0 WHERE id IN (...)` の運用手順に委ねる。
 
 ## 1. `Run`（ループ）
 
@@ -274,7 +328,10 @@ flowchart TD
     RB[[ROLLBACK<br/>MySQL 副作用を巻き戻す]] --> W[WARN ログ]
     W --> RT[[別 tx: repo.IncrementRetry<br/>last_error 記録]]
     RT -- err --> RTE[ERROR ログのみ<br/>次ティックで再処理]
-    RT -- ok --> PZ
+    RT -- ok --> DL{加算後の retry_count == maxRetry?}
+    DL -- No --> PZ
+    DL -- Yes --> DLE[ERROR ログ: dead-lettered<br/>以降 ListPending に現れない]
+    DLE --> PZ
     RTE --> PZ
 ```
 
@@ -291,6 +348,8 @@ flowchart TD
   `ClaimByID` / `MarkProcessed` の失敗は**ティックを中断する**（DB が壊れている）
 - **`applied` に数えるのは「`MarkProcessed` が成功した」か「`found=false`」のときだけ**。
   `applyEventInTx` が失敗したイベントは前進していないので数えない（§0-2 の判定に使う）
+- **dead-letter のログは `IncrementRetry` が成功した後にだけ出す**（§0-4）。記録に失敗した
+  イベントは `retry_count` が据え置きのまま次ティックで再処理されるので、まだ打ち切られていない
 
 #### テスト仕様表
 
@@ -319,6 +378,15 @@ flowchart TD
 | `MarkProcessed` がエラー | `MK→PE2` | ティックを中断 | `TestWorker_applyPerEvent_フォールバック経路_MarkProcessedエラー` |
 | `concurrency` 本での並列処理 | `PB` | 候補が並列に処理される | `TestWorker_applyPerEvent_フォールバック経路_並列処理` |
 | 全件が claim 不可 | `P2→PS` | 何も適用されない | `TestWorker_applyPerEvent_フォールバック経路_claim不可はスキップ` |
+| 加算後の値が上限にちょうど到達 | `RT→DL→DLE` | dead-letter の ERROR ログが **1 回**出る | `TestWorker_recordRetry_上限到達でdeadLetterログを出す` |
+| 加算後の値が上限未満 | `RT→DL→PZ` | dead-letter ログを**出さない** | 同上（サブテスト） |
+| **競合で上限を追い越した**（加算後 = 上限+1） | `RT→DL→PZ` | dead-letter ログを**出さない**（上限ちょうどを観測した側が既に出している） | 同上（サブテスト） |
+| **競合で claim 時点より進んで上限に到達**（claim 時点 = 上限-2、加算後 = 上限） | `RT→DL→DLE` | dead-letter ログを **1 回**出す（claim 時点の値で判定していると出ない） | 同上（サブテスト） |
+| `IncrementRetry` が失敗（回数は上限相当） | `RT→RTE` | dead-letter ログを**出さない**（記録できていない） | 同上（サブテスト） |
+
+**`maxRetry` が渡ることの検証**: `ListPending` / `ClaimByID` の各 `EXPECT` が `maxRetry` を
+引数に含めるため、渡し忘れは既存ケースが軒並み落ちる。新しいパスを増やさないので
+専用ケースは作らない（[README.md](README.md) の「同一パスを通るケースは統合する」）。
 
 **`DoInTx` の呼び出し回数について**: テストは wall-clock sleep ではなく `DoInTx` の
 呼び出しシグナルを数えて同期点にしている（`invokeDoInTxAndSignal` + `waitForCalls`）。
@@ -345,23 +413,13 @@ worker は `processed_at` を立てるだけで行を消さない。保持期間
 GC バッチ（`cmd/batch -gc-outbox`）の責務で、設計は [outbox-gc.md](outbox-gc.md) にある。
 worker 側の設計には影響しないため、本ファイルではこれ以上扱わない。
 
-### 【要対応】ポイズンメッセージ — max retry / DLQ（優先度: 高）
+### dead-letter された行の掃除
 
-§2-2 の表のケース 4 で明らかになったとおり、**payload が壊れたイベントは `IncrementRetry` され
-続ける**。`ListPendingOutboxEvents` が `retry_count` を条件に含めないため、
-`FOR UPDATE SKIP LOCKED` で毎回拾われては失敗し、outbox に永久に残り続ける。
+`retry_count` が上限に達した行は `processed_at IS NULL` のままなので、GC バッチの対象外
+（GC は未処理行を消さない。[outbox-gc.md](outbox-gc.md)）。テーブルには残り続ける。
 
-§0-2 / §0-3 で入れたのは「そのあいだ DB を叩き続けないための歯止め」であって根治ではない。
-残っている問題は次の2つ。
-
-| 未対応の穴 | 現状 | 根治策 |
-| --- | --- | --- |
-| **head-of-line blocking** | poison が `batchSize` 件以上先頭を占めると、後続の正常なイベントが永久に処理されない（滞留と判定して打ち切るだけ） | `ListPending` から `retry_count >= 上限` を除外する |
-| **retry 記録の再実行** | poison が窓に残る限り、ドレインのたびに poison 件数ぶんの `IncrementRetry` tx が発行される | 同上（除外されれば拾われなくなる） |
-
-いずれも `ListPendingOutboxEvents` へ `retry_count` 上限フィルタを足し、上限超過を DLQ 相当の
-扱いにすれば同時に解消する。クエリ・sqlc 生成物・設定値・`Repository` インターフェースに
-またがるため別タスクとして扱う。
+自動削除しないのは意図的で、消すとイベントが黙って失われるため。件数が問題になる規模で
+運用する場合は、内容を確認したうえで手動で削除するか、別テーブルへ退避する運用を用意する。
 
 ### Redis 欠落の自動復旧
 

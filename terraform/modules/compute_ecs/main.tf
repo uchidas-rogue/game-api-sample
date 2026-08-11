@@ -32,6 +32,12 @@ locals {
       capabilities = { add = [], drop = ["ALL"] }
     }
   }
+
+  # outbox GC のスケジュール名。スケジュール本体と、スケジューラ用ロールの trust policy が
+  # 参照する aws:SourceArn の両方で使う。ロールとスケジュールは相互参照になり
+  # （スケジュールが role_arn を、ロールがスケジュール ARN を要る）terraform で循環するため、
+  # ARN は resource 参照ではなく文字列で組み立てる。名前を1箇所に集約して食い違いを防ぐ。
+  outbox_gc_schedule_name = "${var.name_prefix}-outbox-gc"
 }
 
 # ---- ECS Cluster ----
@@ -416,6 +422,25 @@ data "aws_iam_policy_document" "scheduler_assume" {
       type        = "Service"
       identifiers = ["scheduler.amazonaws.com"]
     }
+
+    # confused deputy 対策。サービスプリンシパルだけを条件にすると、他アカウントの
+    # EventBridge Scheduler がこのロール ARN を実行ロールに指定するだけで AssumeRole が
+    # 通ってしまい、下の RunTask/PassRole をいくら絞っても入口で無効化される。
+    # 呼び出し元アカウントと、呼び出し元スケジュールそのものを固定する。
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    # group_name を指定していないため既定のスケジュールグループ（default）に入る。
+    # グループを分ける場合はこの ARN も併せて直すこと。
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values = [
+        "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.outbox_gc_schedule_name}",
+      ]
+    }
   }
 }
 
@@ -462,7 +487,7 @@ resource "aws_iam_role_policy" "scheduler_run_task" {
 }
 
 resource "aws_scheduler_schedule" "outbox_gc" {
-  name        = "${var.name_prefix}-outbox-gc"
+  name        = local.outbox_gc_schedule_name
   description = "処理済み outbox イベントを OUTBOX_RETENTION より古いものから削除する"
 
   # 実行時刻がぶれると調査時に突き合わせできないため、時間窓は使わず固定する。
