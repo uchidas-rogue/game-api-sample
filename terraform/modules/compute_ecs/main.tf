@@ -419,6 +419,12 @@ data "aws_iam_policy_document" "scheduler_assume" {
   }
 }
 
+# permissions_boundary は設定しない（本モジュールの task / task_execution と同じ）。
+# boundary ARN は iam_oidc が持つが、iam_oidc は compute_ecs.cluster_arn に依存しており
+# 逆向きに渡すとモジュール間で循環参照になるため。
+# 帰結として、このロールの新規作成は tf_apply ロール（CI の apply）では拒否される。
+# マージ後に一度だけ人手でローカル apply すること。理由と手順は
+# terraform/ARCHITECTURE.md「新規 IAM ロールを追加する変更は初回だけ人手で apply する」。
 resource "aws_iam_role" "scheduler" {
   name               = "${var.name_prefix}-scheduler"
   assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json

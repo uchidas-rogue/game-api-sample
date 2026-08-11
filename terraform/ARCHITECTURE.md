@@ -254,6 +254,24 @@ sequenceDiagram
 
 `tf_apply` は `PowerUserAccess` + `IAMFullAccess`（実質 admin 相当）を付与しており、IAMFull により「admin 権限を持つ別 role を作って assume する」等の**権限昇格**が原理上可能になる。assume を `environment:production-apply` に限定し、GitHub Environment の承認（required reviewers）を歯止めとしているが、この承認設定はリポジトリの IaC では検知できない GitHub 側設定であるため、唯一の歯止めが Terraform 管理外にある状態だった。これを補うため `tf_apply` ロールに **permissions boundary**（`${name_prefix}-tf-apply-boundary`）を付与する。boundary は実効権限の上限であり、Terraform 運用に必要な広範な権限（`Allow *`）は残しつつ、(1) boundary を継承しない IAM エンティティの作成、(2) boundary の付替・剥奪、(3) boundary ポリシー自身の改変、を `Deny` で封じる。これにより GitHub 側設定に依存せず、コード（IaC）で昇格経路を遮断する。GitHub Environment 側の保護（承認者・wait timer）は引き続き併用すること。
 
+### 【運用ルール】新規 IAM ロールを追加する変更は初回だけ人手で apply する
+
+boundary の `DenyCreateWithoutBoundary` は「boundary を継承しない `iam:CreateRole`」を拒否する。**拒否対象は `iam:CreateRole` だけで、既に存在するロールの更新・利用は妨げない。** そのため定常運用（既存リソースの変更）は CI の apply で完結するが、**terraform に IAM ロールを1つでも新規追加した変更は `tf_apply` ロールでは apply できない**。
+
+`compute_ecs` の `task` / `task_execution` / `scheduler`、`iam_oidc` の `deploy` / `tf_plan` はいずれも boundary を設定していないため、この制約の対象になる。
+
+放置すると影響は追加した機能に留まらない。`terraform.yml` の apply が `CreateRole` で失敗 → `terraform plan` が差分を返し続ける → `deploy.yml` の precheck（差分ゼロを要求）が停止 → **`api` / `outbox-worker` を含むデプロイ全体が止まる**。
+
+したがって新規 IAM ロールを含む変更は、**マージ後に一度だけ人の AWS 認証情報でローカル apply する**。
+
+```bash
+make tf/init
+terraform -chdir=terraform/environments/dev apply -target=aws_iam_role.<新規ロール>
+# 以降は CI の apply が通常どおり流れる
+```
+
+**boundary ARN を `compute_ecs` へ引き回す案は採らない。** `environments/dev/main.tf` で `module.iam_oidc` が `ecs_cluster_arn = module.compute_ecs.cluster_arn` を受け取っており依存は compute_ecs → iam_oidc の向きなので、boundary ARN を逆向きに渡すとモジュール間で循環参照になる。解消するには boundary ポリシーを `iam_oidc` の外（環境ルートか専用モジュール）へ切り出す再編が要る。IAM ロールの追加頻度は低く、上記の1コマンドで足りるため、再編のコストに見合わないと判断した。追加頻度が上がったらこの判断を見直す。
+
 ## 凡例
 
 - **オレンジ系**: AWS リソース
