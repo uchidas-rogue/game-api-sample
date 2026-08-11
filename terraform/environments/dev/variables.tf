@@ -105,3 +105,15 @@ variable "worker_image_tag" {
   type        = string
   default     = "latest"
 }
+
+variable "outbox_gc_schedule_expression" {
+  description = "outbox GC の実行スケジュール（EventBridge Scheduler の式。UTC 評価）"
+  type        = string
+  default     = "cron(0 18 * * ? *)"
+}
+
+variable "outbox_gc_enabled" {
+  description = "outbox GC の定期実行を有効にするか"
+  type        = bool
+  default     = true
+}

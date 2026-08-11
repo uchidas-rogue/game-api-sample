@@ -63,6 +63,9 @@ module "compute_ecs" {
 
   api_desired_count    = var.api_desired_count
   worker_desired_count = var.worker_desired_count
+
+  outbox_gc_schedule_expression = var.outbox_gc_schedule_expression
+  outbox_gc_enabled             = var.outbox_gc_enabled
 }
 
 module "iam_oidc" {

@@ -112,3 +112,16 @@ variable "log_retention_days" {
   type    = number
   default = 14
 }
+
+variable "outbox_gc_schedule_expression" {
+  description = "outbox GC の実行スケジュール（EventBridge Scheduler の式。UTC 評価）"
+  type        = string
+  # 03:00 JST 毎日。日次で足りるのは GC がチャンク削除で1回の実行量に上限が無いため。
+  default = "cron(0 18 * * ? *)"
+}
+
+variable "outbox_gc_enabled" {
+  description = "outbox GC の定期実行を有効にするか（false で schedule を DISABLED にする）"
+  type        = bool
+  default     = true
+}

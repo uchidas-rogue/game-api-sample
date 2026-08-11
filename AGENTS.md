@@ -17,6 +17,7 @@
   - `make/terraform.mk`, ルート `Makefile`（ローカル実行コマンド・変数）
   - `terraform/ARCHITECTURE.md`（構成図・解説）
 - とくに backend 設定（bucket / key / ロック方式等）・IAM ロール ARN・terraform バージョン・リソース名は、上記ファイル間で値や前提が一致している必要がある。片方だけ変更しないこと
+- **IAM ロールを新規追加する変更は CI の apply では通らない**。`tf_apply` の permissions boundary が boundary 未継承の `iam:CreateRole` を拒否するため、マージ後に一度だけ人手でローカル apply する必要がある。放置するとデプロイ全体が止まる。手順と理由の正本は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md)「新規 IAM ロールを追加する変更は初回だけ人手で apply する」
 
 # 1. Architecture & Design Rules (Clean Architecture)
 - 本節と §2 の規約のうち機械判定できるものは `.golangci.yml` で強制している（`make lint`）。規約を追加・変更したら、同ファイルの判定も併せて更新する。新しい外部ライブラリを使う場合は `depguard` の該当層の `allow` に理由付きで追加する（`//nolint` で個別に抜け道を作らない）

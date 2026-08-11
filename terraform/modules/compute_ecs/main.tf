@@ -32,6 +32,12 @@ locals {
       capabilities = { add = [], drop = ["ALL"] }
     }
   }
+
+  # outbox GC のスケジュール名。スケジュール本体と、スケジューラ用ロールの trust policy が
+  # 参照する aws:SourceArn の両方で使う。ロールとスケジュールは相互参照になり
+  # （スケジュールが role_arn を、ロールがスケジュール ARN を要る）terraform で循環するため、
+  # ARN は resource 参照ではなく文字列で組み立てる。名前を1箇所に集約して食い違いを防ぐ。
+  outbox_gc_schedule_name = "${var.name_prefix}-outbox-gc"
 }
 
 # ---- ECS Cluster ----
@@ -98,7 +104,9 @@ resource "aws_iam_role" "task" {
 # ---- CloudWatch Logs ----
 
 resource "aws_cloudwatch_log_group" "this" {
-  for_each = toset(["api", "batch", "outbox-worker", "migrate"])
+  # outbox-gc は batch と同じイメージだが、定期実行の削除件数ログを
+  # batch の手動実行（seed / sync-rankings）と混ぜないためロググループを分ける。
+  for_each = toset(["api", "batch", "outbox-worker", "migrate", "outbox-gc"])
 
   name              = "/ecs/${var.name_prefix}/${each.value}"
   retention_in_days = var.log_retention_days
@@ -251,6 +259,49 @@ resource "aws_ecs_task_definition" "batch" {
   ])
 }
 
+# outbox-gc は batch と同じイメージを使うが、実行するサブコマンドを command に焼き込んだ
+# 専用の TaskDefinition にする。EventBridge Scheduler 側で containerOverrides を渡す形にすると
+# フラグ文字列がスケジュールの input JSON に埋もれ、typo が「実行時に exit 1」でしか
+# 分からない（cmd/batch はフラグ未指定だと no batch specified で異常終了する）。
+# command を宣言的に持てば terraform の diff とコンソールの両方で何が動くか見える。
+#
+# image は batch と同一（cmd/batch のバイナリ）。Dockerfile の ENTRYPOINT が ["/app"] なので
+# command はそのまま引数として渡る。保持期間は OUTBOX_RETENTION（configs の既定 72h）が
+# 正本なので、ここでは env を足さない。
+resource "aws_ecs_task_definition" "outbox_gc" {
+  family                   = "${var.name_prefix}-outbox-gc"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = var.batch_cpu
+  memory                   = var.batch_memory
+  execution_role_arn       = aws_iam_role.task_execution.arn
+  task_role_arn            = aws_iam_role.task.arn
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  container_definitions = jsonencode([
+    merge(local.container_security, {
+      name        = "outbox-gc"
+      image       = "${var.repository_urls["batch"]}:${var.image_tags["batch"]}"
+      essential   = true
+      command     = ["-gc-outbox"]
+      environment = local.common_env
+      secrets     = local.app_secrets
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.this["outbox-gc"].name
+          awslogs-region        = var.region
+          awslogs-stream-prefix = "ecs"
+        }
+      }
+    })
+  ])
+}
+
 resource "aws_ecs_task_definition" "migrate" {
   family                   = "${var.name_prefix}-migrate"
   requires_compatibilities = ["FARGATE"]
@@ -347,7 +398,126 @@ resource "aws_ecs_service" "outbox_worker" {
   }
 }
 
-# batch / migrate は Service ではなく RunTask 起動。
-# migrate: deploy.yml が ECS サービス更新前に RunTask。
-# batch: 回復用。make batch/run または GitHub Actions の手動実行でトリガ（定期実行はしない）。
+# batch / outbox-gc / migrate は Service ではなく RunTask 起動。
+# migrate:   deploy.yml が ECS サービス更新前に RunTask。
+# outbox-gc: 下の EventBridge Scheduler が定期 RunTask（常設バッチ）。
+# batch:     回復用。seed / sync-rankings を手動 RunTask で起動する（定期実行はしない）。
+#            ローカルでの同等操作は make db/outbox/gc・make load/seed・make load/warm。
+
+# ---- 定期実行: outbox GC（EventBridge Scheduler） ----
+#
+# worker は processed_at を立てるだけで行を消さないため、これが無いと outbox_events が
+# 単調増加する（負荷試験の実測 約400 events/sec で1日あたり約3,400万行）。
+# 設計は docs/testing/outbox-gc.md、GC が未処理行を消さない理由は
+# docs/testing/outbox-worker.md を参照。
+#
+# EventBridge Rule + Target ではなく Scheduler を使うのは、リソース1つで済み、
+# ECS テンプレートターゲットが network_configuration を直接持てるため。
+
+data "aws_iam_policy_document" "scheduler_assume" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+
+    # confused deputy 対策。サービスプリンシパルだけを条件にすると、他アカウントの
+    # EventBridge Scheduler がこのロール ARN を実行ロールに指定するだけで AssumeRole が
+    # 通ってしまい、下の RunTask/PassRole をいくら絞っても入口で無効化される。
+    # 呼び出し元アカウントと、呼び出し元スケジュールそのものを固定する。
+    condition {
+      test     = "StringEquals"
+      variable = "aws:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+    # group_name を指定していないため既定のスケジュールグループ（default）に入る。
+    # グループを分ける場合はこの ARN も併せて直すこと。
+    condition {
+      test     = "ArnLike"
+      variable = "aws:SourceArn"
+      values = [
+        "arn:aws:scheduler:${var.region}:${data.aws_caller_identity.current.account_id}:schedule/default/${local.outbox_gc_schedule_name}",
+      ]
+    }
+  }
+}
+
+# permissions_boundary は設定しない（本モジュールの task / task_execution と同じ）。
+# boundary ARN は iam_oidc が持つが、iam_oidc は compute_ecs.cluster_arn に依存しており
+# 逆向きに渡すとモジュール間で循環参照になるため。
+# 帰結として、このロールの新規作成は tf_apply ロール（CI の apply）では拒否される。
+# マージ後に一度だけ人手でローカル apply すること。理由と手順は
+# terraform/ARCHITECTURE.md「新規 IAM ロールを追加する変更は初回だけ人手で apply する」。
+resource "aws_iam_role" "scheduler" {
+  name               = "${var.name_prefix}-scheduler"
+  assume_role_policy = data.aws_iam_policy_document.scheduler_assume.json
+}
+
+data "aws_iam_policy_document" "scheduler_run_task" {
+  # RunTask の対象は outbox-gc の TaskDefinition のみ。revision はデプロイのたびに
+  # 増えるためワイルドカードにする（ARN の revision 部分だけが可変）。
+  statement {
+    effect    = "Allow"
+    actions   = ["ecs:RunTask"]
+    resources = ["${aws_ecs_task_definition.outbox_gc.arn_without_revision}:*"]
+
+    # TaskDefinition を絞っても、他クラスタで起動されては最小権限にならない。
+    condition {
+      test     = "ArnEquals"
+      variable = "ecs:cluster"
+      values   = [aws_ecs_cluster.this.arn]
+    }
+  }
+
+  # RunTask はタスクへ execution role / task role を引き渡すため PassRole が要る。
+  # 対象はこのモジュールが作る2つのロールに限定する。
+  statement {
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = [aws_iam_role.task.arn, aws_iam_role.task_execution.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "scheduler_run_task" {
+  name   = "run-task"
+  role   = aws_iam_role.scheduler.id
+  policy = data.aws_iam_policy_document.scheduler_run_task.json
+}
+
+resource "aws_scheduler_schedule" "outbox_gc" {
+  name        = local.outbox_gc_schedule_name
+  description = "処理済み outbox イベントを OUTBOX_RETENTION より古いものから削除する"
+
+  # 実行時刻がぶれると調査時に突き合わせできないため、時間窓は使わず固定する。
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression = var.outbox_gc_schedule_expression
+  state               = var.outbox_gc_enabled ? "ENABLED" : "DISABLED"
+
+  target {
+    arn      = aws_ecs_cluster.this.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      # revision を含めない ARN を渡し、最新 ACTIVE revision を実行時に解決させる。
+      # terraform が作る revision は image が var.image_tags["batch"]（既定 latest）を指す
+      # プレースホルダで、実際に動かすイメージは deploy.yml が sha タグで登録し直した
+      # revision。revision 込みで固定するとプレースホルダに張り付いてしまう。
+      # 詳細は terraform/ARCHITECTURE.md「イメージタグの扱い」。
+      task_definition_arn = aws_ecs_task_definition.outbox_gc.arn_without_revision
+      task_count          = 1
+      launch_type         = "FARGATE"
+
+      network_configuration {
+        subnets          = var.app_subnet_ids
+        security_groups  = var.app_security_group_ids
+        assign_public_ip = false
+      }
+    }
+  }
+}
 
