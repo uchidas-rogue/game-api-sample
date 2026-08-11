@@ -75,11 +75,12 @@ func (mr *MockRepositoryMockRecorder) DeleteProcessedBefore(ctx, tx, retention, 
 }
 
 // IncrementRetry mocks base method.
-func (m *MockRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error {
+func (m *MockRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) (uint32, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "IncrementRetry", ctx, tx, id, lastError)
-	ret0, _ := ret[0].(error)
-	return ret0
+	ret0, _ := ret[0].(uint32)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
 }
 
 // IncrementRetry indicates an expected call of IncrementRetry.

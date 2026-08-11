@@ -32,6 +32,13 @@ type Querier interface {
 	// max retry / DLQ の責務であり、GC が消すとイベントが黙って失われる。
 	DeleteProcessedOutboxEventsBefore(ctx context.Context, arg DeleteProcessedOutboxEventsBeforeParams) (int64, error)
 	GetGuild(ctx context.Context, id int64) (Guild, error)
+	// 加算後の retry_count を読み直すためのクエリ。IncrementOutboxEventRetry と同一
+	// トランザクションで呼ぶ前提で、UPDATE が取った排他ロックの下で自分の更新結果を読む。
+	//
+	// MySQL には UPDATE ... RETURNING が無いため2文に分ける。呼び出し側が claim 時点の
+	// スナップショット値に +1 して代用すると、複数 worker が同じイベントを再 claim した際に
+	// 実際の値とずれる（打ち切り遷移の検知が二重に出る / 一度も出ない）。
+	GetOutboxEventRetryCount(ctx context.Context, id uint64) (uint32, error)
 	GetUser(ctx context.Context, id int64) (User, error)
 	// ユーザー行を排他ロックで取得する。10連ガチャの整合性確保用。
 	// 必ずトランザクション内から呼び出すこと。デッドロック誘発検証のため意図的に FOR UPDATE。

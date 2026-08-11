@@ -147,16 +147,23 @@ func (r *OutboxRepository) DeleteProcessedBefore(
 }
 
 // IncrementRetry は retry_count をインクリメントし last_error を記録する。
-func (r *OutboxRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error {
+// 加算後の retry_count は同一トランザクション内で読み直して返す。MySQL には
+// UPDATE ... RETURNING が無いため2文になるが、UPDATE が取った排他ロックの下で読むので
+// 他 worker の加算が割り込むことはなく、返す値は自分の加算結果そのものになる。
+func (r *OutboxRepository) IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) (uint32, error) {
 	q, err := r.querier(tx)
 	if err != nil {
-		return fmt.Errorf("IncrementRetry: %w", err)
+		return 0, fmt.Errorf("IncrementRetry: %w", err)
 	}
 	if err := q.IncrementOutboxEventRetry(ctx, sqlc.IncrementOutboxEventRetryParams{
 		ID:        id,
 		LastError: sql.NullString{String: lastError, Valid: lastError != ""},
 	}); err != nil {
-		return fmt.Errorf("increment outbox event retry: %w", err)
+		return 0, fmt.Errorf("increment outbox event retry: %w", err)
 	}
-	return nil
+	retryCount, err := q.GetOutboxEventRetryCount(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("get outbox event retry count id=%d: %w", id, err)
+	}
+	return retryCount, nil
 }

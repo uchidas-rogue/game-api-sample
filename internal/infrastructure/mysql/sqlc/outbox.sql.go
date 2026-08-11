@@ -86,6 +86,25 @@ func (q *Queries) DeleteProcessedOutboxEventsBefore(ctx context.Context, arg Del
 	return result.RowsAffected()
 }
 
+const getOutboxEventRetryCount = `-- name: GetOutboxEventRetryCount :one
+SELECT retry_count
+FROM outbox_events
+WHERE id = ?
+`
+
+// 加算後の retry_count を読み直すためのクエリ。IncrementOutboxEventRetry と同一
+// トランザクションで呼ぶ前提で、UPDATE が取った排他ロックの下で自分の更新結果を読む。
+//
+// MySQL には UPDATE ... RETURNING が無いため2文に分ける。呼び出し側が claim 時点の
+// スナップショット値に +1 して代用すると、複数 worker が同じイベントを再 claim した際に
+// 実際の値とずれる（打ち切り遷移の検知が二重に出る / 一度も出ない）。
+func (q *Queries) GetOutboxEventRetryCount(ctx context.Context, id uint64) (uint32, error) {
+	row := q.db.QueryRowContext(ctx, getOutboxEventRetryCount, id)
+	var retry_count uint32
+	err := row.Scan(&retry_count)
+	return retry_count, err
+}
+
 const incrementOutboxEventRetry = `-- name: IncrementOutboxEventRetry :exec
 UPDATE outbox_events
 SET retry_count = retry_count + 1,

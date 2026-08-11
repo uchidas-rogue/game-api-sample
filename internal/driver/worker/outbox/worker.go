@@ -625,6 +625,16 @@ func (w *Worker) processOne(ctx context.Context, id uint64) (progressed bool, er
 // 記録が成功して retry_count が maxRetry に達した場合は、そのイベントが以降 ListPending /
 // ClaimByID から外れる（DLQ 相当）。運用が気づけるよう、この遷移の瞬間だけ ERROR ログを出す。
 // 記録に失敗した場合は retry_count が据え置きで打ち切られていないため、ログを出さない。
+//
+// 打ち切りの判定には IncrementRetry が返す**加算後の値**を使い、claim 時点の retryCount に
+// +1 して代用しない。claim tx はロールバック済みでロックが解放されているため、本メソッドが
+// 加算するまでの間に別 worker が同一イベントを再 claim して加算しうる。スナップショット値で
+// 判定すると、その競合で「同じ遷移のログが二重に出る」または「一度も出ないまま静かに
+// DLQ 化する」が起きる（後者は障害が輻輳しているときに観測が抜ける）。
+//
+// 判定を == にしているのは、加算が UPDATE の行ロックで直列化されるため、競合しても
+// ちょうど1つの worker だけが maxRetry と等しい値を観測するから。>= にすると後から
+// 加算した側（maxRetry+1 以降）も条件を満たしてしまい、二重ログが復活する。
 func (w *Worker) recordRetry(
 	ctx context.Context,
 	id uint64,
@@ -632,14 +642,21 @@ func (w *Worker) recordRetry(
 	retryCount uint32,
 	cause error,
 ) {
+	// retryCount は claim 時点の値。この WARN は「拾った時点で何回失敗していたか」を残す。
 	w.logger.WarnContext(ctx, "outbox event handling failed",
 		slog.Uint64("event_id", id),
 		slog.String("event_type", string(eventType)),
 		slog.Uint64("retry_count", uint64(retryCount)),
 		slog.Any("error", cause),
 	)
+	var newRetryCount uint32
 	if rerr := w.tx.DoInTx(ctx, func(tx shared.Tx) error {
-		return w.repo.IncrementRetry(ctx, tx, id, cause.Error())
+		n, err := w.repo.IncrementRetry(ctx, tx, id, cause.Error())
+		if err != nil {
+			return err
+		}
+		newRetryCount = n
+		return nil
 	}, shared.WithIsolation(shared.IsolationReadCommitted)); rerr != nil {
 		w.logger.ErrorContext(ctx, "outbox increment retry failed",
 			slog.Uint64("event_id", id),
@@ -647,11 +664,11 @@ func (w *Worker) recordRetry(
 		)
 		return
 	}
-	if retryCount+1 >= w.maxRetry {
+	if newRetryCount == w.maxRetry {
 		w.logger.ErrorContext(ctx, "outbox event dead-lettered",
 			slog.Uint64("event_id", id),
 			slog.String("event_type", string(eventType)),
-			slog.Uint64("retry_count", uint64(retryCount)+1),
+			slog.Uint64("retry_count", uint64(newRetryCount)),
 			slog.Uint64("max_retry", uint64(w.maxRetry)),
 			slog.Any("error", cause),
 		)

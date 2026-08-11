@@ -86,6 +86,21 @@ func (mr *MockQuerierMockRecorder) GetGuild(ctx, id any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetGuild", reflect.TypeOf((*MockQuerier)(nil).GetGuild), ctx, id)
 }
 
+// GetOutboxEventRetryCount mocks base method.
+func (m *MockQuerier) GetOutboxEventRetryCount(ctx context.Context, id uint64) (uint32, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetOutboxEventRetryCount", ctx, id)
+	ret0, _ := ret[0].(uint32)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetOutboxEventRetryCount indicates an expected call of GetOutboxEventRetryCount.
+func (mr *MockQuerierMockRecorder) GetOutboxEventRetryCount(ctx, id any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetOutboxEventRetryCount", reflect.TypeOf((*MockQuerier)(nil).GetOutboxEventRetryCount), ctx, id)
+}
+
 // GetUser mocks base method.
 func (m *MockQuerier) GetUser(ctx context.Context, id int64) (sqlc.User, error) {
 	m.ctrl.T.Helper()

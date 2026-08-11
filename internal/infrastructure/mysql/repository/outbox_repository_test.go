@@ -353,28 +353,44 @@ func TestOutboxRepository_IncrementRetry(t *testing.T) {
 	errDB := errors.New("update failed")
 
 	tests := []struct {
-		name      string
-		id        uint64
-		lastError string
-		stubErr   error
-		wantErr   bool
+		name       string
+		id         uint64
+		lastError  string
+		stubErr    error
+		stubCount  uint32
+		stubGetErr error
+		want       uint32
+		wantErr    bool
 	}{
 		{
-			name:      "正常系: リトライカウント増加成功",
+			name:      "正常系: リトライカウント増加成功。加算後の値を返す",
 			id:        1,
 			lastError: "timeout",
+			stubCount: 3,
+			want:      3,
 		},
 		{
 			name:      "正常系: 空文字 lastError は NullString.Valid=false になる",
 			id:        1,
 			lastError: "",
+			stubCount: 1,
+			want:      1,
 		},
 		{
-			name:      "異常系: DB エラーはラップして返す",
+			name:      "異常系: UPDATE の DB エラーはラップして返す",
 			id:        1,
 			lastError: "err",
 			stubErr:   errDB,
 			wantErr:   true,
+		},
+		{
+			// 加算は成功したが読み直しに失敗した場合。呼び出し側は打ち切り判定を
+			// 加算後の値でしか行えないため、値を捏造せずエラーとして返す。
+			name:       "異常系: 読み直しの DB エラーはラップして返す",
+			id:         1,
+			lastError:  "err",
+			stubGetErr: errDB,
+			wantErr:    true,
 		},
 	}
 
@@ -388,16 +404,22 @@ func TestOutboxRepository_IncrementRetry(t *testing.T) {
 				ID:        tt.id,
 				LastError: sql.NullString{String: tt.lastError, Valid: tt.lastError != ""},
 			}).Return(tt.stubErr)
+			// UPDATE が失敗したら読み直しには到達しない。
+			if tt.stubErr == nil {
+				mockQ.EXPECT().GetOutboxEventRetryCount(gomock.Any(), tt.id).
+					Return(tt.stubCount, tt.stubGetErr)
+			}
 
 			repo := repository.NewOutboxRepositoryWithQuerier(mockQ)
-			err := repo.IncrementRetry(context.Background(), dummyTx{}, tt.id, tt.lastError)
+			got, err := repo.IncrementRetry(context.Background(), dummyTx{}, tt.id, tt.lastError)
 
 			if tt.wantErr {
 				require.Error(t, err)
 				assert.ErrorIs(t, err, errDB)
-			} else {
-				require.NoError(t, err)
+				return
 			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

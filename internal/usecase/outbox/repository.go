@@ -45,8 +45,14 @@ type Repository interface {
 	// UPDATE 往復を1回に集約するために使う。ids が空の場合は何もしない。
 	MarkProcessedByIDs(ctx context.Context, tx shared.Tx, ids []uint64) error
 
-	// IncrementRetry は失敗時のリトライ回数を加算し、エラーメッセージを記録する。
-	IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) error
+	// IncrementRetry は失敗時のリトライ回数を加算し、エラーメッセージを記録して、
+	// **加算後の** retry_count を返す。
+	//
+	// 加算後の値を返すのは、呼び出し側が「このイベントが上限に達したか」を判定するため。
+	// claim 時点のスナップショット値に +1 して代用してはならない。claim tx が
+	// ロールバックしてロックが解放されてから本メソッドが呼ばれるまでの間に、別 worker が
+	// 同一イベントを再 claim して加算しうるため、代用するとログが二重に出るか一度も出ない。
+	IncrementRetry(ctx context.Context, tx shared.Tx, id uint64, lastError string) (retryCount uint32, err error)
 
 	// DeleteProcessedBefore は処理済みイベントのうち retention より古いものを
 	// 最大 limit 件削除し、削除件数を返す。未処理イベントは対象にしない。

@@ -111,10 +111,30 @@ ticker では必ず再試行するので、poison が上限に到達して窓か
 `found=false` になって `processOne` が前進として数える（滞留を作らない）。
 
 **打ち切りの観測は「閾値に到達した瞬間の ERROR ログ」1点に絞る**（`outbox event dead-lettered`）。
-`recordRetry` が `IncrementRetry` の tx に**成功した後**、`retry_count+1 >= maxRetry` なら出す。
-成功後に判定するのは、記録できなかったイベントは `retry_count` が据え置きのまま次ティックで
-再処理され、まだ打ち切られていないため。以降そのイベントは `ListPending` に現れないので
-同じログが繰り返し出ることもない。
+`recordRetry` が `IncrementRetry` の tx に**成功した後**、`IncrementRetry` が返す
+**加算後の値**が `maxRetry` と**ちょうど一致**したら出す。成功後に判定するのは、記録できなかった
+イベントは `retry_count` が据え置きのまま次ティックで再処理され、まだ打ち切られていないため。
+以降そのイベントは `ListPending` に現れないので同じログが繰り返し出ることもない。
+
+**claim 時点の `retry_count` に +1 して代用してはならない。** claim tx はロールバック済みで
+行ロックが解放されているため、`recordRetry` が加算するまでの間に別 worker が同一イベントを
+再 claim して加算しうる（複数 worker 構成は `SKIP LOCKED` の設計意図どおり想定内）。
+スナップショット値で判定すると次の2つが起きる。
+
+| 競合の形 | スナップショット判定の結果 |
+| --- | --- |
+| 2 worker が `maxRetry-1` を読んで両方加算 | 同じ遷移の ERROR ログが**二重に出る** |
+| 2 worker が `maxRetry-2` を読んで両方加算 | どちらも上限未満と判定し、**ログが一度も出ないまま**静かに DLQ 化する |
+
+後者は障害が輻輳して再試行が集中する場面、つまりこのログが最も必要なときに観測が抜ける。
+
+`IncrementRetry` は加算後の値を返す。MySQL には `UPDATE ... RETURNING` が無いため
+`infrastructure` 層が同一トランザクション内で UPDATE → SELECT の2文を発行するが、UPDATE が
+取った行ロックの下で読むので他 worker の加算は割り込めず、返る値は自分の加算結果そのものになる。
+
+判定を `>=` ではなく **`==`** にしているのも競合対策。加算は行ロックで直列化されるため、
+競合してもちょうど1つの worker だけが `maxRetry` と等しい値を観測する。`>=` にすると
+後から加算した側（`maxRetry+1` 以降）も条件を満たし、二重ログが復活する。
 
 滞留件数を数える COUNT クエリは**置かない**。`processed_at IS NULL` の行を index 走査するため、
 バックログが大きいときのコストが読めない（実測で 8,959 件の滞留が発生した経緯がある）。
@@ -308,7 +328,7 @@ flowchart TD
     RB[[ROLLBACK<br/>MySQL 副作用を巻き戻す]] --> W[WARN ログ]
     W --> RT[[別 tx: repo.IncrementRetry<br/>last_error 記録]]
     RT -- err --> RTE[ERROR ログのみ<br/>次ティックで再処理]
-    RT -- ok --> DL{retry_count+1 >= maxRetry?}
+    RT -- ok --> DL{加算後の retry_count == maxRetry?}
     DL -- No --> PZ
     DL -- Yes --> DLE[ERROR ログ: dead-lettered<br/>以降 ListPending に現れない]
     DLE --> PZ
@@ -358,8 +378,10 @@ flowchart TD
 | `MarkProcessed` がエラー | `MK→PE2` | ティックを中断 | `TestWorker_applyPerEvent_フォールバック経路_MarkProcessedエラー` |
 | `concurrency` 本での並列処理 | `PB` | 候補が並列に処理される | `TestWorker_applyPerEvent_フォールバック経路_並列処理` |
 | 全件が claim 不可 | `P2→PS` | 何も適用されない | `TestWorker_applyPerEvent_フォールバック経路_claim不可はスキップ` |
-| retry 加算後に上限へ到達 | `RT→DL→DLE` | dead-letter の ERROR ログが **1 回**出る | `TestWorker_recordRetry_上限到達でdeadLetterログを出す` |
-| retry 加算後も上限未満 | `RT→DL→PZ` | dead-letter ログを**出さない** | 同上（サブテスト） |
+| 加算後の値が上限にちょうど到達 | `RT→DL→DLE` | dead-letter の ERROR ログが **1 回**出る | `TestWorker_recordRetry_上限到達でdeadLetterログを出す` |
+| 加算後の値が上限未満 | `RT→DL→PZ` | dead-letter ログを**出さない** | 同上（サブテスト） |
+| **競合で上限を追い越した**（加算後 = 上限+1） | `RT→DL→PZ` | dead-letter ログを**出さない**（上限ちょうどを観測した側が既に出している） | 同上（サブテスト） |
+| **競合で claim 時点より進んで上限に到達**（claim 時点 = 上限-2、加算後 = 上限） | `RT→DL→DLE` | dead-letter ログを **1 回**出す（claim 時点の値で判定していると出ない） | 同上（サブテスト） |
 | `IncrementRetry` が失敗（回数は上限相当） | `RT→RTE` | dead-letter ログを**出さない**（記録できていない） | 同上（サブテスト） |
 
 **`maxRetry` が渡ることの検証**: `ListPending` / `ClaimByID` の各 `EXPECT` が `maxRetry` を
