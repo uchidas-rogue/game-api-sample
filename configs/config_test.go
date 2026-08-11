@@ -33,6 +33,7 @@ func clearConfigEnv(t *testing.T) {
 		"OUTBOX_CONCURRENCY",
 		"OUTBOX_TICK_TIMEOUT",
 		"OUTBOX_RETENTION",
+		"OUTBOX_MAX_RETRY",
 		"DB_PING_TIMEOUT",
 		"DB_MAX_OPEN_CONNS",
 		"DB_MAX_IDLE_CONNS",
@@ -59,6 +60,7 @@ func TestLoad_Defaults(t *testing.T) {
 	assert.Equal(t, 8, cfg.OutboxConcurrency)
 	assert.Equal(t, 30*time.Second, cfg.OutboxTickTimeout)
 	assert.Equal(t, 72*time.Hour, cfg.OutboxRetention)
+	assert.Equal(t, 10, cfg.OutboxMaxRetry)
 	assert.Equal(t, 5*time.Second, cfg.DBPingTimeout)
 	assert.Equal(t, 25, cfg.DBMaxOpenConns)
 	assert.Equal(t, 25, cfg.DBMaxIdleConns)
@@ -233,6 +235,39 @@ func TestLoad_OutboxBatchSize(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.OutboxBatchSize)
+		})
+	}
+}
+
+// TestLoad_OutboxMaxRetry は失敗許容回数のパースを確認する。
+// 0 を「無制限」として通さないことが要点（retry_count < 0 は全件除外になり、
+// worker が黙って何も処理しなくなる状態と区別できない）。
+func TestLoad_OutboxMaxRetry(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    int
+	}{
+		{name: "有効: 3", value: "3", want: 3},
+		{name: "有効: 1（下限）", value: "1", want: 1},
+		{name: "無効: 不正フォーマット", value: "abc", wantErr: true},
+		{name: "無効: 0（無制限扱いにしない）", value: "0", wantErr: true},
+		{name: "無効: -1（負値）", value: "-1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("OUTBOX_MAX_RETRY", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.OutboxMaxRetry)
 		})
 	}
 }

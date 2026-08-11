@@ -54,6 +54,13 @@ const (
 	// defaultOutboxTickTimeout は1ティック（runOnce）の処理時間上限。
 	// DB/Redis のブロッキングで worker のループがハングするのを防ぐ。
 	defaultOutboxTickTimeout = 30 * time.Second
+	envOutboxMaxRetry        = "OUTBOX_MAX_RETRY"
+	// defaultOutboxMaxRetry は1イベントの失敗を許容する回数。これに達したイベントは
+	// worker の取得対象から外れる（DLQ 相当。docs/testing/outbox-worker.md §0-4）。
+	// retry_count は失敗の種類を区別しないため、MySQL/Redis の障害が続くと健全なイベントも
+	// 回数を消費する。通知駆動のドレインは高頻度で回るので、消費は速い。
+	// 打ち切られたイベントの復帰は手動 UPDATE の運用対応になるため、既定は大きめに取る。
+	defaultOutboxMaxRetry = 10
 
 	envDBPingTimeout = "DB_PING_TIMEOUT"
 	// defaultDBPingTimeout は起動時の疎通確認1回ぶんの上限。
@@ -92,6 +99,7 @@ type Config struct {
 	OutboxConcurrency  int
 	OutboxTickTimeout  time.Duration
 	OutboxRetention    time.Duration
+	OutboxMaxRetry     int
 	DBPingTimeout      time.Duration
 	DBMaxOpenConns     int
 	DBMaxIdleConns     int
@@ -176,6 +184,20 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid %s: must be positive", envOutboxTickTimeout)
 		}
 		tickTimeout = parsed
+	}
+
+	maxRetry := defaultOutboxMaxRetry
+	if v := os.Getenv(envOutboxMaxRetry); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", envOutboxMaxRetry, err)
+		}
+		// 0 を「無制限」にはしない。SQL 側に分岐が増えて index の使われ方が読みにくくなるうえ、
+		// retry_count < 0 は全件除外になり worker が沈黙する事故と区別できないため。
+		if parsed <= 0 {
+			return nil, fmt.Errorf("invalid %s: must be positive", envOutboxMaxRetry)
+		}
+		maxRetry = parsed
 	}
 
 	retention := defaultOutboxRetention
@@ -269,6 +291,7 @@ func Load() (*Config, error) {
 		OutboxConcurrency:  concurrency,
 		OutboxTickTimeout:  tickTimeout,
 		OutboxRetention:    retention,
+		OutboxMaxRetry:     maxRetry,
 		DBPingTimeout:      pingTimeout,
 		DBMaxOpenConns:     maxOpenConns,
 		DBMaxIdleConns:     maxIdleConns,

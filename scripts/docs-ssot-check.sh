@@ -174,7 +174,10 @@ agents_th=$(awk '
   /^# 4\./              { inSec = 0 }
   inSec && /^  - `[a-z]+`/ {
     layer = $0; sub(/^  - `/, "", layer); sub(/`.*/, "", layer)
-    if (match($0, /カバレッジ[ 　*]*[0-9]{2,3}[ 　]*%/)) {
+    # 桁数は {2,3} のような区間指定にしない。mawk（Ubuntu / CI の既定 awk）は区間で
+    # 最短一致したあと後戻りしないため、`カバレッジ **100%**` が「10」で確定して
+    # 直後の `%` に届かず、domain 層の 100% だけが抽出から漏れていた。
+    if (match($0, /カバレッジ[ 　*]*[0-9]+[ 　]*%/)) {
       pct = substr($0, RSTART, RLENGTH)
       gsub(/[^0-9]/, "", pct)
       print layer "=" pct
