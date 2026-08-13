@@ -180,9 +180,11 @@ func sortedKeys(m map[int64]int) []int64 {
 	return slices.Sorted(maps.Keys(m))
 }
 
-// defaultRandomizer は math/rand/v2 を使う既定実装。
+// defaultRandomizer が Randomizer を満たすことをコンパイル時に検証する。
+// メソッドが値レシーバのみなので Type{} 形式を使う（AGENTS.md §2）。
 var _ Randomizer = defaultRandomizer{}
 
+// defaultRandomizer は math/rand/v2 を使う Randomizer の既定実装。
 type defaultRandomizer struct{}
 
 // IntN は半開区間 [0, n) の整数を返す。

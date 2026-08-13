@@ -50,8 +50,10 @@ type Usecase interface {
 	GetUserRank(ctx context.Context, userID int64) (rankingdomain.UserRankResult, error)
 }
 
+// usecase が Usecase を満たすことをコンパイル時に検証する。
 var _ Usecase = (*usecase)(nil)
 
+// usecase は Usecase の具象実装。
 type usecase struct {
 	tx             shared.Transactor
 	repo           Repository
