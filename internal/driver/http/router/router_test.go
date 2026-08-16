@@ -35,6 +35,7 @@ func collectRoutes(e *echo.Echo) map[routeKey]struct{} {
 }
 
 func TestRegister_AllHandlers(t *testing.T) {
+	// #5
 	t.Parallel()
 
 	h := newHandlers(t)
@@ -74,21 +75,25 @@ func TestRegister_MissingHandler(t *testing.T) {
 		wantMissing string
 	}{
 		{
+			// #1
 			name:        "Health が nil",
 			drop:        func(h *router.Handlers) { h.Health = nil },
 			wantMissing: "Health",
 		},
 		{
+			// #2
 			name:        "Gacha が nil",
 			drop:        func(h *router.Handlers) { h.Gacha = nil },
 			wantMissing: "Gacha",
 		},
 		{
+			// #3
 			name:        "Ranking が nil",
 			drop:        func(h *router.Handlers) { h.Ranking = nil },
 			wantMissing: "Ranking",
 		},
 		{
+			// #4
 			name:        "全て nil: 欠けているものを全て列挙する",
 			drop:        func(h *router.Handlers) { *h = router.Handlers{} },
 			wantMissing: "Health, Gacha, Ranking",

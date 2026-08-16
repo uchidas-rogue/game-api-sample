@@ -96,7 +96,7 @@ tests := []struct {
 | §11 の指標 | 本プロジェクトでの担保方法 |
 | --- | --- |
 | 行/文カバレッジ | 層別閾値の **CI 機械判定**（`make test/cover/check`。閾値は AGENTS.md §3、実行可能な写しが `scripts/coverage-check.sh`）。未達なら CI が落ちる |
-| 分岐カバレッジ | **代替: フロー図のパスカバレッジ**。[docs/testing/](../../../docs/testing/) の設計図とテスト仕様表を正本とし、[docs/testing/README.md](../../../docs/testing/README.md) §6 のチェックリストで**レビューゲート**として担保する |
+| 分岐カバレッジ | **代替: フロー図のパスカバレッジ**。[docs/testing/](../../../docs/testing/) の設計図とテスト仕様表を正本とし、表とテストコードの対応（ケース順・件数・終端ノードの網羅）は `scripts/doccheck` が **CI 機械判定**、残りは [docs/testing/README.md](../../../docs/testing/README.md) §6 のチェックリストで**レビューゲート**として担保する |
 | 条件カバレッジ・関数カバレッジ | 参考値（§11 のとおり目標から除外） |
 
 つまり **分岐の網羅は数値ではなく設計文書とレビューで守る**。フロー図を作る対象（`internal/usecase/` / `internal/driver/`）でこれを省略すると、分岐カバレッジの担保手段が完全に失われる。

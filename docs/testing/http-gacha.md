@@ -48,6 +48,8 @@ flowchart TD
 
 パスが短い順。**表の1行 = テストコードの1ケース。**
 
+<!-- testcases: internal/driver/http/gacha/handler_test.go#TestHandler_Multi -->
+
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
 | 1 | `userID` が数値でない | `A→B→E1` | 400 `invalid userID` | **usecase が呼ばれない** |
@@ -85,6 +87,8 @@ flowchart TD
 [testdata/contracts/](../../internal/driver/http/testdata/contracts/) の JSON ファイル。
 [contract_test.go](../../internal/driver/http/gacha/contract_test.go) が
 `internal/testutil/apicontract` で構造のみを検証する。
+
+<!-- testcases: internal/driver/http/gacha/contract_test.go#TestResponseContract -->
 
 | # | 対象 | 契約ファイル |
 | --- | --- | --- |

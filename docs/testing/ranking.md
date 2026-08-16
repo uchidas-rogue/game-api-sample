@@ -76,6 +76,8 @@ flowchart TD
 
 ### テスト仕様表（`GetGuildRankings` / `GetUserRankings` 共通）
 
+<!-- testcases: internal/usecase/ranking/usecase_test.go#TestUsecase_GetRankings -->
+
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
 | 1 | `IsInitialized` がエラー | `A→I→E4` | エラーを返す | **後続が一切呼ばれない** |
@@ -121,6 +123,8 @@ flowchart TD
 ```
 
 ### テスト仕様表（`GetGuildRank` / `GetUserRank` 共通）
+
+<!-- testcases: internal/usecase/ranking/usecase_test.go#TestUsecase_GetRank -->
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
@@ -197,6 +201,8 @@ flowchart TD
   そのままエラーとして返す（初回ユーザーもこの時点では必ず行がある）
 
 ### テスト仕様表
+
+<!-- testcases: internal/usecase/ranking/usecase_test.go#TestUsecase_AddUserPoints -->
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |

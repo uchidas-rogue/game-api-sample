@@ -185,6 +185,8 @@ flowchart TD
 - **滞留中（`stalled`）は通知を捨て、ticker でのみ再試行する**（§0-3）。
   エラーで終わった場合は `stalled` を立てない（次の通知で普通に再試行してよい）
 
+<!-- testcases-funcs: internal/driver/worker/outbox/worker_test.go -->
+
 | # | 条件 | 図のパス | 期待結果 | 対応テスト |
 | --- | --- | --- | --- | --- |
 | 1 | `Subscribe` が失敗 | `B→C` | ポーリングのみで継続する | `TestWorker_Run_Subscribe_failure` |
@@ -193,9 +195,9 @@ flowchart TD
 | 4 | ticker でティックが起きる | `L→T` | `drainNow` が走る | `TestWorker_Run_ticker_driven` |
 | 5 | ticker 経由の `drainNow` が失敗 | `T→TE` | エラーを返さずループ継続 | `TestWorker_Run_ティック処理の失敗はループを止めない/ticker 経由で runOnce が失敗しても継続する` |
 | 6 | 通知経由の `drainNow` が失敗 | `N→NE` | エラーを返さずループ継続 | `TestWorker_Run_ティック処理の失敗はループを止めない/通知経由で runOnce が失敗しても継続する` |
-| 7 | **滞留後に通知が来る** | `L→NQ→ND` | 通知を捨てる。`ListPending` を再発行しない | `TestWorker_Run_滞留中は通知を捨てticker で再開する` |
+| 7 | **滞留後に通知が来る** | `L→NQ→ND` | 通知を捨てる。`ListPending` を再発行しない | `TestWorker_Run_滞留中は通知を捨てtickerで再開する` |
 | 8 | ティック期限切れ後も枯れるまで自走する | `T→S→L` | `pollInterval` を待たずに次のティックへ入る | `TestWorker_drainNow_ティック期限切れ後も自走する` |
-| 9 | `ctx` がキャンセルされる | `L→Z` | `nil` を返して終了 | 各テストの `stopAndWait` |
+| 9 | `ctx` がキャンセルされる | `L→Z` | `nil` を返して終了 | `TestWorker_Run_ctxキャンセルはnilを返して終了する` |
 
 ## 2. `runOnce`（1ティックぶんの処理）
 
@@ -234,6 +236,8 @@ flowchart TD
 - **判定に使うのは `applied`（前進件数）であって `listed`（取得件数）ではない**（§0-2）。
   `listed` だけで判定する実装に戻すと、全件デコード不能なバッチでドレインが終わらなくなる
 
+<!-- testcases-funcs: internal/driver/worker/outbox/worker_test.go -->
+
 | # | 条件 | 図のパス | 期待結果 | テスト |
 | --- | --- | --- | --- | --- |
 | 1 | `ListPending` がエラー | `B→E1` 相当 | ティックを中断（MySQL/Redis に到達しない） | `TestWorker_runOnce_ListPendingエラー` |
@@ -241,6 +245,14 @@ flowchart TD
 | 3 | **窓が全件デコード不能で埋まる** | `C→SW→ZS` | 1巡で打ち切る（`ListPending` は1回だけ） | `TestWorker_runOnce_全件前進しなければドレインを打ち切る` |
 | 4 | 候補が `batchSize` ちょうど続く | `C→B` のループ | 枯れるまで繰り返す | `TestWorker_runOnce_候補が枯れるまでドレインする` |
 | 5 | バッチ適用が失敗 | `B→W→P` | フォールバックで同じイベントが前進する | `TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替わり処理が前進する` |
+| 6 | `tickCtx` が期限切れ | `B→D1` | `drained=false, err=nil` で復帰し、`drainNow` が次ティックで継続する | `TestWorker_drainNow_ティック期限切れ後も自走する` |
+| 7 | フォールバックも失敗 | `P→E2` | `absorbTickDeadline` を通してエラーを返す | **未対応**（下記） |
+
+**ケース 7（`E2`）が未対応の理由**: `applyPerEvent` 自体の失敗（`PE0` / `PE1` / `PE2`）は
+§2-2 の表で直接検証しているが、**その戻り値を `runOnce` が `absorbTickDeadline` 経由で
+返すこと**は通っていない。ティック期限切れをエラーに変えてしまう実装ミスが素通りする穴で、
+`runOnce` を直接叩けるテスト用の口が無いため（現状は `Run` 越しの検証）保留している。
+テストを足すか、`Run` 越しに「エラーでもループが止まらない」ことで代替するかは別タスク。
 
 ### 2-1. バッチ経路（`applyBatch`・通常時）
 
@@ -281,16 +293,23 @@ flowchart TD
 - `ListPending` の `FOR UPDATE SKIP LOCKED` がそのまま claim として働くため、
   この経路では `ClaimByID` を発行しない
 
+<!-- testcases-funcs: internal/driver/worker/outbox/worker_test.go -->
+
 | # | 条件 | 図のパス | 期待結果 | テスト |
 | --- | --- | --- | --- | --- |
 | 1 | `ListPending` が空 | `B2→BZ` | 即座に終了。tx は1回だけ | `TestWorker_applyBatch_pending無しは即座に終了する` |
-| 2 | 全件デコード不能 | `B3→BC→RT` | MySQL も Redis も呼ばれない。`applied=0` | `TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない` |
+| 2 | 全件デコード不能 | `B3→BC→R→RT` | MySQL も Redis も呼ばれない。`applied=0` | `TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない` |
 | 3 | 除外イベントの `IncrementRetry` が失敗 | `RT` | ログのみ。エラーを伝播しない | `TestWorker_applyBatch_IncrementRetry失敗はログのみ` |
 | 4 | **COMMIT 後の Redis 反映が失敗** | `R→RE→RT` | ERROR ログのみ。エラーを返さずフォールバックもしない | `TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォールバックしない` |
 | 5 | `M1` / `M2` / `MK` の各失敗 | `→BE2` | 全副作用が巻き戻り、**Redis に到達せず**フォールバック経路へ切り替わる | `TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォールバックする`（3 サブテスト） |
 | 6 | デコード不能イベントが混在 | `B3→…→BC→R→RT` | 正常なイベントだけ適用され、壊れたものは個別 retry | `TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる` |
 | 7 | 正常系の適用順序 | `M1→M2→MK→BC→R` | MySQL 2本 → マーク → COMMIT → Redis の順（`gomock.InOrder`） | `TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後にRedis` |
 | 8 | 同一ギルド／ユーザーの複数イベント | 同上 | スコアは合算、履歴はイベント件数ぶん、`MarkProcessedByIDs` に全 ID | `TestWorker_applyBatch_同一ギルドは合算され履歴はイベント単位で作られる` |
+| 9 | `ListPending` がエラー | `B2→BE1` | ティックを中断。MySQL / Redis に到達しない | `TestWorker_runOnce_ListPendingエラー` |
+
+**ケース 9 が末尾にある理由**: パスは最短だが、検証しているのは §2 のケース 1 と同一の
+テストで、視点（バッチ tx の中から見た `ListPending`）だけが違う。既存ケースの番号は
+テストコードのコメント（`[§2-1 ケース N]`）から参照されているため、繰り上げずに追加した。
 
 ### 2-2. イベント単位経路（`applyPerEvent`・バッチ失敗時のフォールバック）
 
@@ -355,6 +374,8 @@ flowchart TD
 
 `TestWorker_applyPerEvent_フォールバック経路_正常系_異常系` のテーブルと 1 対 1 で対応する。
 `listed` / `applied` は `ApplyPerEventForTest` の戻り値。
+
+<!-- testcases: internal/driver/worker/outbox/worker_test.go#TestWorker_applyPerEvent_フォールバック経路_正常系_異常系 -->
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |

@@ -12,22 +12,26 @@
 
 ## 必須シナリオ
 
+<!-- testcases-funcs: internal/infrastructure/mysql/transactor_test.go -->
+
 | # | シナリオ | 期待される契約 | 対応テスト |
 | --- | --- | --- | --- |
-| 1 | 境界内の処理（`fn`）が失敗する | ROLLBACK を実行してから、**元の失敗原因をそのまま再送出する**。ROLLBACK の実行が失敗原因をすり替えない | `異常系_fnがerrorを返すとROLLBACKされる` |
-| 2 | 取り消し処理（ROLLBACK）自体が失敗する | ROLLBACK の失敗を握り潰さずログに残し、**それでも元の失敗原因を再送出する** | `異常系_ROLLBACK失敗でも元のエラーを返しログに残す`<br>`異常系_panic時のROLLBACK失敗でも再panicしログに残す` |
-| 3 | 確定処理（COMMIT）自体が失敗する | COMMIT の失敗をそのまま呼び出し元に伝搬する | `異常系_Commit失敗はラップされる` |
-| 4 | 境界内の処理が値なしで成功する | 値なしを正しく確定し、そのまま返す（異常系と誤認しない） | `正常系_fnがnilを返すとCOMMITされる` |
+| 1 | 境界内の処理（`fn`）が失敗する | ROLLBACK を実行してから、**元の失敗原因をそのまま再送出する**。ROLLBACK の実行が失敗原因をすり替えない | `TestTransactor_DoInTx_異常系_fnがerrorを返すとROLLBACKされる` |
+| 2 | 取り消し処理（ROLLBACK）自体が失敗する | ROLLBACK の失敗を握り潰さずログに残し、**それでも元の失敗原因を再送出する** | `TestTransactor_DoInTx_異常系_ROLLBACK失敗でも元のエラーを返しログに残す`<br>`TestTransactor_DoInTx_異常系_panic時のROLLBACK失敗でも再panicしログに残す` |
+| 3 | 確定処理（COMMIT）自体が失敗する | COMMIT の失敗をそのまま呼び出し元に伝搬する | `TestTransactor_DoInTx_異常系_Commit失敗はラップされる` |
+| 4 | 境界内の処理が値なしで成功する | 値なしを正しく確定し、そのまま返す（異常系と誤認しない） | `TestTransactor_DoInTx_正常系_fnがnilを返すとCOMMITされる` |
 
 ## 本リポジトリ固有の追加シナリオ
 
+<!-- testcases-funcs: internal/infrastructure/mysql/transactor_test.go -->
+
 | # | シナリオ | 期待される契約 | 対応テスト |
 | --- | --- | --- | --- |
-| 5 | 境界の確立（BEGIN）に失敗する | `fn` を実行せずエラーを返す | `異常系_BeginTx失敗はラップされる` |
-| 6 | 境界内で panic する | ROLLBACK してから**元の panic を再送出する** | `異常系_panic時にROLLBACKして再panic` |
-| 7 | ROLLBACK が `sql.ErrTxDone` を返す | 既にコミット済みの正常な状態なのでログに出さない。元の失敗原因は返す | `ROLLBACK_ErrTxDoneはloggerに出力されない` |
-| 8 | `fn` に渡される `Tx` の実体 | `*SQLTx` が渡り、`IsTx()` / `Raw()` が呼べる | `正常系_fnにSQLTxが渡される`<br>`SQLTx_Raw_内部のsqlTxを返す` |
-| 9 | 分離レベルを明示する | オプション無し／`IsolationDefault` は driver 既定（`*sql.TxOptions` が `nil`）、`IsolationReadCommitted` は `sql.LevelReadCommitted` で BEGIN する | `分離レベル`（3 サブテスト） |
+| 5 | 境界の確立（BEGIN）に失敗する | `fn` を実行せずエラーを返す | `TestTransactor_DoInTx_異常系_BeginTx失敗はラップされる` |
+| 6 | 境界内で panic する | ROLLBACK してから**元の panic を再送出する** | `TestTransactor_DoInTx_異常系_panic時にROLLBACKして再panic` |
+| 7 | ROLLBACK が `sql.ErrTxDone` を返す | 既にコミット済みの正常な状態なのでログに出さない。元の失敗原因は返す | `TestTransactor_DoInTx_ROLLBACK_ErrTxDoneはloggerに出力されない` |
+| 8 | `fn` に渡される `Tx` の実体 | `*SQLTx` が渡り、`IsTx()` / `Raw()` が呼べる | `TestTransactor_DoInTx_正常系_fnにSQLTxが渡される`<br>`SQLTx_Raw_内部のsqlTxを返す` |
+| 9 | 分離レベルを明示する | オプション無し／`IsolationDefault` は driver 既定（`*sql.TxOptions` が `nil`）、`IsolationReadCommitted` は `sql.LevelReadCommitted` で BEGIN する | `TestTransactor_DoInTx_分離レベル`（3 サブテスト） |
 
 **シナリオ 9 の検証方法について**: go-sqlmock は `BeginTx` に渡る `*sql.TxOptions` を
 検証できないため、疎通だけを見ると「常に nil を返す」実装でも通ってしまう。
