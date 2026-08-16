@@ -263,11 +263,14 @@ linters:
             - github.com/DATA-DOG/go-sqlmock # Transactor のコミット/ロールバック検証
             - github.com/alicebob/miniredis/v2 # Redis 実体を使わない単体テスト
             # go/ast・go/parser・go/token は標準ライブラリだが $gostd の展開に含まれないため個別に許可する。
-            # 用途は TestNew_MiddlewareOrder（server パッケージ）ただ1つ。
+            # 層のテストでの用途は TestNew_MiddlewareOrder（server パッケージ）ただ1つ。
             # ミドルウェアの登録「順序」は文の並びであり、ruleguard（式単位のマッチ）では
             # 表現できないため、New の AST を直接読んで検証している（determ. §3）。
             # 他のテストで構文解析を始めたくなったら、まず scripts/ 配下の独立した検査に
             # 切り出すことを検討する（層のテストが自分のソースを読むのは例外的な用途のため）。
+            # 2つ目の AST 検査（AGENTS.md §2 の `var _ Iface = (*Type)(nil)` の配置）は、
+            # この方針どおり層のテストではなく scripts/archcheck へ切り出してある。
+            # scripts/ 配下は depguard のどの rule にもマッチしないため、ここへの追加は不要。
             - go/ast
             - go/parser
             - go/token
