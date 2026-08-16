@@ -23,6 +23,9 @@ import (
 //   - 個別 SET の失敗ではループを打ち切らず、届く分は届ける。ただし 1 件でも失敗したら
 //     SyncAll はエラーを返す（呼び出し元の cmd/batch が非ゼロ終了する）。復旧できていない状態を
 //     「成功」として報告すると、Redis が空のままであることに運用側が気づけないため。
+//   - 全件成功した場合のみ、最後にセンチネルキーを立てる（MarkInitialized）。これが
+//     ランキング読み取りの 503 を解除する唯一の手段であり、本バッチは復旧手順そのものになる。
+//     詳細は docs/testing/ranking.md §0。
 //   - 注意: worker が稼働中に本バッチを走らせると、スナップショット取得後に worker が反映した
 //     数件が SET で上書きされ Redis 側で一時的に欠落しうる。ただし MySQL は常に正しく、次回の
 //     再構築で自己修復する。原則として揮発復旧など書き込みが静穏な状況で実行する。
@@ -120,6 +123,14 @@ func (s *RankingSyncer) SyncAll(ctx context.Context) error {
 			"ranking sync incomplete: redis set failed (guilds %d/%d, users %d/%d): %w",
 			failedGuilds, len(guildScores), failedUsers, len(userPoints), firstErr,
 		)
+	}
+
+	// 全件の反映に成功したときだけセンチネルキーを立てる（読み取り経路の 503 を解除する）。
+	// 部分的にしか復旧していない状態で立てると、欠けたランキングが正常なものとして
+	// 返り始める。逆にここが失敗するとデータが揃っていても 503 が続くため、
+	// 成功扱いにせずエラーを返して cmd/batch を非ゼロ終了させる。
+	if err := s.rankingStore.MarkInitialized(ctx); err != nil {
+		return fmt.Errorf("mark ranking initialized: %w", err)
 	}
 
 	s.logger.InfoContext(ctx, "ranking sync completed",

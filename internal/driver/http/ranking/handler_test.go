@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,6 +58,22 @@ func assertResponse(t *testing.T, rec *httptest.ResponseRecorder, wantStatus int
 	for _, s := range absent {
 		assert.NotContains(t, got, s)
 	}
+}
+
+// assertRetryAfter は Retry-After ヘッダの有無を検証する。
+// 503 は「再試行すれば直る」ことを伝えるためのステータスなので、
+// ヘッダが落ちていないことをステータスと同じ強さで固定する。
+func assertRetryAfter(t *testing.T, rec *httptest.ResponseRecorder, want bool) {
+	t.Helper()
+	got := rec.Header().Get(echo.HeaderRetryAfter)
+	if !want {
+		assert.Empty(t, got, "Retry-After は 503 以外では付けない")
+		return
+	}
+	require.NotEmpty(t, got, "Retry-After ヘッダが必要")
+	secs, err := strconv.Atoi(got)
+	require.NoError(t, err, "Retry-After は秒数（整数）で返す")
+	assert.Positive(t, secs, "Retry-After は正の秒数")
 }
 
 // rankingKind はギルド版・ユーザー版の区別。
@@ -106,6 +123,8 @@ type rankingsCase struct {
 	// ---- 期待結果 ----
 	wantStatus       int
 	wantBodyContains []string
+	// wantRetryAfter が true のとき Retry-After ヘッダが付くことを検証する。
+	wantRetryAfter bool
 }
 
 func TestHandler_GetRankings(t *testing.T) {
@@ -158,7 +177,18 @@ func TestHandler_GetRankings(t *testing.T) {
 			wantBodyContains: []string{`"message":"internal server error"`},
 		},
 		{
-			// #6 …→D→F→Z（P1→P2）
+			// #6 …→C→D→X→R9
+			// Redis 揮発を 200 + 空配列で返さないことを固定する。
+			name:             "usecase が ErrRankingUnavailable: 503 と Retry-After",
+			query:            "?limit=10&offset=0",
+			ucErr:            rankingdomain.ErrRankingUnavailable,
+			wantInput:        rankingusecase.GetRankingsInput{Limit: 10, Offset: 0},
+			wantStatus:       http.StatusServiceUnavailable,
+			wantBodyContains: []string{`"message":"ranking is unavailable"`},
+			wantRetryAfter:   true,
+		},
+		{
+			// #7 …→D→F→Z（P1→P2）
 			// 既定値の適用は usecase の責務なので、ハンドラは生値 0 をそのまま渡す。
 			name:             "正常系: クエリ未指定なら 0 をそのまま渡す",
 			query:            "",
@@ -167,7 +197,7 @@ func TestHandler_GetRankings(t *testing.T) {
 			wantBodyContains: []string{`"total_count":1`, `"rank":1`},
 		},
 		{
-			// #7 …→D→F→Z（P1→P3→P4→P5）
+			// #8 …→D→F→Z（P1→P3→P4→P5）
 			name:       "正常系: limit/offset 指定がそのまま渡り Result が変換される",
 			query:      "?limit=10&offset=0",
 			wantInput:  rankingusecase.GetRankingsInput{Limit: 10, Offset: 0},
@@ -230,6 +260,7 @@ func runRankingsCase(t *testing.T, kind rankingKind, tc rankingsCase) {
 	}
 
 	assertResponse(t, rec, tc.wantStatus, tc.wantBodyContains, nil)
+	assertRetryAfter(t, rec, tc.wantRetryAfter)
 }
 
 // ---------------------------------------------------------------------------
@@ -240,11 +271,12 @@ func runRankingsCase(t *testing.T, kind rankingKind, tc rankingsCase) {
 type singleRankFail int
 
 const (
-	singleRankNone       singleRankFail = iota
-	singleRankRejectID                  // ID のパースで弾かれる（usecase を呼ばない）
-	singleRankNotFound                  // ギルド/ユーザーが存在しない
-	singleRankScoreNone                 // スコア/ポイントが未登録
-	singleRankUnexpected                // 予期せぬエラー
+	singleRankNone        singleRankFail = iota
+	singleRankRejectID                   // ID のパースで弾かれる（usecase を呼ばない）
+	singleRankNotFound                   // ギルド/ユーザーが存在しない
+	singleRankScoreNone                  // スコア/ポイントが未登録
+	singleRankUnexpected                 // 予期せぬエラー
+	singleRankUnavailable                // ランキング未構築（Redis 揮発）
 )
 
 type singleRankCase struct {
@@ -260,6 +292,8 @@ type singleRankCase struct {
 	wantStatus int
 	// wantMessage は kind ごとに文言が異なるためランナーで解決する。
 	wantBodyContains []string
+	// wantRetryAfter が true のとき Retry-After ヘッダが付くことを検証する。
+	wantRetryAfter bool
 }
 
 func TestHandler_GetRank(t *testing.T) {
@@ -302,7 +336,16 @@ func TestHandler_GetRank(t *testing.T) {
 			wantBodyContains: []string{`"message":"internal server error"`},
 		},
 		{
-			// #6 …→C→D→Z
+			// #6 …→X→R9
+			// 揮発を「対象が未登録」の 404（#4）と取り違えないことを固定する。
+			name:             "ErrRankingUnavailable: 503 と Retry-After",
+			failAt:           singleRankUnavailable,
+			wantStatus:       http.StatusServiceUnavailable,
+			wantBodyContains: []string{`"message":"ranking is unavailable"`},
+			wantRetryAfter:   true,
+		},
+		{
+			// #7 …→C→D→Z
 			name:       "正常系: Result がレスポンスへ変換される",
 			failAt:     singleRankNone,
 			wantStatus: http.StatusOK,
@@ -356,6 +399,7 @@ func runSingleRankCase(t *testing.T, kind rankingKind, tc singleRankCase) {
 	}
 
 	assertResponse(t, rec, tc.wantStatus, append(tc.wantBodyContains, wantSingleRankBody(kind, tc.failAt)...), nil)
+	assertRetryAfter(t, rec, tc.wantRetryAfter)
 }
 
 // expectSingleRankCall は failAt に応じた戻り値を usecase モックに設定する。
@@ -375,6 +419,8 @@ func expectSingleRankCall(kind rankingKind, uc *mockranking.MockUsecase, id int6
 			ucErr = rankingdomain.ErrScoreNotFound
 		case singleRankUnexpected:
 			ucErr = errors.New("unexpected error")
+		case singleRankUnavailable:
+			ucErr = rankingdomain.ErrRankingUnavailable
 		case singleRankNone:
 			res = result
 		}
@@ -396,6 +442,8 @@ func expectSingleRankCall(kind rankingKind, uc *mockranking.MockUsecase, id int6
 		ucErr = rankingdomain.ErrPointsNotFound
 	case singleRankUnexpected:
 		ucErr = errors.New("unexpected error")
+	case singleRankUnavailable:
+		ucErr = rankingdomain.ErrRankingUnavailable
 	case singleRankNone:
 		res = result
 	}
@@ -415,7 +463,7 @@ func wantSingleRankBody(kind rankingKind, failAt singleRankFail) []string {
 			return []string{`"message":"score not found"`}
 		case singleRankNone:
 			return []string{`"guild_name":"テストギルド"`, `"score":9000`, `"rank":1`, `"total_guilds":10`}
-		case singleRankUnexpected:
+		case singleRankUnexpected, singleRankUnavailable:
 			return nil
 		}
 		return nil
@@ -429,7 +477,7 @@ func wantSingleRankBody(kind rankingKind, failAt singleRankFail) []string {
 		return []string{`"message":"points not found"`}
 	case singleRankNone:
 		return []string{`"user_name":"テストユーザー"`, `"points":8000`, `"rank":3`, `"total_users":100`}
-	case singleRankUnexpected:
+	case singleRankUnexpected, singleRankUnavailable:
 		return nil
 	}
 	return nil

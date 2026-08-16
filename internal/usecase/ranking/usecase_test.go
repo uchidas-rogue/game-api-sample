@@ -102,6 +102,8 @@ type rankStep int
 
 const (
 	rankStepNone rankStep = iota
+	rankStepIsInitialized
+	rankStepUninitialized
 	rankStepGetRankings
 	rankStepListNames
 	rankStepTotalCount
@@ -111,6 +113,8 @@ const (
 type rankingsCase struct {
 	name  string
 	input ranking.GetRankingsInput
+	// wantErrIs は失敗ケースで期待する sentinel。未指定なら共通の errStore を期待する。
+	wantErrIs error
 	// entries は store が返すランキング。空スライスなら名前解決をスキップする経路になる。
 	entries    []rankingdomain.RankEntry
 	totalCount int64
@@ -138,39 +142,54 @@ func TestUsecase_GetRankings(t *testing.T) {
 	// 並び順は図のパスが短い順。
 	tests := []rankingsCase{
 		{
-			// #1 A→B→C→E1
+			// #1 A→I→E4
+			name:    "IsInitialized がエラー: 後続が一切呼ばれない",
+			entries: entries,
+			failAt:  rankStepIsInitialized,
+		},
+		{
+			// #2 A→I→E5
+			// 揮発時に空配列を正常レスポンスとして返さないことを固定する。
+			name:      "未初期化: ErrRankingUnavailable を返す",
+			entries:   entries,
+			failAt:    rankStepUninitialized,
+			wantErrIs: rankingdomain.ErrRankingUnavailable,
+		},
+		{
+			// #3 A→I→B→C→E1
 			name:    "store の取得がエラー: 名前解決も total count も呼ばれない",
 			entries: entries,
 			failAt:  rankStepGetRankings,
 		},
 		{
-			// #2 A→B→C→D→F→Z
+			// #4 A→I→B→C→D→F→Z
+			// #2 と違い、これは「まだ誰も加点していない」正常な空。エラーにしない。
 			name:       "entries が空: 名前解決を呼ばない",
 			entries:    []rankingdomain.RankEntry{},
 			totalCount: 0,
 			wantNames:  []string{},
 		},
 		{
-			// #3 …→D→G→E2
+			// #5 …→D→G→E2
 			name:    "名前解決がエラー: total count が呼ばれない",
 			entries: entries,
 			failAt:  rankStepListNames,
 		},
 		{
-			// #4 …→G→H→H2→F→E3
+			// #6 …→G→H→H2→F→E3
 			name:    "total count がエラー",
 			entries: entries,
 			failAt:  rankStepTotalCount,
 		},
 		{
-			// #5 …→H→H2→F→Z
+			// #7 …→H→H2→F→Z
 			name:       "正常系: 名前がマージされる",
 			entries:    entries,
 			totalCount: 42,
 			wantNames:  []string{"名前100", "名前200"},
 		},
 		{
-			// #6 5 と同一パス。正規化後の値が store へ渡る「結線」だけを検証する。
+			// #8 7 と同一パス。正規化後の値が store へ渡る「結線」だけを検証する。
 			// 正規化そのものの正しさは domain の NormalizeLimit / NormalizeOffset が担保する。
 			name:               "正規化した offset/limit が store に渡る",
 			input:              ranking.GetRankingsInput{Limit: 0, Offset: -5},
@@ -180,7 +199,7 @@ func TestUsecase_GetRankings(t *testing.T) {
 			wantNormalizedArgs: true,
 		},
 		{
-			// #7 …→H→H3→F→Z
+			// #9 …→H→H3→F→Z
 			// 名前が引けなくてもエントリを落とさない（順位と件数が食い違わないため）。
 			name:                 "名前マップに ID が無い: Name は空のままエントリは除外しない",
 			entries:              entries,
@@ -228,8 +247,12 @@ func runRankingsCase(t *testing.T, kind rankingKind, tc rankingsCase, errStore e
 	}
 
 	if tc.failAt != rankStepNone {
+		wantErrIs := tc.wantErrIs
+		if wantErrIs == nil {
+			wantErrIs = errStore
+		}
 		require.Error(t, err)
-		assert.ErrorIs(t, err, errStore)
+		assert.ErrorIs(t, err, wantErrIs)
 		assert.Equal(t, ranking.RankingsResult{}, res, "エラー時はゼロ値を返す")
 		return
 	}
@@ -243,6 +266,19 @@ func runRankingsCase(t *testing.T, kind rankingKind, tc rankingsCase, errStore e
 }
 
 func expectRankingsCalls(kind rankingKind, m *mocks, tc rankingsCase, errStore error, wantOffset, wantLimit int) {
+	// I: 初期化検知。ここで打ち切るケースは後続の EXPECT を一切登録しないため、
+	// gomock の strict controller が「後続が呼ばれない」ことをそのまま検証する。
+	switch tc.failAt {
+	case rankStepIsInitialized:
+		m.store.EXPECT().IsInitialized(gomock.Any()).Return(false, errStore)
+		return
+	case rankStepUninitialized:
+		m.store.EXPECT().IsInitialized(gomock.Any()).Return(false, nil)
+		return
+	default:
+		m.store.EXPECT().IsInitialized(gomock.Any()).Return(true, nil)
+	}
+
 	// C: ランキング取得
 	if tc.failAt == rankStepGetRankings {
 		if kind == kindGuild {
@@ -319,10 +355,12 @@ func expectRankingsCalls(kind rankingKind, m *mocks, tc rankingsCase, errStore e
 type singleRankStep int
 
 const (
-	singleStepNone         singleRankStep = iota
-	singleStepGetEntity                   // repo.GetGuild / GetUser
-	singleStepGetScore                    // store.GetGuildScore / GetUserPoints
-	singleStepScoreMissing                // exists = false
+	singleStepNone          singleRankStep = iota
+	singleStepIsInitialized                // store.IsInitialized がエラー
+	singleStepUninitialized                // store.IsInitialized が false
+	singleStepGetEntity                    // repo.GetGuild / GetUser
+	singleStepGetScore                     // store.GetGuildScore / GetUserPoints
+	singleStepScoreMissing                 // exists = false
 	singleStepGetRank
 	singleStepTotalCount
 )
@@ -342,17 +380,25 @@ func TestUsecase_GetRank(t *testing.T) {
 	// docs/testing/ranking.md「2. 単一順位取得」の仕様表と 1 対 1。
 	// 並び順は図のパスが短い順。
 	tests := []singleRankCase{
-		// #1 A→B→E1
+		// #1 A→I→E6
+		{name: "IsInitialized がエラー: repo も store も呼ばれない", failAt: singleStepIsInitialized, wantErrIs: errStore},
+		// #2 A→I→E7。揮発を「対象が未登録」の 404 に落とさないことを固定する。
+		{
+			name:      "未初期化: ErrRankingUnavailable を返す",
+			failAt:    singleStepUninitialized,
+			wantErrIs: rankingdomain.ErrRankingUnavailable,
+		},
+		// #3 A→I→B→E1
 		{name: "repo の取得がエラー: store が一切呼ばれない", failAt: singleStepGetEntity, wantErrIs: errRepo},
-		// #2 A→B→C→E2
+		// #4 A→I→B→C→E2
 		{name: "スコア/ポイント取得がエラー", failAt: singleStepGetScore, wantErrIs: errStore},
-		// #3 …→C→D→E3。wantErrIs は kind ごとに異なるためランナーで決める。
+		// #5 …→C→D→E3。wantErrIs は kind ごとに異なるためランナーで決める。
 		{name: "スコア/ポイント未登録", failAt: singleStepScoreMissing},
-		// #4 …→D→F→E4
+		// #6 …→D→F→E4
 		{name: "rank 取得がエラー", failAt: singleStepGetRank, wantErrIs: errStore},
-		// #5 …→F→G→E5
+		// #7 …→F→G→E5
 		{name: "total count がエラー", failAt: singleStepTotalCount, wantErrIs: errStore},
-		// #6 …→G→Z
+		// #8 …→G→Z
 		{name: "正常系: 名前・スコア・順位・総数が揃う", failAt: singleStepNone},
 	}
 
@@ -427,6 +473,19 @@ func expectSingleRankCalls(
 	kind rankingKind, m *mocks, tc singleRankCase, id int64,
 	errRepo, errStore error, wantScore, wantRank, wantTotal int64, wantName string,
 ) {
+	// I: 初期化検知。ここで打ち切るケースは後続の EXPECT を登録しないため、
+	// gomock の strict controller が「repo も store も呼ばれない」ことをそのまま検証する。
+	switch tc.failAt {
+	case singleStepIsInitialized:
+		m.store.EXPECT().IsInitialized(gomock.Any()).Return(false, errStore)
+		return
+	case singleStepUninitialized:
+		m.store.EXPECT().IsInitialized(gomock.Any()).Return(false, nil)
+		return
+	default:
+		m.store.EXPECT().IsInitialized(gomock.Any()).Return(true, nil)
+	}
+
 	// B: 名前取得
 	if tc.failAt == singleStepGetEntity {
 		if kind == kindGuild {

@@ -85,8 +85,32 @@ func NewUsecase(
 	}
 }
 
+// ensureInitialized はランキングが構築済みでなければ ErrRankingUnavailable を返す。
+// 読み取り系メソッドの先頭で必ず呼ぶ。
+//
+// Redis の ZSet が揮発すると ZREVRANGE は空配列を、ZSCORE は「未登録」を返すため、
+// これが無いと「200 で空のランキング」「404 points not found」という
+// 一見正常なレスポンスで揮発を隠してしまう（詳細は docs/testing/ranking.md §0）。
+//
+// 判定結果をキャッシュしないのは意図的。キャッシュすると、その期間は揮発しても
+// 嘘のレスポンスを返し続けることになり、この仕組みの目的そのものを損なう。
+func (u *usecase) ensureInitialized(ctx context.Context) error {
+	ok, err := u.rankingStore.IsInitialized(ctx)
+	if err != nil {
+		return fmt.Errorf("check ranking initialized: %w", err)
+	}
+	if !ok {
+		return rankingdomain.ErrRankingUnavailable
+	}
+	return nil
+}
+
 // GetGuildRankings はギルドランキングを取得する。
 func (u *usecase) GetGuildRankings(ctx context.Context, input GetRankingsInput) (RankingsResult, error) {
+	if err := u.ensureInitialized(ctx); err != nil {
+		return RankingsResult{}, err
+	}
+
 	limit := rankingdomain.NormalizeLimit(input.Limit)
 	offset := rankingdomain.NormalizeOffset(input.Offset)
 
@@ -125,6 +149,10 @@ func (u *usecase) GetGuildRankings(ctx context.Context, input GetRankingsInput) 
 
 // GetGuildRank は指定ギルドの順位を取得する。
 func (u *usecase) GetGuildRank(ctx context.Context, guildID int64) (rankingdomain.GuildRankResult, error) {
+	if err := u.ensureInitialized(ctx); err != nil {
+		return rankingdomain.GuildRankResult{}, err
+	}
+
 	guild, err := u.repo.GetGuild(ctx, nil, guildID)
 	if err != nil {
 		return rankingdomain.GuildRankResult{}, err
@@ -164,6 +192,10 @@ func (u *usecase) GetGuildRank(ctx context.Context, guildID int64) (rankingdomai
 //
 // 返す累計（NewTotal）は加算後に読み直した実測値であり、アプリ側で足し込んだ値ではない。
 // 同一ユーザーへの同時加算でレスポンスがずれるのを防ぐため（詳細は加算直後のコメント）。
+//
+// 読み取り系と違い ensureInitialized を呼ばない。本メソッドは Redis を一切触らず
+// MySQL にしか書かないため、ZSet が揮発していても記録は正しく残る。ここを弾くと、
+// 復旧すれば失われずに済んだ加算を落とすことになる。
 func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (rankingdomain.UserPointAddResult, error) {
 	if !rankingdomain.IsValidScore(input.Points) {
 		return rankingdomain.UserPointAddResult{}, fmt.Errorf(
@@ -252,6 +284,10 @@ func (u *usecase) AddUserPoints(ctx context.Context, input AddUserPointsInput) (
 
 // GetUserRankings はユーザーランキングを取得する。
 func (u *usecase) GetUserRankings(ctx context.Context, input GetRankingsInput) (RankingsResult, error) {
+	if err := u.ensureInitialized(ctx); err != nil {
+		return RankingsResult{}, err
+	}
+
 	limit := rankingdomain.NormalizeLimit(input.Limit)
 	offset := rankingdomain.NormalizeOffset(input.Offset)
 
@@ -290,6 +326,10 @@ func (u *usecase) GetUserRankings(ctx context.Context, input GetRankingsInput) (
 
 // GetUserRank は指定ユーザーの順位を取得する。
 func (u *usecase) GetUserRank(ctx context.Context, userID int64) (rankingdomain.UserRankResult, error) {
+	if err := u.ensureInitialized(ctx); err != nil {
+		return rankingdomain.UserRankResult{}, err
+	}
+
 	userName, err := u.repo.GetUser(ctx, nil, userID)
 	if err != nil {
 		return rankingdomain.UserRankResult{}, err

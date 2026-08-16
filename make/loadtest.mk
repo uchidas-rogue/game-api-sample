@@ -12,11 +12,11 @@ SEED_GUILDS  ?= 100
 # k6 へ渡す共通環境変数（ID空間を seed 規模に一致させる）。
 K6_ENV = BASE_URL=$(BASE_URL) USERS=$(SEED_USERS) GUILDS=$(SEED_GUILDS)
 
-## 負荷試験データ投入（users/guilds/items/初期スコア）
+## 負荷試験データ投入（users/guilds/items/初期スコア）。Redis 反映まで行う
 load/seed:
 	go run ./cmd/batch -seed -users=$(SEED_USERS) -guilds=$(SEED_GUILDS)
 
-## 初期スコアを Redis に反映（ランキング参照を温める）
+## 初期スコアを Redis に反映（ランキング参照を温める。load/seed 後は不要）
 load/warm:
 	go run ./cmd/batch -sync-rankings
 

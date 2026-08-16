@@ -14,6 +14,35 @@
 
 ---
 
+## 0. 読み取り経路の前提: ランキングの初期化検知
+
+Redis の ZSet が揮発（ノード障害・フェイルオーバ・人為ミス）すると、
+`ZREVRANGE` は**エラーではなく空配列**を、`ZSCORE` は `redis.Nil` を返す。
+そのまま返すと一覧は「200 OK で空」、順位は「404 points not found」になり、
+**揮発を正常なレスポンスとして返してしまう**。
+
+さらに揮発後は outbox-worker の `ZINCRBY` が 0 から加算を再開するため、
+時間が経つほど「揮発以降の増分だけで育った、それらしく見える嘘のランキング」になる。
+空である時間は短く、放置するほど検知が難しくなる。
+
+これを防ぐため、`RankingSyncer` が再構築の完了時にセンチネルキー
+`ranking:meta:initialized`（[domain/ranking/constants.go](../../internal/domain/ranking/constants.go)）を立て、
+**読み取り系の 4 メソッドは処理の先頭でその存在を確認する**。
+無ければ `ErrRankingUnavailable` を返し、driver 層が 503 に変換する
+（[http-ranking.md](http-ranking.md) §4）。
+
+**設計上の要点**:
+
+- センチネルキーに **TTL を付けない**。期限切れが偽陽性（揮発していないのに 503）になる
+- キーは ZSet と同じ Redis に置く。**揮発すれば必ず一緒に消える**ので偽陰性が生じない
+- 判定は**読み取りのたびに毎回**行う。一度成功した結果をプロセス内にキャッシュすると、
+  キャッシュ期間中は揮発しても嘘を返し続け、この仕組みの目的を損なう
+- **`AddUserPoints`（書き込み）はこの判定の対象外**。書き込み経路は Redis を一切触らず
+  MySQL にしか書かないため、揮発中でも記録は正しく残る。ここを 503 にすると、
+  復旧すれば失われずに済んだ加算を落とすことになる
+- 揮発中も worker は `ZINCRBY` を続けて嘘の値を育てるが、読み取りが 503 で塞がっている
+  あいだは露出しない。`SyncAll` が MySQL の値で **SET 上書き**するので復旧時に是正される
+
 ## 1. 読み取り系: `GetGuildRankings` / `GetUserRankings`
 
 2 メソッドは構造が同一（ギルド版とユーザー版）。**同じ図・同じケース構成を持つ**。
@@ -21,7 +50,10 @@
 
 ```mermaid
 flowchart TD
-    A[開始] --> B[NormalizeLimit / NormalizeOffset<br/>domain で正規化]
+    A[開始] --> I[rankingStore.IsInitialized<br/>センチネルキーの存在確認]
+    I -- err --> E4((is initialized エラー))
+    I -- false --> E5((ErrRankingUnavailable<br/>揮発 or 未初期化))
+    I -- true --> B[NormalizeLimit / NormalizeOffset<br/>domain で正規化]
     B --> C[rankingStore.GetXxxRankings<br/>正規化後の offset/limit を渡す]
     C -- err --> E1((get rankings エラー))
     C -- ok --> D{entries が空か}
@@ -46,15 +78,21 @@ flowchart TD
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
-| 1 | store の取得がエラー | `A→B→C→E1` | エラーを返す | 名前解決も total count も呼ばれない |
-| 2 | `entries` が空 | `A→B→C→D→F→Z` | 空の `Rankings`、`TotalCount` は返る | **`ListXxxByIDs` が呼ばれない** |
-| 3 | 名前解決がエラー | `…→D→G→E2` | エラーを返す | total count が呼ばれない |
-| 4 | total count がエラー | `…→G→H→H2→F→E3` | エラーを返す | — |
-| 5 | 正常系: 名前がマージされる | `…→H→H2→F→Z` | `Rankings` の各要素に Name が入る | `ListXxxByIDs` に entries の ID 配列が渡る |
-| 6 | 正規化した値が store に渡る | 5 と同一 | 正常終了 | **`GetXxxRankings` に正規化後の offset/limit が渡る** |
-| 7 | 名前マップに ID が無い | `…→H→H3→F→Z` | 該当エントリの `Name` は空文字。**件数は減らない** | — |
+| 1 | `IsInitialized` がエラー | `A→I→E4` | エラーを返す | **後続が一切呼ばれない** |
+| 2 | 未初期化（揮発） | `A→I→E5` | `ErrRankingUnavailable` | 同上。**空配列を 200 で返さない** |
+| 3 | store の取得がエラー | `A→I→B→C→E1` | エラーを返す | 名前解決も total count も呼ばれない |
+| 4 | `entries` が空 | `A→I→B→C→D→F→Z` | 空の `Rankings`、`TotalCount` は返る | **`ListXxxByIDs` が呼ばれない** |
+| 5 | 名前解決がエラー | `…→D→G→E2` | エラーを返す | total count が呼ばれない |
+| 6 | total count がエラー | `…→G→H→H2→F→E3` | エラーを返す | — |
+| 7 | 正常系: 名前がマージされる | `…→H→H2→F→Z` | `Rankings` の各要素に Name が入る | `ListXxxByIDs` に entries の ID 配列が渡る |
+| 8 | 正規化した値が store に渡る | 7 と同一 | 正常終了 | **`GetXxxRankings` に正規化後の offset/limit が渡る** |
+| 9 | 名前マップに ID が無い | `…→H→H3→F→Z` | 該当エントリの `Name` は空文字。**件数は減らない** | — |
 
-**ケース 6 について**: `limit=0 → DefaultRankingLimit`、`limit>Max → Max に丸め`、`offset<0 → 0`
+**ケース 2 と 4 を分けている理由**: どちらも「ランキングが空」に見えるが、
+**2 は異常（揮発）、4 は正常（まだ誰も加点していない）**。この 2 つを区別できることが
+センチネルキーを置く目的そのものなので、統合しない。
+
+**ケース 8 について**: `limit=0 → DefaultRankingLimit`、`limit>Max → Max に丸め`、`offset<0 → 0`
 といった正規化の**値**の検証は domain の責務。ここで検証するのは
 「usecase が正規化を通した結果を store へ渡している」という**結線**だけなので、1 ケースで足りる。
 
@@ -66,7 +104,10 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[開始] --> B[repo.GetGuild / GetUser<br/>名前を取得]
+    A[開始] --> I[rankingStore.IsInitialized<br/>センチネルキーの存在確認]
+    I -- err --> E6((is initialized エラー))
+    I -- false --> E7((ErrRankingUnavailable<br/>揮発 or 未初期化))
+    I -- true --> B[repo.GetGuild / GetUser<br/>名前を取得]
     B -- err --> E1((repo のエラーをそのまま返す))
     B -- ok --> C[rankingStore.GetXxxScore/Points]
     C -- err --> E2((get score エラー))
@@ -83,12 +124,19 @@ flowchart TD
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
-| 1 | `repo.GetXxx` がエラー | `A→B→E1` | repo のエラーを変換せず返す | store が一切呼ばれない |
-| 2 | スコア/ポイント取得がエラー | `A→B→C→E2` | エラーを返す | rank / total count が呼ばれない |
-| 3 | スコア/ポイント未登録（`exists=false`） | `…→C→D→E3` | `ErrScoreNotFound` / `ErrPointsNotFound` | 同上 |
-| 4 | rank 取得がエラー | `…→D→F→E4` | エラーを返す | total count が呼ばれない |
-| 5 | total count がエラー | `…→F→G→E5` | エラーを返す | — |
-| 6 | 正常系 | `…→G→Z` | 名前・スコア・順位・総数がすべて入る | — |
+| 1 | `IsInitialized` がエラー | `A→I→E6` | エラーを返す | **repo も store も呼ばれない** |
+| 2 | 未初期化（揮発） | `A→I→E7` | `ErrRankingUnavailable` | 同上。**404 を返さない** |
+| 3 | `repo.GetXxx` がエラー | `A→I→B→E1` | repo のエラーを変換せず返す | store が一切呼ばれない |
+| 4 | スコア/ポイント取得がエラー | `A→I→B→C→E2` | エラーを返す | rank / total count が呼ばれない |
+| 5 | スコア/ポイント未登録（`exists=false`） | `…→C→D→E3` | `ErrScoreNotFound` / `ErrPointsNotFound` | 同上 |
+| 6 | rank 取得がエラー | `…→D→F→E4` | エラーを返す | total count が呼ばれない |
+| 7 | total count がエラー | `…→F→G→E5` | エラーを返す | — |
+| 8 | 正常系 | `…→G→Z` | 名前・スコア・順位・総数がすべて入る | — |
+
+**ケース 2 と 5 を分けている理由**: 揮発した ZSet では `ZSCORE` が `redis.Nil` を返すため、
+初期化検知が無いとケース 5（`ErrPointsNotFound` → 404）に落ちる。
+**「まだ加点していない個人」と「ランキング全体の消失」が同じ 404 になる**のが
+この対策以前の問題そのものなので、両者を別ケースとして固定する。
 
 ---
 
@@ -129,6 +177,9 @@ flowchart TD
 
 **設計上の要点**（テストで守る不変条件）:
 
+- **初期化検知（§0）の対象外**。このメソッドは Redis を一切触らず MySQL にしか書かないため、
+  ZSet が揮発していても記録は正しく残る。ここを 503 にすると、復旧すれば失われずに
+  済んだ加算を落とすことになる。図に `IsInitialized` のノードが無いのは意図的
 - `IsValidScore` の判定は `DoInTx` の**外**。不正入力でトランザクションを張らない
 - ギルド集計（`IncrementGuildScore` / `InsertGuildScoreHistory`）は
   この tx で**行わない**。ホット行（1ギルド=1行）の排他ロックを同期リクエスト経路から

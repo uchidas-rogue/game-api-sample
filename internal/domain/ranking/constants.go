@@ -17,6 +17,11 @@ const (
 const (
 	GuildRankingKey = "ranking:guilds"
 	UserRankingKey  = "ranking:users"
+	// RankingInitializedKey はランキング ZSet が構築済みであることを示すセンチネルキー。
+	// 揮発（ノード障害・フェイルオーバ・人為ミス）すると ZSet と一緒に消えるため、
+	// 「空だが正常」と「揮発して空」を区別する唯一の手掛かりになる。
+	// TTL を付けてはならない（期限切れが偽陽性になる）。
+	RankingInitializedKey = "ranking:meta:initialized"
 )
 
 // IsValidScore はスコア・ポイントが有効範囲内かを判定する。

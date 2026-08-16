@@ -12,11 +12,11 @@ ROADMAP フェーズ3の負荷試験シナリオ一式。ローカルで API に
 ## 手順
 
 ```bash
-# 1. データ投入（users/guilds/items/初期スコア）
+# 1. データ投入（users/guilds/items/初期スコア）。Redis 反映まで込み
 make load/seed                       # 既定 users=10000 guilds=100
 make load/seed SEED_USERS=100000 SEED_GUILDS=500
 
-# 2. 初期スコアを Redis に反映（ランキング参照を温める）
+# 2. 初期スコアを Redis に反映（load/seed 後は不要。Redis を飛ばしたときの復旧用）
 make load/warm
 
 # 3. 疎通確認（必ず最初に）
@@ -27,6 +27,11 @@ make load/gacha        # 書き込み系（トランザクション+行ロック
 make load/points       # 書き込み系（スコア加算+ギルド集計+outbox）
 make load/ranking      # 読み取り系（Redis ZSet 参照）
 ```
+
+> ランキング参照が `503 ranking is unavailable` を返す場合、Redis にランキングが構築されていない
+> （`load/seed` / `load/warm` の未実行、または Redis の揮発）。`make load/warm` で再構築する。
+> 揮発を空配列や 404 で誤魔化さないための仕様なので、閾値の緩和ではなく再構築で対処すること。
+> 詳細は [docs/testing/ranking.md](../docs/testing/ranking.md) §0。
 
 ## 負荷の調整（環境変数）
 

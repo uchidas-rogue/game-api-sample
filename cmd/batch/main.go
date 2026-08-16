@@ -20,14 +20,28 @@ import (
 
 func main() {
 	syncRankings := flag.Bool("sync-rankings", false, "sync rankings from DB to Redis")
-	doSeed := flag.Bool("seed", false, "seed dev/load-test data into MySQL")
+	doSeed := flag.Bool("seed", false, "seed dev/load-test data into MySQL, then sync rankings to Redis")
 	gcOutbox := flag.Bool("gc-outbox", false, "delete processed outbox events older than OUTBOX_RETENTION")
 	seedUsers := flag.Int("users", seed.DefaultUsers, "number of users to seed (with -seed)")
 	seedGuilds := flag.Int("guilds", seed.DefaultGuilds, "number of guilds to seed (with -seed)")
 	flag.Parse()
 
-	if !*syncRankings && !*doSeed && !*gcOutbox {
+	// 実行モードは排他。複数指定を許すと、先に判定されたものだけが走り残りが黙って
+	// 無視される（例: -seed -gc-outbox で seed がスキップされる）。判定順という
+	// 見えない要因で挙動が決まるのを避けるため、ここで弾く。
+	modes := 0
+	for _, specified := range []bool{*syncRankings, *doSeed, *gcOutbox} {
+		if specified {
+			modes++
+		}
+	}
+	switch {
+	case modes == 0:
 		slog.Error("no batch specified. use -seed, -sync-rankings or -gc-outbox")
+		os.Exit(1)
+	case modes > 1:
+		slog.Error("multiple batches specified. use exactly one of -seed, -sync-rankings or -gc-outbox" +
+			" (-seed already syncs rankings to Redis)")
 		os.Exit(1)
 	}
 
@@ -63,15 +77,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	if *doSeed {
-		seeder := seed.NewSeeder(db, log)
-		if err := seeder.Seed(ctx, seed.Params{Users: *seedUsers, Guilds: *seedGuilds}); err != nil {
-			log.Error("seeding failed", slog.Any("error", err))
-			os.Exit(1)
-		}
-		return
-	}
-
 	// outbox GC は Redis を使わないため、Redis 接続を張る前に処理して抜ける。
 	if *gcOutbox {
 		gc := batch.NewOutboxGC(
@@ -87,7 +92,17 @@ func main() {
 		return
 	}
 
-	// *syncRankings
+	if *doSeed {
+		seeder := seed.NewSeeder(db, log)
+		if err := seeder.Seed(ctx, seed.Params{Users: *seedUsers, Guilds: *seedGuilds}); err != nil {
+			log.Error("seeding failed", slog.Any("error", err))
+			os.Exit(1)
+		}
+	}
+
+	// -seed / -sync-rankings のどちらも、この後の Redis 反映まで通す。
+	// 投入したデータを Redis に焼き、センチネルキーを立てるところまでが seed の完了条件
+	// （立てないとランキング読み取りが 503 のままで、動作確認も負荷試験もできない）。
 	redisClient, err := infraRedis.NewClient(ctx, cfg.RedisAddr)
 	if err != nil {
 		log.Error("failed to connect redis", slog.Any("error", err))
