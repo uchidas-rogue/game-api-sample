@@ -61,6 +61,7 @@
 | Go / 本リポジトリ固有の差分（言語機能による代替・分岐カバレッジが取れない制約） | `.claude/skills/go-testing-qa/SKILL.md`（**Claude Code 専用**。他エージェントは上の原則ファイルを直接読む） |
 
 - テスト設計文書: `usecase` / `driver` の新規実装・分岐変更は、**実装より先に** `docs/testing/<機能>.md` にフローチャートとテスト仕様表を作る（順序は 図 → 失敗するテスト → 実装）。`domain` の純粋関数・値オブジェクトは図を作らない。作成対象の判定・仕様表の形・図の保守トリガ・レビューチェックリストは [docs/testing/README.md](docs/testing/README.md) が正本
+  - 仕様表とテストコードの対応づけ（表の直前の `<!-- testcases: ... -->` と、テスト側の `// #<番号> <図のパス>` マーカー）は**必須**。`scripts/doccheck` が行数・ケース順・図の終端ノードの網羅を突合し、`make test` で落とす。書き方の正本は [docs/testing/README.md](docs/testing/README.md) §3
 - API レスポンス契約: `driver/http` のレスポンス構造は `internal/driver/http/testdata/contracts/*.json` を正本とし、`internal/testutil/apicontract` で**構造のみ**を検証する（値の妥当性はハンドラのテストの責務）。json タグの追加・削除・リネームをしたら同じ PR で契約ファイルも更新する。これはレスポンスを解釈する側（k6 シナリオ等）の変更が必要になるサイン
 - アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する

@@ -865,6 +865,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 		wantApplied int
 	}{
 		{
+			// #1 LC→PZ0
 			name: "正常系: 候補なしなら 0 件を返し tx を張らない",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
@@ -878,6 +879,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 0,
 		},
 		{
+			// #2 P2→PS→PZ
 			name: "正常系: ClaimByID が found=false（処理済み/他worker確保中）なら skip し前進として数える",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
@@ -897,6 +899,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 1,
 		},
 		{
+			// #3 H→RB→RT
 			// 主経路（applyBatch）では未知 event_type はデコード段階で除外されるが、
 			// フォールバック経路では applyEventInTx の default に落ちて同じく IncrementRetry される。
 			name: "異常系: 未知の event_type は ErrUnknownEventType で IncrementRetry",
@@ -921,6 +924,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 0,
 		},
 		{
+			// #4 H→RB→RT
 			// payload が壊れたイベントも applyEventInTx 内の Unmarshal 失敗として retry 記録される。
 			name: "異常系: payload デコード失敗で IncrementRetry",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
@@ -942,6 +946,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 0,
 		},
 		{
+			// #5 RT→RTE
 			// retry 記録自体の失敗はログのみ。イベントは pending のままなので次ティックで再処理される。
 			name: "異常系: IncrementRetry 失敗はログのみでエラーを伝播しない",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
@@ -962,6 +967,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 0,
 		},
 		{
+			// #6 M1→RB→RT
 			name: "異常系: MySQL IncrementGuildScore 失敗で IncrementRetry",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
@@ -984,6 +990,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 0,
 		},
 		{
+			// #7 M2→RB→RT
 			name: "異常系: InsertGuildScoreHistory 失敗で IncrementRetry",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
@@ -1007,6 +1014,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 0,
 		},
 		{
+			// #8 R→RE→PZ
 			// COMMIT 後の Redis 失敗は再処理させない。MySQL は確定済みなので、
 			// 再適用すると Redis だけ二重に加算される（§0-1）。
 			name: "異常系: COMMIT 後の Redis 反映が失敗してもログのみ（retry 記録しない）",
@@ -1035,6 +1043,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 1,
 		},
 		{
+			// #9 …→M1→M2→MK→CM→R
 			name: "正常系: MySQL(IncrementGuildScore→InsertGuildScoreHistory)→MarkProcessed→COMMIT 後に Redis",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
@@ -1061,6 +1070,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 1,
 		},
 		{
+			// #10 1件目 →RB→RT、2件目 →MK→CM→R
 			// フォールバック経路の存在意義そのものの検証。
 			// 候補列の先頭イベントが恒久失敗（poison）しても、後続の候補は影響を受けず処理される。
 			name: "正常系: 先頭イベントが失敗しても後続の候補は処理される（head-of-line blocking 回避）",
@@ -1650,6 +1660,53 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 		// 「滞留していても ticker では再開している」ことの証明になる。
 		runWorkerAndWaitCalls(t, w, called, 6)
 	})
+}
+
+// [§1 ケース9] TestWorker_Run_ctxキャンセルはnilを返して終了する は、停止要求を
+// 「異常終了」ではなく正常な終了として扱うことを確認する。
+//
+// 他の Run 系テストは `stopAndWait` で「2秒以内に返ること」しか見ておらず、戻り値を
+// 捨てている（`_ = w.Run(ctx)`）。ctx.Err() をそのまま返す実装に変えても気づけない状態
+// だったため、戻り値を受け取る専用ケースを1本置く。呼び出し元（cmd/outbox-worker）は
+// Run のエラーで終了コードを決めるので、ここが nil でないと停止のたびに異常終了になる。
+func TestWorker_Run_ctxキャンセルはnilを返して終了する(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	d := newDeps(ctrl)
+	called := make(chan struct{}, 16)
+	invokeDoInTxAndSignal(t, d.tx, called)
+	pendingEmptyAnyTimes(d.outboxRepo)
+
+	// Worker の生成は goroutine の外で行う（生成ヘルパーが *testing.T を触るため）。
+	w := d.newWorker(t, 100)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- w.Run(ctx)
+	}()
+
+	// 初回ドレインまで進んでから停止させる（起動前に cancel すると select に入らない）。
+	waitForCalls(t, called, 1, 2*time.Second)
+	cancel()
+
+	// cancel 後の残シグナルで DoInTx の送信がブロックしないよう、終了まで受信を続ける。
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		for range called {
+		}
+	}()
+
+	select {
+	case err := <-errCh:
+		assert.NoError(t, err, "停止要求（ctx キャンセル）は正常終了として nil を返す")
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run が cancel 後 2s 以内に終了しなかった")
+	}
+	close(called)
+	<-drained
 }
 
 // [§1 ケース8] TestWorker_drainNow_ティック期限切れ後も自走する は、tickTimeout でティックが

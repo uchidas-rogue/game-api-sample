@@ -50,6 +50,8 @@ flowchart TD
 
 ### 1-2. テスト仕様表（`GetGuildRankings` / `GetUserRankings` 共通）
 
+<!-- testcases: internal/driver/http/ranking/handler_test.go#TestHandler_GetRankings -->
+
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
 | 1 | `limit` が数値でない | `A→B→E1`（`P3→PE1`） | 400 `invalid limit` | **usecase が呼ばれない** |
@@ -83,6 +85,8 @@ flowchart TD
 ```
 
 ### テスト仕様表（`GetGuildRank` / `GetUserRank` 共通）
+
+<!-- testcases: internal/driver/http/ranking/handler_test.go#TestHandler_GetRank -->
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
@@ -123,6 +127,8 @@ flowchart TD
 usecase が `ErrInvalidPoints` を返した場合の**マッピング**だけがこの層の責務。
 
 ### テスト仕様表
+
+<!-- testcases: internal/driver/http/ranking/handler_test.go#TestHandler_AddUserPoints -->
 
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
@@ -199,6 +205,8 @@ flowchart TD
 [testdata/contracts/](../../internal/driver/http/testdata/contracts/) の JSON ファイル。
 [contract_test.go](../../internal/driver/http/ranking/contract_test.go) が
 `internal/testutil/apicontract` で構造のみを検証する。
+
+<!-- testcases: internal/driver/http/ranking/contract_test.go#TestResponseContract -->
 
 | # | 対象 | 契約ファイル |
 | --- | --- | --- |

@@ -60,6 +60,8 @@ flowchart TD
 
 ## テスト仕様表
 
+<!-- testcases: internal/driver/batch/ranking_sync_test.go#TestRankingSyncer_SyncAll -->
+
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
 | 1 | `DoInTx` 自体が失敗 | `A→B→E1` | エラーを返す | 内部処理も Redis SET も呼ばれない |

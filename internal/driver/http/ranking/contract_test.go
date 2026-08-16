@@ -55,11 +55,17 @@ func TestResponseContract(t *testing.T) {
 		ep           endpoint
 		wantStatus   int
 	}{
+		// #1
 		{name: "ギルドランキング一覧", contractPath: contractRankings, ep: epGuildRankings, wantStatus: http.StatusOK},
+		// #2
 		{name: "ユーザーランキング一覧", contractPath: contractRankings, ep: epUserRankings, wantStatus: http.StatusOK},
+		// #3
 		{name: "ギルド順位", contractPath: contractGuildRank, ep: epGuildRank, wantStatus: http.StatusOK},
+		// #4
 		{name: "ユーザー順位", contractPath: contractUserRank, ep: epUserRank, wantStatus: http.StatusOK},
+		// #5
 		{name: "ポイント加算", contractPath: contractAddUserPoints, ep: epAddUserPoints, wantStatus: http.StatusOK},
+		// #6
 		{name: "エラーレスポンス", contractPath: contractError, ep: epError, wantStatus: http.StatusBadRequest},
 	}
 

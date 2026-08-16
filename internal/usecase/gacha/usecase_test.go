@@ -111,15 +111,30 @@ func TestUsecase_Multi(t *testing.T) {
 			wantErrIs: gachadomain.ErrInvalidPullCount,
 		},
 		{
-			// #3 A→B→C→D→E2（fn が実行されない）
-			name:      "DoInTx 自体がエラー: fn が実行されず repo が一切呼ばれない",
+			// #3 A→B→H→E2
+			name:      "ListItems がエラー: DoInTx に入らない（行ロックを取らない）",
+			pullCount: gachadomain.MaxPullCount,
+			failAt:    stepListItems,
+			failErr:   errDB,
+			wantErrIs: errDB,
+		},
+		{
+			// #4 A→B→H→I→E3
+			name:      "items が空: DoInTx に入らない",
+			pullCount: gachadomain.MaxPullCount,
+			items:     []gachadomain.Item{},
+			wantErrIs: gachadomain.ErrNoItemsAvailable,
+		},
+		{
+			// #5 …→I→C→D→E4
+			name:      "DoInTx 自体がエラー: fn が実行されず tx 内の repo が一切呼ばれない",
 			pullCount: gachadomain.MaxPullCount,
 			failAt:    stepBeginTx,
 			failErr:   errDB,
 			wantErrIs: errDB,
 		},
 		{
-			// #4 A→B→C→D→F→E3
+			// #6 …→D→F→E5
 			// 「一般エラー」と「ErrUserNotFound」は同一パスのため 1 ケースに統合し、
 			// より情報量の多い domain sentinel の透過を検証する。
 			name:      "GetUserForUpdate がエラー: repo のエラーを変換せず返す",
@@ -129,29 +144,14 @@ func TestUsecase_Multi(t *testing.T) {
 			wantErrIs: errUserNotFound,
 		},
 		{
-			// #5 …→F→G→E4
-			name:      "石が不足: ListItems 以降が呼ばれない",
+			// #7 …→F→G→E6
+			name:      "石が不足: UpdateUserGems 以降が呼ばれない",
 			pullCount: gachadomain.MaxPullCount,
 			userGems:  1,
 			wantErrIs: gachadomain.ErrInsufficientGems,
 		},
 		{
-			// #6 …→G→H→E5
-			name:      "ListItems がエラー",
-			pullCount: gachadomain.MaxPullCount,
-			failAt:    stepListItems,
-			failErr:   errDB,
-			wantErrIs: errDB,
-		},
-		{
-			// #7 …→H→I→E6
-			name:      "items が空",
-			pullCount: gachadomain.MaxPullCount,
-			items:     []gachadomain.Item{},
-			wantErrIs: gachadomain.ErrNoItemsAvailable,
-		},
-		{
-			// #8 …→I→J→E7（draw の D1→D2→DE）
+			// #8 …→G→J→E7（draw の D1→D2→DE）
 			name:      "全アイテムの Weight が 0",
 			pullCount: gachadomain.MaxPullCount,
 			items: []gachadomain.Item{
@@ -369,6 +369,7 @@ func totalWeightOf(items []gachadomain.Item) int {
 // 乱数の戻り値を呼び出しごとに変える必要があり、他のケースと手続きが異なるため
 // テーブルを分けている。
 func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で渡される(t *testing.T) {
+	// #16
 	t.Parallel()
 
 	const pullCount = 2
@@ -420,6 +421,7 @@ func TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で渡され�
 // 既定実装は乱数なので当選アイテムを固定できない。
 // 「どれかが当選して完走する」ことだけを確認し、どれが当たるかは検証しない。
 func TestNewUsecase_Randomizerがnilなら既定実装を使う(t *testing.T) {
+	// #17
 	t.Parallel()
 
 	const pullCount = gachadomain.MaxPullCount

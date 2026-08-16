@@ -40,6 +40,8 @@ flowchart TD
 
 パスが短い順。**表の1行 = テストコードの1ケース。**
 
+<!-- testcases: internal/driver/http/health/handler_test.go#TestHandler_Check -->
+
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
 | 1 | usecase がエラー | `A→B→E1` | 503 `{"status":"down"}`。**元のエラー文言を含まない** | ERROR ログに元のエラーが出る |
@@ -59,6 +61,8 @@ flowchart TD
 
 レスポンスの**構造**（json タグ）の正本は
 [testdata/contracts/health.json](../../internal/driver/http/testdata/contracts/health.json)。
+
+<!-- testcases: internal/driver/http/health/contract_test.go#TestResponseContract -->
 
 | # | 対象 | 契約ファイル |
 | --- | --- | --- |

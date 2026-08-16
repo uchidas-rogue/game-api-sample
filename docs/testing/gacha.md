@@ -90,6 +90,8 @@ flowchart TD
 
 パスが短い順。**表の1行 = テストコードの1ケース。**
 
+<!-- testcases: internal/usecase/gacha/usecase_test.go#TestUsecase_Multi -->
+
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
 | 1 | `pullCount` が範囲外（0） | `A→B→E1` | `ErrInvalidPullCount` | **`ListItems` も `DoInTx` も呼ばれない** |
@@ -128,6 +130,8 @@ flowchart TD
 
 乱数の戻り値を呼び出しごとに変える必要があり、1 の表とは手続きが異なるためテーブルを分ける。
 
+<!-- testcases: internal/usecase/gacha/usecase_test.go#TestUsecase_Multi_ロック取得順序_UpsertはItemID昇順で渡される -->
+
 | # | 条件 | 期待結果 |
 | --- | --- | --- |
 | 16 | 抽選順が ID 降順（先に ID 2、次に ID 1 が当選） | `UpsertUserItems` の行は ID 1 → ID 2 の**昇順**。`InsertGachaHistories` は**抽選順**（ID 2 → ID 1） |
@@ -140,6 +144,8 @@ flowchart TD
 ## 3. `NewUsecase`
 
 フロー図を作るほどの分岐は無いが、`rand` の nil フォールバックという分岐を持つ。
+
+<!-- testcases: internal/usecase/gacha/usecase_test.go#TestNewUsecase_Randomizerがnilなら既定実装を使う -->
 
 | # | 条件 | 期待結果 |
 | --- | --- | --- |

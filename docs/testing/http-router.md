@@ -39,6 +39,8 @@ flowchart TD
 
 パスが短い順。**表の1行 = テストコードの1ケース。**
 
+<!-- testcases: internal/driver/http/router/router_test.go#TestRegister_MissingHandler+TestRegister_AllHandlers -->
+
 | # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
 | --- | --- | --- | --- | --- |
 | 1 | `Health` が nil | `A→B→E1` | `ErrMissingHandler`、文言に `Health` | ルートが 0 件 |
