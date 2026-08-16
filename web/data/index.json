@@ -1,0 +1,1922 @@
+{
+  "repo": "uchidas-rogue/game-api-sample",
+  "branch": "main",
+  "limits": {
+    "topK": 6,
+    "maxQuestionChars": 500
+  },
+  "chunks": [
+    {
+      "id": "AGENTS.md#project-overview",
+      "file": "AGENTS.md",
+      "anchor": "project-overview",
+      "title": "Project Overview",
+      "trail": "AGENTS.md \u003e Project Overview",
+      "text": "- プロジェクト: Go言語とEchoを用いたゲームバックエンドAPI\n- アーキテクチャ: Clean Architecture\n- AWS インフラ構成・Terraform モジュール分割・CI/CD ワークフローの安全装置は terraform/ARCHITECTURE.md を参照"
+    },
+    {
+      "id": "AGENTS.md#指示書の読み手と置き場",
+      "file": "AGENTS.md",
+      "anchor": "指示書の読み手と置き場",
+      "title": "指示書の読み手と置き場",
+      "trail": "AGENTS.md \u003e 指示書の読み手と置き場",
+      "text": "本ファイルが全 AI エージェント共通の入口。 規約の正本はすべて本ファイルか、本ファイルからリンクされた docs/ 配下にある。\n\n- AGENTS.md（本ファイル）・docs/ — 全エージェント共通。ここに正本を置く\n- CLAUDE.md・.claude/（skills / commands / agents / hooks） — Claude Code 専用。他のエージェントからは読めないので、ここに規約の正本を置かない。置いてよいのは Claude 固有の動作（発火条件・サブエージェント手順・hook）と、共通の正本への索引だけ\n- 規約を追加するときは、まず「全エージェントが従うべきか」を判断する。従うべきなら本ファイルか docs/ 配下に書き、.claude/ からはリンクする"
+    },
+    {
+      "id": "AGENTS.md#infrastructure-change-rules",
+      "file": "AGENTS.md",
+      "anchor": "infrastructure-change-rules",
+      "title": "Infrastructure Change Rules",
+      "trail": "AGENTS.md \u003e Infrastructure Change Rules",
+      "text": "- Terraform 関連の変更時は 影響範囲を terraform/ 配下に限定せず、必ず以下を併せて確認・更新する:\n  - terraform/（モジュール・環境定義）\n  - .github/workflows/terraform.yml, .github/workflows/deploy.yml（CI/CD で terraform を実行する箇所）\n  - make/terraform.mk, ルート Makefile（ローカル実行コマンド・変数）\n  - terraform/ARCHITECTURE.md（構成図・解説）\n- とくに backend 設定（bucket / key / ロック方式等）・IAM ロール ARN・terraform バージョン・リソース名は、上記ファイル間で値や前提が一致している必要がある。片方だけ変更しないこと\n- IAM ロールを新規追加する変更は CI の apply では通らない。tf_apply の permissions boundary が boundary 未継承の iam:CreateRole を拒否するため、マージ後に一度だけ人手でローカル apply する必要がある。放置するとデプロイ全体が止まる。手順と理由の正本は terraform/ARCHITECTURE.md「新規 IAM ロールを追加する変更は初回だけ人手で apply する」"
+    },
+    {
+      "id": "AGENTS.md#1-architecture--design-rules-clean-architecture",
+      "file": "AGENTS.md",
+      "anchor": "1-architecture--design-rules-clean-architecture",
+      "title": "1. Architecture \u0026 Design Rules (Clean Architecture)",
+      "trail": "AGENTS.md \u003e 1. Architecture \u0026 Design Rules (Clean Architecture)",
+      "text": "- 本節と §2 の規約のうち機械判定できるものは .golangci.yml で強制している（make lint）。規約を追加・変更したら、同ファイルの判定も併せて更新する。新しい外部ライブラリを使う場合は depguard の該当層の allow に理由付きで追加する（//nolint で個別に抜け道を作らない）\n- 層構成: driver(interface adapters; HTTP handler / batch / worker 等の delivery) → usecase → domain の順に内側へ依存し、逆方向の import は禁止\n- driver 配下は配信形式ごとにサブディレクトリを切る（internal/driver/http, internal/driver/batch, internal/driver/worker）。新規 driver（gRPC, SQS consumer 等）を追加する際もこの配下に配置する\n- infrastructure 層は usecase が定義する interface を実装する。usecase/domain から infrastructure を直接 import してはならない（DI は internal/di で行う）\n- domain 層: ビジネスルールとエンティティのみ。Echo・sqlc・MySQL 等の外部技術および sqlc 生成型に依存しない\n- usecase 層: ユースケース実装とトランザクション境界制御。リポジトリ等の interface もこの層で定義する\n- driver/http 層: HTTP の request/response DTO を定義し、domain 型へ変換してから usecase に渡す。driver/batch / driver/worker も同様に外部入力（cron 起動・outbox イベント等）を usecase 呼び出しに変換する責務を持つ"
+    },
+    {
+      "id": "AGENTS.md#2-go-coding-standards",
+      "file": "AGENTS.md",
+      "anchor": "2-go-coding-standards",
+      "title": "2. Go Coding Standards",
+      "trail": "AGENTS.md \u003e 2. Go Coding Standards",
+      "text": "- エラーハンドリング: ビジネス上のエラーは domain 層で sentinel error または型として定義し、errors.Is/errors.As で判定する\n- ログ: log/slog で構造化ログを出力する。logger は DI 経由を原則とし、slog.Default() は main/初期化など DI 不可の箇所に限る\n  - DI 対象のコンストラクタ（NewXxx）は logger を必須引数とし、nil チェック・slog.Default() フォールバックを実装しない\n  - エラーをログに含める際は slog.Any(\"error\", err) を使用する（slog.String(\"error\", err.Error()) は使わない）\n- マジックナンバー禁止: ビジネス上の状態コードや業務固定値は domain 層で const 定義する。各層固有の定数はその層で定義してよい\n- Context 伝播: batch/worker などバックグラウンドジョブのエントリポイントを除き、リクエストスコープ内で context.Background()/context.TODO() を生成しない\n- インターフェース実装検証: 実装型の定義直前に var _ Iface = (*Type)(nil) を記述する（値レシーバのみは Type{} 可）\n  - 検証用の var には var 自身の説明（「X が Y を満たすことをコンパイル時に検証する」）を書く。型の説明は型の直前に置く。これを取り違えると型の doc コメントが go doc に出なくなる\n  - 判定: 配置は scripts/archcheck の CheckIfaceAssert（リポジトリ全体の .go の AST を検査）が強制する。他パッケージの型を対象にした assertion は「直前」が構造的に定義できないため対象外で、internal/di のコンポジションルート用ブロックがこれにあたる（そこは配線漏れがビルドエラーになることで担保される）\n  - 「assertion が無い型」の検出は対象外。判定に go/types の型解決が必要で、DI 用でない偶然の実装まで拾うため\n- HTTP ミドルウェアの登録順: 観測系（RequestID → アクセスログ）を先頭に登録し、リクエストを短絡しうるミドルウェア（ボディ上限・認証・レート制限等）は必ずその後ろに置く。前に置くと、弾いたリクエストがアクセスログにも request_id にも残らず、拒否されている事実を運用側から観測できなくなる"
+    },
+    {
+      "id": "AGENTS.md#2-go-coding-standards@2",
+      "file": "AGENTS.md",
+      "anchor": "2-go-coding-standards",
+      "title": "2. Go Coding Standards",
+      "trail": "AGENTS.md \u003e 2. Go Coding Standards",
+      "text": "  - echo.Echo.Pre は使わない。Pre はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う\n  - 判定: 登録順は TestNew_MiddlewareOrder（New の AST を検査）、Pre の不使用は .golangci.yml の ruleguard が強制する\n- 時刻: time.Now() を直接呼ばず、Clock インターフェースを DI してテスト可能にする\n  - 現時点で Clock インターフェースの実装は存在しない（time.Now() を使う機能がまだ無いため）。時刻依存の機能を追加する際に、usecase 層へ interface を定義し infrastructure 層に実装を置いて DI する\n- 設定管理: 環境変数のパースは configs/config.go の Config に集約する。環境変数のキー名と既定値は同パッケージで const 定義し、各層には *Config を DI して渡す。新規の設定値追加時は Config 構造体・既定値・Load() の3箇所を更新する"
+    },
+    {
+      "id": "AGENTS.md#3-testing-rules-規約",
+      "file": "AGENTS.md",
+      "anchor": "3-testing-rules-規約",
+      "title": "3. Testing Rules (規約)",
+      "trail": "AGENTS.md \u003e 3. Testing Rules (規約)",
+      "text": "本節が定めるのは Go 固有の閾値・配置・命名規約 のみ。設計の考え方と運用手順は他ファイルが正本なので、下表から直接引く（go-testing-qa スキルの SKILL.md を中継させない）。\n\n| 問い | 正本 |\n| --- | --- |\n| 良いテストとは何か（テーブル駆動の形・モック対象の選択・境界値の取捨・カバレッジ指標の重み付け） | docs/testing/principles/testing-principles.md |\n| どの順で書き、いつ完了とみなすか（図→テスト→実装・改善ループ・縮約の罠） | docs/testing/principles/tdd-workflow.md |\n| 層別のテスト観点（Domain / UseCase / Repository / Driver / DI） | docs/testing/principles/layered-architecture-testing.md §12 の逆引き表 |\n| 静的検証（lint ルール）を足すときの設計原則 | docs/testing/principles/deterministic-verification.md |\n| docs/testing/ に何をどう書くか（作成対象の判定・仕様表の列・並び順・保守トリガ・チェックリスト） | docs/testing/README.md |\n| 層別カバレッジ閾値 | 本節（実行可能な写しが scripts/coverage-check.sh） |\n| Go / 本リポジトリ固有の差分（言語機能による代替・分岐カバレッジが取れない制約） | .claude/skills/go-testing-qa/SKILL.md（Claude Code 専用。他エージェントは上の原則ファイルを直接読む） |\n\n- テスト設計文書: usecase / driver の新規実装・分岐変更は、実装より先に docs/testing/\u003c機能\u003e.md にフローチャートとテスト仕様表を作る（順序は 図 → 失敗するテスト → 実装）。domain の純粋関数・値オブジェクトは図を作らない。作成対象の判定・仕様表の形・図の保守トリガ・レビューチェックリストは docs/testing/README.md が正本\n  - 仕様表とテストコードの対応づけ（表の直前の  と、テスト側の // #\u003c番号\u003e \u003c図のパス\u003e マーカー）は必須。scripts/doccheck が行数・ケース順・図の終端ノードの網羅を突合し、make test で落とす。書き方の正本は docs/testing/README.md §3"
+    },
+    {
+      "id": "AGENTS.md#3-testing-rules-規約@2",
+      "file": "AGENTS.md",
+      "anchor": "3-testing-rules-規約",
+      "title": "3. Testing Rules (規約)",
+      "trail": "AGENTS.md \u003e 3. Testing Rules (規約)",
+      "text": "- API レスポンス契約: driver/http のレスポンス構造は internal/driver/http/testdata/contracts/*.json を正本とし、internal/testutil/apicontract で構造のみを検証する（値の妥当性はハンドラのテストの責務）。json タグの追加・削除・リネームをしたら同じ PR で契約ファイルも更新する。これはレスポンスを解釈する側（k6 シナリオ等）の変更が必要になるサイン\n- アサーション: testify/assert/require（致命的失敗は require）\n- モック: uber-go/mock を使用。配置は対象 interface と同じ層の mock/ サブディレクトリ（例: internal/usecase/gacha/mock/）。//go:generate ディレクティブは interface 定義ファイルに記述する\n  - 生成物は手動編集しない。更新は make mock/gen の再実行のみ。再生成が必要かを事前に判断しなくてよい（判断を誤っても make gen/check が再生成 + 差分検知で捕まえる。CI 必須）。interface を触ったら迷わず make mock/gen を実行する\n  - mockgen のバージョンは go.mod の go.uber.org/mock から導出され、make mock/gen が ./bin へ同じ版を導入する。//go:generate は裸の mockgen を呼ぶため、PATH 上の別バージョンを使うと生成結果が変わる。go generate ./... を直接叩かず必ず make mock/gen を使うこと\n  - //go:generate の -destination / -package を変更した場合のみ、make/app.mk の GEN_ARTIFACT_PATHS と .golangci.yml の除外パス、.testignore も併せて更新する（この連動は gen/check では検知できない）\n- 層別カバレッジ・テスト方針:\n  - 指標は 文（statement）カバレッジ。閾値は make test/cover/check が判定し、CI で必須（未達なら失敗）。閾値の実体は scripts/coverage-check.sh にあり、本節がその正本。片方だけ変えない\n  - Go には分岐カバレッジを出す標準手段が無い。分岐の網羅は docs/testing/ の設計図に対するパスカバレッジで代替する（docs/testing/README.md §4）\n  - driver 層: 変換とエラー経路の網羅。カバレッジ 90% 以上"
+    },
+    {
+      "id": "AGENTS.md#3-testing-rules-規約@3",
+      "file": "AGENTS.md",
+      "anchor": "3-testing-rules-規約",
+      "title": "3. Testing Rules (規約)",
+      "trail": "AGENTS.md \u003e 3. Testing Rules (規約)",
+      "text": "  - domain 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ 100%（外部依存が無く達成可能なため。スラックが無いので、未カバーが出たらテストを足すか、テスト対象外である理由を明記して .testignore で除外する）\n  - usecase 層: 正常系・異常系・エッジケースを網羅。カバレッジ 90% 以上 を維持\n  - infrastructure 層: 実リソースを起動しない単体テストを基本方針とする。MySQL repository は sqlc 生成の Querier インターフェースのモックを export_test.go のテスト専用コンストラクタ経由で注入、Redis は miniredis、Transactor は go-sqlmock を使う。検証対象は sqlc 型 ⇄ domain 型の変換、エラー変換（sql.ErrNoRows → domain.ErrNotFound 等）、クエリ構築引数（FOR UPDATE の有無・絞り込み条件）、Transactor のコミット/ロールバック挙動。カバレッジ 80% 以上\n    - testcontainers-go による実 DB/Redis テストは未導入。導入する場合は依存追加を含めて別タスクとして扱い、実装前にユーザーへ確認する\n  - configs: 環境変数のパースのみで外部依存が無い。カバレッジ 90% 以上。設定値を追加したら、既定値・パース失敗・値域違反（0・負値）の各分岐にテストを足す。同型の検証ブロックが並ぶため、片方だけテストがある状態にしない（対称性チェック）\n    - 環境変数をクリアするリストは configs/config_test.go の clearConfigEnv 1箇所に集約してある。設定値を追加したらここにも追加する（漏れると実行環境の環境変数に結果が左右される）\n- Race / 競合テスト:\n  - 更新系の repository / usecase は t.Parallel() + 複数 goroutine による同時アクセスケースを最低1件持つ\n  - race 検出は make test/race で実行し CI で必須化（ローカル make test は race 無しで高速実行を維持）\n  - 単体テストは race 検出と最小同時実行に責務を絞り、規模負荷は k6 側に寄せる\n- Flaky 防止:"
+    },
+    {
+      "id": "AGENTS.md#3-testing-rules-規約@4",
+      "file": "AGENTS.md",
+      "anchor": "3-testing-rules-規約",
+      "title": "3. Testing Rules (規約)",
+      "trail": "AGENTS.md \u003e 3. Testing Rules (規約)",
+      "text": "  - 時刻: SUT と test で time.Now() を二重呼出しない (Clock DI または SUT 記録値を export_test.go 経由参照)。日付/月境界を assertion に含めない\n  - 同期: time.Sleep ポーリングは最終手段。channel/sync・ライブラリ getter (内部ロック付き) 優先。time.After(N) は CI 高負荷時の余裕を考慮し N = ローカル想定 x 2~3\n  - 並行: テストコードでパッケージスコープの変数を書き換えない（要素への書込みを含む）。make lint の ruleguard が検出する。t.Parallel() の有無を条件にしていないのは、今は無くても後から付けた瞬間に競合が生まれるため。違反したら //nolint で抜けず、フィクスチャを関数化する／t.Setenv・t.Chdir を使う／serial に分離する のいずれかを取る。宣言そのものは対象外（読み取り専用フィクスチャは可）"
+    },
+    {
+      "id": "AGENTS.md#4-database-rules-sqlc--golang-migrate",
+      "file": "AGENTS.md",
+      "anchor": "4-database-rules-sqlc--golang-migrate",
+      "title": "4. Database Rules (sqlc + golang-migrate)",
+      "trail": "AGENTS.md \u003e 4. Database Rules (sqlc + golang-migrate)",
+      "text": "- クエリ生成: sqlc。型安全・コンパイル時検証のため ORM (GORM 等) は使用しない\n  - 例外: sqlc が生成できない可変行数の複数行 INSERT（bulk upsert 等、負荷対策でトランザクション内の DB 往復を集約する用途）は、infrastructure 層に限りプレースホルダを組み立てたパラメータ化生 SQLで発行してよい（値の文字列連結は禁止）。tx から生の sqlc.DBTX を取り出す seam（repository/factory.go の execerFactory）経由で実行し、go-sqlmock でクエリ・引数を検証する。ORM 導入は引き続き禁止\n  - sqlc のバージョンは .sqlc-version の1箇所で管理し、make db/sqlc/gen が同じ版を ./bin へ導入する。sqlc generate を直接叩かない（PATH 上の別バージョンで生成結果が変わる）\n  - schema.sql と sqlc 生成物の再生成忘れ・手動編集は make db/gen/check が検知する（CI 必須）\n- マイグレーション: golang-migrate の連番形式で up/down をペア作成。down が困難な変更（カラム削除等）は事前にユーザーへ確認する\n- schema.sql は make db/schema/dump の生成物。手動編集しない\n- トランザクション制御:\n  - 境界は usecase 層で開始・コミット・ロールバックする。internal/infrastructure/mysql/transactor.go の Transactor 経由で制御する\n  - repository メソッドは sqlc の DBTX を介してクエリを実行し、トランザクション内外の双方で動作する\n  - context.Context への tx の暗黙的埋め込みは禁止（テスト容易性のため）\n  - 分離レベルは MySQL デフォルト。変更が必要な場合はトランザクション開始時に明示する\n- 型変換: infrastructure 層で sqlc 型 ⇄ domain 型を変換する\n- エラー変換: sql.ErrNoRows 等の DB 固有エラーは infrastructure 層で domain 層のエラー (例: ErrNotFound) に変換する\n- プール設定 (SetMaxOpenConns 等) は configs で設定可能にする"
+    },
+    {
+      "id": "AGENTS.md#4-database-rules-sqlc--golang-migrate@2",
+      "file": "AGENTS.md",
+      "anchor": "4-database-rules-sqlc--golang-migrate",
+      "title": "4. Database Rules (sqlc + golang-migrate)",
+      "trail": "AGENTS.md \u003e 4. Database Rules (sqlc + golang-migrate)",
+      "text": "- 新規スキーマ追加手順: make db/migrate/new → up/down 記述 → make db/schema/dump → deployments/mysql/queries/ にクエリ追加 → make db/sqlc/gen → make db/migrate/up → internal/infrastructure/mysql/repository/ に実装、internal/di/container.go で DI 登録"
+    },
+    {
+      "id": "AGENTS.md#5-makefile-rules-開発コマンドの統一",
+      "file": "AGENTS.md",
+      "anchor": "5-makefile-rules-開発コマンドの統一",
+      "title": "5. Makefile Rules (開発コマンドの統一)",
+      "trail": "AGENTS.md \u003e 5. Makefile Rules (開発コマンドの統一)",
+      "text": "- 日常的な開発操作は make 経由で実行する。デバッグ目的のピンポイント実行（go test -run 等）は許容\n- 指示書の整合チェックは make docs/check（CI 必須）。規約の正本が1箇所に保たれているか、記述が実態と乖離していないかを判定する。判定の実体は scripts/docs-ssot-check.sh。make docs/ssot で本ファイル §3 の正本表を一覧できる\n  - 検査を追加するときは、必ず「その検査が捕捉する既知の実例」をスクリプトのコメントに書く。実例を伴わない検査は誤検出源になり、いずれ無効化されるため\n  - 「現時点では〜が無い」のような時点依存の記述には、実態を照合する ssot-assert ディレクティブを同じ行か直後の行に添える（記法の正本は scripts/docs-ssot-check.sh 冒頭のコメント）。機械照合が原理的に不可能な場合は manual '\u003c理由\u003e' で理由を残す。添えないと make docs/check が WARN を出す\n  - ERROR は実態と矛盾している記述（必ず直す）。WARN は将来腐る形をしている記述（放置するなら、なぜ機械照合できないかを該当箇所に残す）\n- 静的解析は make lint（golangci-lint、全件）。make lint/diff は origin/main からの差分のみ、make lint/fix は自動修正可能な指摘の修正。golangci-lint のバージョンは .golangci-version の1箇所で管理し、make lint が同じ版を ./bin へ導入する（ローカルと CI で同一の判定になるようにするため。この2つを別々に指定しない）\n- AWS インフラの初回構築は make tf/bootstrap（state 保管先の S3/DynamoDB 作成）→ make tf/init → terraform plan/apply の順。詳細は terraform/ARCHITECTURE.md\n- ポートフォリオサイト（web/）の知識源は make site/gen で文書から生成する。取り込み対象の正本は scripts/sitegen の rootDocs() と docs/ で、ここに一覧を写さない（写すと片方だけ古くなる。実際 CLAUDE.md が取り込み対象なのに一覧から漏れていた）。対象の文書を変更したら再生成が要る（サイト専用の写しを作らないための仕組み）。再生成漏れは make site/check が検知し、CI と .github/workflows/pages.yml が公開前に実行する"
+    },
+    {
+      "id": "AGENTS.md#5-makefile-rules-開発コマンドの統一@2",
+      "file": "AGENTS.md",
+      "anchor": "5-makefile-rules-開発コマンドの統一",
+      "title": "5. Makefile Rules (開発コマンドの統一)",
+      "trail": "AGENTS.md \u003e 5. Makefile Rules (開発コマンドの統一)",
+      "text": "  - サイトのトップページ（web/index.html）が README.md の実測値を引用している箇所は、ssot-assert: present-grep ディレクティブで正本と照合している（make docs/check が html も走査する）。数値を引用するときは同じ形でディレクティブを添える。付け忘れは検知できないので、これが唯一の担保になる。カード本文の散文は手書きで機械判定の対象外——線引きの正本は web/README.md\n  - ブラウザとプロキシが共有する上限値（参照チャンク数・質問文の長さ）は scripts/sitegen の const が正本で、索引に載せて両方に読ませる。2つのランタイムのどちらかに数字を直接書かない\n  - チャットの中継（web/worker/）は Cloudflare Workers へ手動デプロイする。索引は Worker にもバンドルされるため、文書を変えたら「make site/gen → 再デプロイ」までやらないとサイトと Worker で ID がずれる。手順は web/worker/README.md\n- 利用可能なコマンドは make help で確認する（Makefile の ## コメントが説明として表示される）\n- マイグレーションの DSN は MIGRATE_DSN 環境変数で上書き可能。ローカル以外の環境では明示的に指定する\n- make test / make test/race は .testignore に列挙されたパッケージを除外対象とする。除外理由はファイル内のコメントを参照すること。新規にテスト対象外としたいパッケージが出た場合は、除外理由をコメントで明記したうえで .testignore にパターンを追加する。逆に interface 定義のみのパッケージへ実装を足す等で除外を解除する場合は、.testignore から該当行を削除し §3 のカバレッジ目標に従ってテストを整備する"
+    },
+    {
+      "id": "AGENTS.md#6-agentic-behavior-自律実行のルール",
+      "file": "AGENTS.md",
+      "anchor": "6-agentic-behavior-自律実行のルール",
+      "title": "6. Agentic Behavior (自律実行のルール)",
+      "trail": "AGENTS.md \u003e 6. Agentic Behavior (自律実行のルール)",
+      "text": "- 自律修正の範囲: コンパイルエラー・型エラー・自明なテスト失敗（モック未更新等）は自律的に修正する\n- エスカレーション: 以下は自律で進めず、ユーザーに方針を確認する\n  - 新規パッケージ追加・ディレクトリ構造変更を伴う実装\n  - 公開インターフェース・ドメインモデルの変更\n  - 同一のテスト失敗・コンパイルエラーが3回連続で再発した場合\n  - DB の初期化、マイグレーションの down 適用、ファイルの大量削除など後戻りできない操作\n- カバレッジ未達時の改善ループ（本項がプロジェクト規約としての正本。他の指示書は本項を参照するだけにする。一般原則は docs/testing/principles/tdd-workflow.md §11）: make test/cover/check が閾値未達で落ちた場合、未カバー箇所を埋めることを自己目的化しない\n  - 未カバー箇所をまず「通常の分岐（到達可能）／エントリポイント等の設計上テスト対象外／デッドコード（到達不可能）／外部要因依存で再現困難」に分類し、到達可能なものだけテストを追加する\n  - 過剰モック禁止: 未カバー行を実行させるためだけの不自然なモック・テストケースを追加しない。デッドコードや設計上の制約をテストで無理にカバーしない\n  - デッドコードと判定したものはリファクタ候補として報告する\n  - 試行には上限を設ける（下記の「3回連続で再発したら中断」に準じる）。上限に達したら打ち切り、未カバー箇所の内訳（行・分類・理由）を報告して終了する。数値目標の達成を無限に追求しない\n- テスト縮約・リファクタ後は必ずカバレッジを再計測する。低下していたら黙って戻さず、縮約方針自体の見直しが必要かを含めて報告し、方針を確認してから修正する\n- 報告フォーマット: エスカレーション時は「現状」「試したこと」「仮説」「次の選択肢」を簡潔に提示する\n- 想定外の通知: タスク実行中に次のいずれかを検知したら、その時点で応答内に 【想定外】 の見出しを付けた目立つブロックを出力し、通常の進捗報告に埋もれさせない\n  - エラー・テスト失敗系: 予期しないコンパイル/テスト/ビルドの失敗、想定と異なる実行結果やエラーログ\n  - 計画からの逸脱系: 当初の方針・前提が崩れた、想定と異なる実装が必要になった、副作用や影響範囲が事前見積りより大きい\n  - ブロック内容: 「何が想定外か」「当初の想定との差分」「影響と次の選択肢」を簡潔に記す\n  - 既存のエスカレーション規約に該当する場合は作業を止めて確認する。該当しない場合も、検知した事実は本ルールに従い必ず明示してから作業を続行する"
+    },
+    {
+      "id": "AGENTS.md#6-agentic-behavior-自律実行のルール@2",
+      "file": "AGENTS.md",
+      "anchor": "6-agentic-behavior-自律実行のルール",
+      "title": "6. Agentic Behavior (自律実行のルール)",
+      "trail": "AGENTS.md \u003e 6. Agentic Behavior (自律実行のルール)",
+      "text": "- タスク完了時の確認: コード変更を伴うタスクの完了前に make lint / make gen/check / make test を1回ずつ実行する（変更ごとの逐次実行は不要）\n  - 指示書（本ファイル・CLAUDE.md・ROADMAP.md・docs/・.claude/）を変更した場合は make docs/check も実行する\n  - deployments/mysql/ または sqlc.yaml を変更した場合は make db/gen/check も実行する\n  - テストまたはテスト対象コードを追加・変更した場合は make test/race → make test/cover/check も実行する（test/cover/check は test/race が生成する coverage.out を判定するため、この順序で実行する）\n- インターフェース変更時: make mock/gen でモックを再生成してからテストを実行する。再生成忘れは make gen/check が CI で検知する\n- git 操作: ユーザーから明示的な指示があるまで commit / push しない"
+    },
+    {
+      "id": "CLAUDE.md#",
+      "file": "CLAUDE.md",
+      "anchor": "",
+      "title": "CLAUDE.md",
+      "trail": "CLAUDE.md",
+      "text": "@AGENTS.md"
+    },
+    {
+      "id": "CLAUDE.md#claude-code-固有の指示",
+      "file": "CLAUDE.md",
+      "anchor": "claude-code-固有の指示",
+      "title": "Claude Code 固有の指示",
+      "trail": "CLAUDE.md \u003e Claude Code 固有の指示",
+      "text": "このファイルは Claude Code 専用。プロジェクト全般の規約は AGENTS.md を参照する（他 AI エージェントとの共有のため）。"
+    },
+    {
+      "id": "CLAUDE.md#1-communication",
+      "file": "CLAUDE.md",
+      "anchor": "1-communication",
+      "title": "1. Communication",
+      "trail": "CLAUDE.md \u003e 1. Communication",
+      "text": "- 言語: 日本語でやり取りする\n- スタイル: 前置きを省き、結論から簡潔に述べる\n- 略語: 初出時のみ正式名称（必要なら和訳）を併記する。例: YAGNI = \"You Aren't Gonna Need It\"（それ、たぶん要らないよ）。同一会話内の2回目以降は略称のみで可\n- 専門用語: 初出時のみ簡単な解説（1行程度）を併記する。例: 冪等性（同じ操作を複数回実行しても結果が同じになる性質）。同一会話内の2回目以降は用語のみで可"
+    },
+    {
+      "id": "CLAUDE.md#2-サブエージェント運用",
+      "file": "CLAUDE.md",
+      "anchor": "2-サブエージェント運用",
+      "title": "2. サブエージェント運用",
+      "trail": "CLAUDE.md \u003e 2. サブエージェント運用",
+      "text": "- テスト作業の委譲: 新規パッケージのテスト追加、usecase 層のカバレッジ向上、テスト大規模リファクタリングは test-engineer サブエージェントに委譲する（手順は .claude/agents/test-engineer.md）。新規実装に伴う最小限のテスト（数ケース程度）はメインエージェントが書いてよい"
+    },
+    {
+      "id": "README.md#game-api-sample",
+      "file": "README.md",
+      "anchor": "game-api-sample",
+      "title": "game-api-sample",
+      "trail": "README.md \u003e game-api-sample",
+      "text": "負荷試験とチューニングを前提に組んだ、Go 製ゲームバックエンド API。\nガチャ・スコア送信・ランキングを Clean Architecture で実装し、AWS（ECS Fargate / Aurora / ElastiCache）へ\nTerraform でデプロイする。設計の判断根拠と、規約を CI の判定へ移していく過程そのものを成果物として残している。\n\n📄 ポートフォリオサイト（このリポジトリについて質問できます）: \u003chttps://uchidas-rogue.github.io/game-api-sample/\u003e\n\n---"
+    },
+    {
+      "id": "README.md#構成",
+      "file": "README.md",
+      "anchor": "構成",
+      "title": "構成",
+      "trail": "README.md \u003e game-api-sample \u003e 構成",
+      "text": "書き込み（個人スコア加算・ギルド集計）と読み取り（ランキング参照）を分離し、参照負荷が書き込み DB を\n圧迫しない構成にしている。ギルドへの合算は outbox パターンで非同期に流し、API のトランザクションを短く保つ。\n\nインフラ構成・モジュール分割・CI/CD の安全装置は terraform/ARCHITECTURE.md を参照。"
+    },
+    {
+      "id": "README.md#1-outbox-のスループットを実測して設計を変えた",
+      "file": "README.md",
+      "anchor": "1-outbox-のスループットを実測して設計を変えた",
+      "title": "1. outbox のスループットを実測して設計を変えた",
+      "trail": "README.md \u003e game-api-sample \u003e 見どころ \u003e 1. outbox のスループットを実測して設計を変えた",
+      "text": "負荷試験（make load/points、約 407 req/sec × 100 秒）で、API のレイテンシは基準内なのに outbox-worker が\n生産レートに追いつかないことが分かった。イベント単位のトランザクションでは1件ごとに COMMIT（fsync）が走り、\n並列化しても約 200/sec で頭打ちになる。\n\n| | 消化レート | ピーク pending |\n|---|---|---|\n| 改善前（イベント単位 tx・逐次） | 約 33/sec | 111,613 件 |\n| 改善後（バッチ tx + フォールバック） | 約 270〜315/sec（ピーク 543） | 35〜45 件 |\n\nCOMMIT 回数を 1/batchSize に落としたうえで、バッチが失敗したときだけイベント単位経路へ退避する二段構えにした\n（恒久失敗イベント1件でバッチ全体が前進しなくなる head-of-line blocking を避けるため）。\n\n副産物として、worker の SELECT ... FOR UPDATE が REPEATABLE READ でギャップロックを取り、API 側の\noutbox INSERT を INSERT_INTENTION 待ちでブロックしていた問題も見つかった（API の p95 が 108ms → 4.6s）。\nworker は同一 tx 内の読み取り一貫性に依存しないため READ COMMITTED へ切り替えて解消している。\n\n設計と検証観点は docs/testing/outbox-worker.md にある。"
+    },
+    {
+      "id": "README.md#2-規約をai-が読む助言からci-で落ちる判定へ移し続けている",
+      "file": "README.md",
+      "anchor": "2-規約をai-が読む助言からci-で落ちる判定へ移し続けている",
+      "title": "2. 規約を「AI が読む助言」から「CI で落ちる判定」へ移し続けている",
+      "trail": "README.md \u003e game-api-sample \u003e 見どころ \u003e 2. 規約を「AI が読む助言」から「CI で落ちる判定」へ移し続けている",
+      "text": "このリポジトリの規約は AGENTS.md が正本だが、文章のままでは守られたか分からない。\nそこで機械判定できるものを順次 CI へ移している（ROADMAP「横断施策：決定論的検証基盤」Phase 0〜8）。\n\n| 規約 | 判定 |\n|---|---|\n| Clean Architecture の層間 import | depguard（ホワイトリスト方式） |\n| slog.Any(\"error\", err) を使う / echo.Echo.Pre を使わない / テストから package 変数を書き換えない | gocritic の ruleguard（自前 AST ルール） |\n| var _ Iface = (*Type)(nil) を実装型の直前に置く | scripts/archcheck（AST を直接読む） |\n| テスト仕様表とテストコードのケース順・件数・図の終端ノードの網羅 | scripts/doccheck（markdown + mermaid + Go AST の突合） |\n| 生成物（mockgen / sqlc / schema.sql）の再生成漏れ | make gen/check / make db/gen/check |\n| 層別カバレッジ閾値 | make test/cover/check |\n| 指示書どうしの SSoT 崩れ・実態との乖離 | make docs/check |\n\n判定を足すときの原則は docs/testing/principles/deterministic-verification.md に置いている。\n「その検査が捕捉する既知の実例」を伴わない検査は入れない、というのが一番効いているルール。"
+    },
+    {
+      "id": "README.md#3-ai-エージェントと組むための構造",
+      "file": "README.md",
+      "anchor": "3-ai-エージェントと組むための構造",
+      "title": "3. AI エージェントと組むための構造",
+      "trail": "README.md \u003e game-api-sample \u003e 見どころ \u003e 3. AI エージェントと組むための構造",
+      "text": "実装は Claude Code 主体で進めている。そのために、規約の正本を AGENTS.md と docs/ に集約し、\nClaude 固有のファイル（CLAUDE.md / .claude/）には正本を置かないという制約を敷いた\n（他のエージェントから読めないため）。この制約自体も make docs/check が判定する。\n\nテストは「図 → 失敗するテスト → 実装」の順で作り、フローチャートのパスカバレッジで\nGo では計測できない分岐カバレッジを代替している（docs/testing/README.md）。"
+    },
+    {
+      "id": "README.md#技術スタック",
+      "file": "README.md",
+      "anchor": "技術スタック",
+      "title": "技術スタック",
+      "trail": "README.md \u003e game-api-sample \u003e 技術スタック",
+      "text": "| 領域 | 採用 | 補足 |\n|---|---|---|\n| 言語 / HTTP | Go 1.25 / Echo v4 | |\n| アーキテクチャ | Clean Architecture（driver → usecase → domain） | infrastructure は usecase の interface を実装 |\n| DB | MySQL 8.0（本番: Aurora MySQL Serverless v2） | クエリは sqlc、マイグレーションは golang-migrate。ORM は使わない |\n| キャッシュ / ランキング | Redis（本番: ElastiCache） | Sorted Set と Pub/Sub |\n| テスト | 標準 testing + testify + uber-go/mock + go-sqlmock + miniredis | |\n| 負荷試験 | k6 | loadtest/ |\n| IaC | Terraform（ECS Fargate / arm64） | GitHub Actions ↔ AWS は OIDC AssumeRole |"
+    },
+    {
+      "id": "README.md#動かす",
+      "file": "README.md",
+      "anchor": "動かす",
+      "title": "動かす",
+      "trail": "README.md \u003e game-api-sample \u003e 動かす",
+      "text": "```bash\ndocker compose -f deployments/docker-compose.yml up -d   # MySQL + Redis\nmake db/migrate/up                                        # マイグレーション\nmake run                                                  # API 起動（:8080）\n```\n\n```bash\ncurl localhost:8080/healthz\ncurl -XPOST localhost:8080/users/1/gacha/multi -d '{\"pull_count\":10}' -H 'Content-Type: application/json'\ncurl localhost:8080/rankings/guilds\n```\n\n| エンドポイント | 内容 |\n|---|---|\n| GET /healthz | ヘルスチェック |\n| POST /users/:userID/gacha/multi | 複数回ガチャ（トランザクション + 行ロック） |\n| POST /users/:userID/points | スコア加算（個人 + ギルドへ非同期合算） |\n| GET /rankings/{users,guilds} | ランキング一覧（Redis ZSet） |\n| GET /{users,guilds}/:id/ranking | 順位取得 |\n\n非同期集計まで動かすなら make run/outbox-worker を併走させる。負荷試験の手順は loadtest/README.md。\n利用できるコマンドは make help で一覧できる。"
+    },
+    {
+      "id": "README.md#品質ゲート",
+      "file": "README.md",
+      "anchor": "品質ゲート",
+      "title": "品質ゲート",
+      "trail": "README.md \u003e game-api-sample \u003e 品質ゲート",
+      "text": "PR と main への push で .github/workflows/ci.yml が次を順に実行する。\n\n```bash\nmake lint             # golangci-lint（バージョンは .golangci-version で固定）\nmake docs/check       # 指示書の SSoT / 実態との乖離\nmake site/check       # ポートフォリオサイトの索引の再生成漏れ\nmake db/gen/check     # sqlc / schema.sql の drift\nmake gen/check        # mockgen の drift\nmake test/race        # race 検出 + カバレッジ計測\nmake test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md §3）\n```\n\nこの一覧と ci.yml が食い違っていないことは make docs/check が判定する\n（片方だけ足すと「CI で見ていない」と読まれる嘘の一覧になるため）。"
+    },
+    {
+      "id": "README.md#ドキュメント",
+      "file": "README.md",
+      "anchor": "ドキュメント",
+      "title": "ドキュメント",
+      "trail": "README.md \u003e game-api-sample \u003e ドキュメント",
+      "text": "| 読みたいこと | ファイル |\n|---|---|\n| コーディング規約・アーキテクチャ規約（全エージェント共通の入口） | AGENTS.md |\n| 3ヶ月のロードマップと、各フェーズで何を意図的にやらなかったか | ROADMAP.md |\n| AWS 構成・Terraform モジュール分割・CI/CD の安全装置 | terraform/ARCHITECTURE.md |\n| テスト設計の原則と、機能ごとのフロー図・テスト仕様表 | docs/testing/ |\n| 負荷試験シナリオ | loadtest/README.md |"
+    },
+    {
+      "id": "ROADMAP.md#プロジェクト概要",
+      "file": "ROADMAP.md",
+      "anchor": "プロジェクト概要",
+      "title": "プロジェクト概要",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e プロジェクト概要",
+      "text": "- 目的: 負荷試験とチューニングを前提とした、高パフォーマンスなゲームバックエンドAPIの構築\n- 期間: 3ヶ月（フェーズ1〜3）\n- 主要技術: Go (Echo), Clean Architecture, MySQL (Aurora), Redis (ElastiCache), AWS (ECS Fargate), Terraform, k6\n- AI開発体制 (ハイブリッド戦略):\n  - Claude Code (Main): コード実装（TDD）、TerraformによるIaC構築、k6スクリプト作成、自律デバッグ\n  - Gemini (Sub): コードレビュー（並行処理・DBロックの指摘）、大規模ログ解析（k6の実行結果からボトルネックを特定）\n\n---"
+    },
+    {
+      "id": "ROADMAP.md#横断施策決定論的検証基盤フェーズをまたぐ--随時",
+      "file": "ROADMAP.md",
+      "anchor": "横断施策決定論的検証基盤フェーズをまたぐ--随時",
+      "title": "横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e 横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
+      "text": "目標: AGENTS.md に書かれた規約を「AI が読む助言」から「CI で落ちる判定」へ移し、AI に任せられる範囲を広げる。\n\n方針は「ガードレールはコンテキスト（助言）ではなく実行される仕組み（判定）に置く」。フェーズ2の前提作業で整備した CI 品質ゲート（make lint / make test/race / カバレッジ計測）を、以下の段階で深化させる。\n\n* Phase 0（完了）: テスト設計原則を docs/testing/principles/ に集約し、go-testing-qa スキルからは索引のみ参照する形へ。指示書間の参照ずれ・実態との乖離を解消し、全 AI エージェントが同じ原則を読めるようにした\n* Phase 1（完了）: .golangci.yml を新設し、Clean Architecture の層間 import 規約（AGENTS.md §1）と Go コーディング規約（§2）を depguard（ホワイトリスト方式）・gochecknoglobals・forbidigo・mnd・gocritic(ruleguard) で静的強制。make lint\n* Phase 2（完了）: 生成物（mockgen / sqlc / schema.sql）の再生成漏れを make gen/check / make db/gen/check で CI 検知\n* Phase 3（完了）: 層別カバレッジ目標（§3）を CI での閾値判定へ格上げ。make test/cover/check（判定の実体は scripts/coverage-check.sh）\n* Phase 4（完了）: docs/testing/ に設計図（mermaid フローチャート）とテスト仕様表を導入し、Go では計測できない分岐カバレッジをパスカバレッジで代替\n* Phase 5（完了）: 指示書（AGENTS.md / docs/ / .claude/）の SSoT 崩れと実態との乖離を make docs/check で CI 検知。判定の実体は scripts/docs-ssot-check.sh、記述側に置く照合条件は ssot-assert ディレクティブ。テスト設計原則を docs/testing/principles/ へ移し、全 AI エージェントが同じ正本を読める配置にした（.claude/ は Claude 専用なので正本を置かない）"
+    },
+    {
+      "id": "ROADMAP.md#横断施策決定論的検証基盤フェーズをまたぐ--随時@2",
+      "file": "ROADMAP.md",
+      "anchor": "横断施策決定論的検証基盤フェーズをまたぐ--随時",
+      "title": "横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e 横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
+      "text": "* Phase 6（完了）: AGENTS.md §3 Flaky 防止「テストコードでパッケージスコープの変数を書き換えない」を scripts/ruleguard/rules.go の testGlobalWrite で静的強制。gochecknoglobals は「宣言」を見るため読み取り専用フィクスチャまで落ちてしまい _test.go を除外しており、テストの書換だけが機械検証されない穴になっていた。宣言 = gochecknoglobals（本番コード）／書換 = ruleguard（テスト）で役割を分けている\n* Phase 7（完了）: AGENTS.md §2「インターフェース実装検証: 実装型の定義直前に var _ Iface = (*Type)(nil) を置く」の配置を scripts/archcheck の CheckIfaceAssert で静的強制。「型の直前にあるか」は文の並びなので式単位の ruleguard では表現できず、TestNew_MiddlewareOrder と同じく AST を直接読む。2つ目の AST 検査になるため、.golangci.yml の注記どおり層のテストではなく scripts/ 配下の独立した検査として切り出した。実装型が他パッケージにある assertion（internal/di のコンポジションルート用ブロック）は「直前」が構造的に定義できないため、パス名の例外ではなく規則そのもので対象外にしている。「assertion が無い型」の検出は go/types の型解決が要り誤検出を招くため見送り\n* Phase 8（完了）: docs/testing/README.md §6 のレビューゲートのうち、ケース順・件数・図の終端ノードの網羅を scripts/doccheck で機械判定へ移した（make test に同梱）。Go では計測できない分岐カバレッジをパスカバレッジで代替する仕組み（同 §4）の土台でありながら、人手のチェックリストにしか置かれていなかった箇所。対応づけは仕様表の直前に置く  と、テストコード側に既にあった // #\u003c番号\u003e \u003c図のパス\u003e マーカーで表現する。導入時に実在のドリフトを2件検出した（internal/usecase/gacha/usecase_test.go のケース順とパスが「ListItems をトランザクション外へ出す」変更に追随しておらず6件ずれていた／docs/testing/outbox-worker.md のテスト関数名に余分な半角スペースが入り文書から辿れなかった）。突合できない t.Run 名と「条件」列の一致は意図的に検査しない（コード側が情報量を足す設計を壊すため）"
+    },
+    {
+      "id": "ROADMAP.md#横断施策決定論的検証基盤フェーズをまたぐ--随時@3",
+      "file": "ROADMAP.md",
+      "anchor": "横断施策決定論的検証基盤フェーズをまたぐ--随時",
+      "title": "横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e 横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
+      "text": "* 次の候補: 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に .golangci.yml / scripts/ へ移す（docs/testing/principles/deterministic-verification.md §1）。現在の候補は §6 の残り——「ケースがパスが短い順に並んでいる」で、表の省略記号（…→G→E6）を図から復元できれば判定できる（復元を誤ると誤検出になるため Phase 8 では見送った）。AGENTS.md §2「DI 対象のコンストラクタは logger を必須引数とし、nil チェック・slog.Default() フォールバックを実装しない」は見送る: slog.Default() の呼び出し自体は forbidigo が禁止済みで、残る「必須引数になっているか」「nil チェックを書いていないか」は現行コードに違反実例がゼロ。実例を伴わない検査は誤検出源になりいずれ無効化される（AGENTS.md §5）ため、違反が1件でも現れてから入れる\n\n---"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ1goによるモダンなゲームapiの実装1ヶ月目--ローカル完結",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ1goによるモダンなゲームapiの実装1ヶ月目--ローカル完結",
+      "title": "フェーズ1：GoによるモダンなゲームAPIの実装（1ヶ月目 / ローカル完結）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ1：GoによるモダンなゲームAPIの実装（1ヶ月目 / ローカル完結）",
+      "text": "目標: Clean Architectureに基づき、拡張性とテスト耐性を持ったAPIをローカルで完成させる。\n\n* インフラ準備: Docker Composeを用いた MySQL 8.0 (TimeZone: Asia/Tokyo, utf8mb4) と Redis の構築\n* アーキテクチャ: 依存関係を厳格に管理したClean Architecture（interface -\u003e usecase -\u003e domain）\n* コア機能実装:\n  1. ヘルスチェックAPI: エンドツーエンドの疎通確認\n  2. 10連ガチャAPI: アイテムマスタの読み込み、確率計算、ユーザー所持品の更新（トランザクションと行ロックを意識した実装）\n  3. スコア送信・ランキングAPI（GvG想定 / CQRS）:\n     - 書き込み（Command）: プレイヤーが獲得したスコアを加算（累計加算方式）。所属ギルドのスコアにもリアルタイムで合算する\n     - 読み取り（Query）: 個人累計スコアランキングと、ギルド総合スコアランキングの2系統を Redis Sorted Set で提供\n     - 設計方針: 書き込み（個人スコア・ギルド集計）と読み取り（ランキング参照）の責務を分離し、参照負荷が書き込みDBを圧迫しない構成とする\n* テスト戦略 (TDDの徹底):\n  - 標準 testing パッケージによる Table-Driven Tests\n  - 層別のテスト方針とカバレッジ閾値は AGENTS.md §3 が正本（値をここに写さない。判定は make test/cover/check）\n  - 競合状態（Race Condition）: 更新系には t.Parallel() + goroutine 並行ケースを最低1件含め、make test/race で検出する\n  - Claudeは必ずローカルでテストを実行し、パスするまで実装を修正すること\n\n---"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ2awsインフラの構築とコンテナデプロイ2ヶ月目",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ2awsインフラの構築とコンテナデプロイ2ヶ月目",
+      "title": "フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）",
+      "text": "目標: 商用サービスを想定したモダンなインフラ構成を、IaCを用いて構築する。\n\n* 前提作業: ECS デプロイ前に CI 品質ゲートを整備する（GitHub Actions で make lint / make test/race / カバレッジ計測 を PR・main push 時に必須化）。この品質ゲートの深化は「横断施策：決定論的検証基盤」を参照\n* IaC化: Terraformを使用し、AWSリソースをコードで定義\n* 主要コンポーネント:\n  - コンテナオーケストレーション: Amazon ECS (Fargate)\n  - データベース: Amazon Aurora MySQL\n  - キャッシュ: Amazon ElastiCache (Redis)\n  - ネットワーク/セキュリティ: VPC設定、IAM最小権限の原則適用、暗号化設定。\n* デプロイ: 作成したGoアプリケーションのDockerfile（マルチステージビルド）を作成し、ECSへデプロイ\n* コンテナアーキテクチャ: linux/arm64（Fargate Graviton）前提。コスト最適化（同等性能で約 20% 安）と Apple Silicon ローカルとのビルド一致を狙う\n* マイグレーション戦略: Dockerfile.migrate（golang-migrate + deployments/mysql/migrations/ 同梱）を ECS RunTask で先行実行。init container / CI 直叩きは不採用（ECS Fargate に init container 概念が無く、Aurora を private subnet に置く方針と両立しないため）\n* Terraform 構成: modules/{network, database, registry, compute_ecs, iam_oidc} + environments/dev。state は S3（暗号化・versioning）、state ロックは use_lockfile（同バケットに *.tflock を置く方式）。GitHub Actions ↔ AWS は OIDC AssumeRole（role-deploy / role-tf-plan / role-tf-apply の3ロール、apply は production-apply environment 経由）\n* 前方互換配慮:\n  - TaskDefinition の env をリスト構造で記述 → フェーズ3 で REDIS_RANKING_ADDR を破壊変更なしで追加可能"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ2awsインフラの構築とコンテナデプロイ2ヶ月目@2",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ2awsインフラの構築とコンテナデプロイ2ヶ月目",
+      "title": "フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ2：AWSインフラの構築とコンテナデプロイ（2ヶ月目）",
+      "text": "  - database モジュールの ElastiCache は for_each で可変構造 → フェーズ3 で ranking 用を追加可能\n  - registry モジュールは for_each = var.repositories → フェーズ5 で packer リポジトリを追加可能\n  - network モジュールは private_route_table_id を output → フェーズ5 の S3 VPC Gateway Endpoint を後付け可能\n  - network / database / registry は compute_ecs から疎結合 → フェーズ4 で compute_eks を別モジュールで追加可能\n* 対象外（意図的に実装しない）:\n  - AWS WAF / Shield: 本プロジェクトはエンドユーザーが k6（負荷試験ツール）であり、WAF を ALB 前段に置くとレートベースルール等が k6 リクエストを弾き、フェーズ3 の負荷試験結果が歪む。攻撃耐性の検証は別途 k6 シナリオ側で行う方針のため、WAF は今後も導入しない（GCP 参考構成の Cloud Armor に相当する層は意図的に省く）\n\n---"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ3負荷試験の実施とチューニング3ヶ月目",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ3負荷試験の実施とチューニング3ヶ月目",
+      "title": "フェーズ3：負荷試験の実施とチューニング（3ヶ月目）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ3：負荷試験の実施とチューニング（3ヶ月目）",
+      "text": "目標: 高負荷時のシステムの振る舞いを知り、ボトルネックを解消する"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ3負荷試験の実施とチューニング3ヶ月目@2",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ3負荷試験の実施とチューニング3ヶ月目",
+      "title": "フェーズ3：負荷試験の実施とチューニング（3ヶ月目）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ3：負荷試験の実施とチューニング（3ヶ月目）",
+      "text": "* 負荷試験シナリオ作成: k6を用いて、フェーズ1で作成したAPI（ガチャ、ランキング）に対する秒間数千リクエストのシナリオを実装・実行\n* ボトルネック特定: AWS CloudWatchのメトリクスとk6の実行ログをGeminiに投入し、レイテンシ悪化の根本原因（CPUスパイク、DBの排他ロック/デッドロック、メモリ枯渇、N+1問題など）を特定\n* パフォーマンス改善:\n  - データベースのインデックス最適化\n  - Redisを用いたキャッシュ戦略の拡張\n    - Redis の cache 用 / ranking 用 分離（負荷試験で ranking ZSet 参照と outbox Pub/Sub・汎用キャッシュの相互影響が顕在化した場合に対応）:\n      - アプリ側: configs の Redis アドレスを REDIS_CACHE_ADDR / REDIS_RANKING_ADDR の2系統に分け、DI（internal/di/container.go・各 cmd/*/main.go）で RankingStore ← ranking、OutboxNotifier/Subscriber・汎用キャッシュ ← cache へ注入。今は両方同一アドレスを向けるだけで挙動不変（工数 ~0.5日）\n      - インフラ側: ElastiCache をもう1レプリケーショングループ追加（cache.t4g.micro で +$12〜$25/月目安）、ECS タスク定義の env に REDIS_RANKING_ADDR を追加\n    - 汎用キャッシュ用途（GET/SET/TTL）の追加。現状 Redis は ZSet（ランキング）と Pub/Sub（outbox 通知）のみで key/value キャッシュは未実装\n  - GoのGoroutine/Channelを用いた並行処理のチューニング\n* 成果のアウトプット: ビフォーアフターの数値と設計判断をまとめ、技術記事（Qiita等）として発信する\n* 見せ方（完了）: 採用担当・レビュアー向けの README.md と、GitHub Pages のポートフォリオサイト（web/）。サイトには「このリポジトリについて質問できるチャット」を置き、知識源は make site/gen が AGENTS.md / ROADMAP.md / docs/ / terraform/ARCHITECTURE.md 等から生成する（サイト専用の写しを作らず、文書を直せば追随する形にした）。チャットの中継は Cloudflare Workers に置く——AWS 環境はコスト削減で destroy する運用なので、そこに載せるとポートフォリオまで一緒に落ちるため\n\n---"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ4kubernetes-eks-への移植と比較検証発展課題",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ4kubernetes-eks-への移植と比較検証発展課題",
+      "title": "フェーズ4：Kubernetes (EKS) への移植と比較検証（発展課題）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ4：Kubernetes (EKS) への移植と比較検証（発展課題）",
+      "text": "目標: フェーズ2で構築した ECS Fargate 構成と同一の API を EKS 上で動作させ、運用性・拡張性・コスト面の差分を実測・記事化する。\n\n* インフラ構築 (IaC):\n  - Terraform で EKS クラスタ（コントロールプレーン）と Fargate Profile / マネージドノードグループを構築\n  - 主要アドオン: AWS Load Balancer Controller, ExternalDNS, Cluster Autoscaler（または Karpenter）, IRSA (IAM Roles for Service Accounts)\n  - Aurora MySQL / ElastiCache Redis はフェーズ2の資産を流用（VPC共有 or ピアリング）\n* アプリケーションのマニフェスト化:\n  - api / batch / outbox-worker をそれぞれ Deployment / CronJob / Deployment として定義\n  - Helm または Kustomize でテンプレート管理。環境差分は overlay で吸収\n  - Secrets は AWS Secrets Manager + External Secrets Operator で同期\n* オートスケーリング戦略:\n  - api: HPA (CPU/メモリ + ALB リクエスト数)\n  - outbox-worker: KEDA でキュー長（未処理 outbox 件数）ベースのスケール\n* GitOps / デプロイ:\n  - Argo CD でマニフェストの宣言的デプロイ。ECR への push を契機に同期\n* 比較・検証項目:\n  - 同一 k6 シナリオでの ECS Fargate vs EKS のスループット・p99 レイテンシ・コスト比較\n  - スケーリング応答性（スパイク時のスケールアウト時間）\n  - 運用工数（マニフェスト量、デプロイ手順、障害対応）\n* 比較候補（任意の拡張）: AWS App Runner（GCP Cloud Run 相当のフルマネージドコンテナ。リクエスト駆動オートスケール、ただし完全なゼロスケールは不可）を3者目の比較対象に加えるか検討。記事ネタとして「ECS Fargate vs EKS vs App Runner」の運用性・コスト・スケール応答性の比較は価値があるが、構築コストとのトレードオフで判断\n* 成果のアウトプット: ECS Fargate と EKS のリアルな差分（コスト・運用性・拡張性）を技術記事として発信\n\n---"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ5マスタデータ配信フローの構築発展課題--フェーズ13-完了後に着手",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ5マスタデータ配信フローの構築発展課題--フェーズ13-完了後に着手",
+      "title": "フェーズ5：マスタデータ配信フローの構築（発展課題 / フェーズ1〜3 完了後に着手）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ5：マスタデータ配信フローの構築（発展課題 / フェーズ1〜3 完了後に着手）",
+      "text": "目標: ゲーム設定値（マスタデータ）を「DB → 配信用ファイル → クライアント/サーバ」へ流すパイプラインを AWS 上に構築する。admin ツールは本プロジェクトでは実装しないため、パッキング処理は専用バッチで代替する。\n\n* データフロー（admin 抜きの簡易版）:\n  - パッキング用バッチ（ECS ScheduledTask または RunTask）が Aurora MySQL のマスタデータを読み取り、gob（サーバ向け）/ SQLite（クライアント向け）ファイルを生成して S3 にアップロード\n  - api（Cloud Run 相当の ECS Service）は起動時/更新時に S3 から gob を取得してインメモリキャッシュ\n  - クライアント向け SQLite は CloudFront 経由で配信（クライアントはローカルキャッシュ）\n* インフラ追加（Terraform）:\n  - storage モジュール新設: S3 バケット ×2（server master / client master）+ CloudFront ディストリビューション（OAC で S3 を保護）\n  - S3 VPC Gateway Endpoint を network モジュールに追加（無料）— ECS タスクの S3 アクセスを NAT 経由から AWS 内部経路へ切り替え、NAT データ処理料を削減。※このタスクと同じ PR で必ず一緒に入れる\n  - パッキング用 ECR リポジトリ追加（または migrate イメージに同梱）\n  - IAM: api の task role に S3 read、パッカー task role に S3 write + Aurora read を追加\n* アプリ追加:\n  - パッカー: Aurora → gob/SQLite 生成のバッチコマンド（internal/driver/batch 配下）\n  - ローダー: S3 から gob を取得しインメモリキャッシュする infrastructure 層 repository + DI 配線\n* 想定コスト: S3 ~$1/月、CloudFront 実トラフィック比例（ポートフォリオ規模なら実質無料枠内）、パッキングタスク \u003c $1/月、Gateway Endpoint $0"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#ギルドスコア更新の非同期化",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "ギルドスコア更新の非同期化",
+      "title": "ギルドスコア更新の非同期化",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化",
+      "text": "\u003e ステータス: 実装済み（2026-07-20）\n\u003e 実施契機: 負荷試験（k6 make load/points）で同一ギルド集中加算のレイテンシ悪化（p99 14s 台・スループット頭打ち）を観測したため実施。\n\u003e 実装時に本プランから乖離した点は末尾「実装メモ（プランからの差分）」を参照。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#context",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "context",
+      "title": "Context",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e Context",
+      "text": "AddUserPoints は API リクエスト1回ごとに同一トランザクション内で MySQL の user_points と guild_scores 両方を更新している。guild_scores は1ギルド=1行の構造のため、同一ギルド内で複数ユーザーが同時に加算するとX ロック競合でレスポンスが直列化・遅延する。ユーザー数の多いギルドでGvGイベント等の同時加算が発生する場面で顕在化する想定。\n\n本プランでは API tx からは個人系の更新のみ残し、ギルド側の MySQL 更新（guild_scores 加算と guild_score_histories 挿入）を outbox-worker に移して非同期化する。これにより API レスポンスから guild_scores 行ロックの保持時間を完全に除去し、同ギルド内の同時加算がギルドスコア行ロックに影響されなくなる。\n\nトレードオフ: MySQL の guild_scores は数秒〜数十秒の遅延を伴って反映される。ただしランキング読み取りは Redis 経由のため UX への影響はなし。Redis ZSet が揮発した際の再構築は既存の batch（internal/driver/batch/ranking_sync.go）が担う。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#1-api-レスポンスの変更",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "1-api-レスポンスの変更",
+      "title": "1. API レスポンスの変更",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 設計判断（決定済み） \u003e 1. API レスポンスの変更",
+      "text": "UserPointAddResult から GuildPreviousTotal / GuildNewTotal を削除する。GuildID は残す。\n理由: ギルドスコア更新が非同期になるため、API 同期レスポンスでは正確な値を返せない。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#2-worker-のトランザクション境界",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "2-worker-のトランザクション境界",
+      "title": "2. worker のトランザクション境界",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 設計判断（決定済み） \u003e 2. worker のトランザクション境界",
+      "text": "現状のバッチ単位 tx をイベント単位 tx に変更する。\n理由: A案では worker 内で MySQL guild_scores 更新が増えるため、partial failure 時に同バッチ内の他イベント処理結果と一緒に MySQL 変更がコミットされてしまうと、再試行時の二重加算リスクがある。イベント単位 tx にすることで失敗時に MySQL 変更がロールバックされる。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#3-handleevent-内の処理順序",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "3-handleevent-内の処理順序",
+      "title": "3. handleEvent 内の処理順序",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 設計判断（決定済み） \u003e 3. handleEvent 内の処理順序",
+      "text": "1. rankingRepo.IncrementGuildScore（MySQL 加算）\n2. rankingRepo.InsertGuildScoreHistory（MySQL 履歴）\n3. rankingStore.IncrementUserPoints（Redis）\n4. rankingStore.IncrementGuildScore（Redis）\n\n意図: Redis を最後に置くことで、Redis 失敗時に MySQL もロールバックされる。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#ドメイン",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "ドメイン",
+      "title": "ドメイン",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 変更対象ファイル（実装時のチェックリスト） \u003e ドメイン",
+      "text": "- [ ] internal/domain/ranking/entity.go\n  UserPointAddResult から GuildPreviousTotal, GuildNewTotal を削除（GuildID は残す）"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#usecase",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "usecase",
+      "title": "usecase",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 変更対象ファイル（実装時のチェックリスト） \u003e usecase",
+      "text": "- [ ] internal/usecase/ranking/usecase.go AddUserPoints\n  - 削除: GetGuildScore（previousTotal 算出のためだけに使用、不要になる）\n  - 削除: InsertGuildScoreHistory 呼び出し\n  - 削除: IncrementGuildScore 呼び出し\n  - 削除: 結果構造体への GuildPreviousTotal / GuildNewTotal 設定\n  - 残す: GetUser, GetUserGuildID, GetUserPoints, InsertUserPointHistory, IncrementUserPoints, outboxRepo.InsertEvent, outboxNotifier.Notify\n  - ※ GetUserGuildID は outbox payload に guild_id を載せるため必須\n\n- [ ] internal/usecase/ranking/usecase_test.go AddUserPoints の各ケース\n  - GetGuildScore, InsertGuildScoreHistory, IncrementGuildScore の EXPECT を削除\n  - 結果検証から GuildPreviousTotal / GuildNewTotal のアサート削除\n  - 「ErrScoreNotFound を正常系として扱う」ケースは不要なので削除"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#handler",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "handler",
+      "title": "handler",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 変更対象ファイル（実装時のチェックリスト） \u003e handler",
+      "text": "- [ ] internal/driver/http/ranking/handler.go\n  AddUserPoints のレスポンス DTO から guild の previous/new total フィールドを削除\n- [ ] internal/driver/http/ranking/handler_test.go\n  該当アサート削除"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#worker",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "worker",
+      "title": "worker",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 変更対象ファイル（実装時のチェックリスト） \u003e worker",
+      "text": "- [ ] internal/driver/worker/outbox/worker.go\n  - Worker 構造体と Config に rankingRepo rankingusecase.Repository を追加\n  - runOnce を改修: ListPending を1 tx で取得 → 即コミット → イベントごとに DoInTx でラップした handleEvent + MarkProcessed/IncrementRetry を実行する構造に変更\n  - handleEvent シグネチャは既に tx shared.Tx を受け取る形（現状未使用、worker.go:143）。tx を実際に使うように変更\n  - EventTypeRankingScoreAdded ハンドラに上記「処理順序」の通り MySQL 更新を追加\n\n- [ ] internal/driver/worker/outbox/worker_test.go\n  - 既存ケースを「rankingRepo の IncrementGuildScore/InsertGuildScoreHistory も呼ばれる」前提に修正\n  - 追加ケース: MySQL 更新失敗 → Redis 呼ばれず、tx ロールバック、IncrementRetry が別 tx で記録される\n  - 追加ケース: イベント単位 tx 化により1イベント失敗が他イベント処理に影響しない\n  - mock は既存の internal/usecase/ranking/mock/mock_repository.go を再利用"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#di",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "di",
+      "title": "DI",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 変更対象ファイル（実装時のチェックリスト） \u003e DI",
+      "text": "- [ ] cmd/outbox-worker/main.go (47-60行付近)\n  repository.NewRankingRepository(db) を追加し、workeroutbox.Config の新 RankingRepo フィールドに渡す"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#再利用する既存リソース",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "再利用する既存リソース",
+      "title": "再利用する既存リソース",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 再利用する既存リソース",
+      "text": "- outboxdomain.RankingScoreAddedPayload（internal/domain/outbox/event.go）: 既に UserID, GuildID, Points を含む。スキーマ変更不要\n- rankingusecase.Repository.IncrementGuildScore / InsertGuildScoreHistory（internal/usecase/ranking/repository.go）: 既に tx shared.Tx を受け取るシグネチャ。worker からそのまま呼べる\n- shared.Transactor.DoInTx: worker は既に依存しており、イベント単位 tx もこれで実現可能"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#影響範囲外今回触らない",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "影響範囲外今回触らない",
+      "title": "影響範囲外（今回触らない）",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 影響範囲外（今回触らない）",
+      "text": "- outbox_events スキーマ\n- マイグレーション\n- batch（ranking_sync）: 揮発時再構築の振る舞いは変わらない\n- Redis 側の処理（IncrementUserPoints / IncrementGuildScore のシグネチャ）"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#既知のリスクプラン外",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "既知のリスクプラン外",
+      "title": "既知のリスク（プラン外）",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 既知のリスク（プラン外）",
+      "text": "- Redis 二重 incr: tx ロールバック時 Redis は元に戻らない。これは現状コードでも存在する問題で、本プランで悪化はしないが解消もしない。改善するなら別タスクで「outbox イベントに idempotency key を持たせ Redis 側でセット管理」等が必要\n- MySQL guild_scores の遅延: 数秒オーダー。ランキング表示は Redis 経由のため影響なし\n- DLQ・max retry 上限: 既存の未対応課題。本プランで永続的失敗イベントが増える可能性は変わらない"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#検証手順",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "検証手順",
+      "title": "検証手順",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 検証手順",
+      "text": "1. ユニットテスト: make test\n   - internal/usecase/ranking/usecase_test.go AddUserPoints: ギルド系 mock EXPECT が削除されてもパスすること\n   - internal/driver/worker/outbox/worker_test.go: rankingRepo mock 経由で MySQL 更新が呼ばれることを検証\n   - internal/driver/http/ranking/handler_test.go: レスポンス DTO 変更後もパスすること\n2. lint: make lint\n3. ローカル E2E 確認:\n   - docker compose up -d（MySQL + Redis）+ make db/migrate/up\n   - make run（API）と go run ./cmd/outbox-worker（worker）を別ターミナルで起動\n   - curl で AddUserPoints を1回叩き、レスポンスに guild の previous/new total が無いことを確認\n   - 数秒後に MySQL SELECT * FROM guild_scores WHERE guild_id = ? で値が反映されていることを確認\n   - MySQL SELECT * FROM guild_score_histories WHERE guild_id = ? で履歴が記録されていることを確認\n   - Redis ZSCORE guild_ranking \u003cguild_id\u003e で ZSet も加算されていることを確認\n4. 負荷確認（本プランの主目的）: k6 で同一ギルド内 100 並行加算を投げ、レイテンシ p95/p99 が改善すること、および同時にギルドスコア行のロック競合に起因するエラーが発生しないことを確認"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#実装メモプランからの差分",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "実装メモプランからの差分",
+      "title": "実装メモ（プランからの差分）",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 実装メモ（プランからの差分）",
+      "text": "実装時、プラン策定時に見落としていた整合性リスクへの対応として以下を追加・変更した。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#1-rankingsyncersync-rankings-batchを再構築専用に変更プランは触らないとしていた",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "1-rankingsyncersync-rankings-batchを再構築専用に変更プランは触らないとしていた",
+      "title": "1. RankingSyncer（sync-rankings batch）を「再構築専用」に変更（プランは「触らない」としていた）",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 実装メモ（プランからの差分） \u003e 1. RankingSyncer（sync-rankings batch）を「再構築専用」に変更（プランは「触らない」としていた）",
+      "text": "- 問題: 本非同期化により不変条件が反転する。従来は「outbox イベントが pending ⟹ guild_scores は既に同期加算済み」だったが、非同期化後は「pending ⟹ guild_scores はまだ未加算（worker が後で適用）」になる。この状態で RankingSyncer の MarkProcessedUpTo が pending イベントを未加算のまま processed 化すると、worker がスキップしてそのギルド加算が guild_scores にも Redis にも永久に反映されず消失する（data loss）。\n- 対応: RankingSyncer から GetMaxID / MarkProcessedUpTo / outbox 依存を除去し、guild_scores / user_points を読んで Redis へ SET するだけの「揃え直し専用ツール」にした（internal/driver/batch/ranking_sync.go）。worker がイベント処理の唯一の所有者となり整合する。\n- トレードオフ: worker 稼働中に走らせるとスナップショット取得後に反映された数件が SET で上書きされ Redis 側で一時欠落しうる（MySQL は常に正しく次回再構築で自己修復）。原則、揮発復旧など書き込みが静穏な状況で実行する。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#2-worker-のイベント単位-tx-を候補取得-→-id-指定-claim方式で実装複数-worker-安全性--head-of-line-blocking-回避",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "2-worker-のイベント単位-tx-を候補取得-→-id-指定-claim方式で実装複数-worker-安全性--head-of-line-blocking-回避",
+      "title": "2. worker のイベント単位 tx を「候補取得 → id 指定 claim」方式で実装（複数 worker 安全性 + head-of-line blocking 回避）",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 実装メモ（プランからの差分） \u003e 2. worker のイベント単位 tx を「候補取得 → id 指定 claim」方式で実装（複数 worker 安全性 + head-of-line blocking 回避）",
+      "text": "- プラン記載の「ListPending で一括取得 → 即コミット → イベントごとに DoInTx」は、fetch の FOR UPDATE SKIP LOCKED ロックがコミットで解放されるため、複数 worker 構成（worker_desired_count は可変）で同一イベントを二重処理しうる。\n- 対応: worker は ListPending で候補 id 群を取得し、各候補を id 指定 で claim する。sqlc クエリ ClaimPendingOutboxEventByID（WHERE id=? AND processed_at IS NULL FOR UPDATE SKIP LOCKED）を追加し、outbox Repository に ClaimByID を実装。worker は「候補ごとに DoInTx { ClaimByID → handleEvent → MarkProcessed }」を回し、handleEvent 失敗時は別 tx で IncrementRetry を記録する。これにより複数 worker 安全性（SKIP LOCKED の設計意図）・MySQL 副作用の exactly-once・イベント単位のロールバック分離を保つ。\n- id 指定 claim にした理由（当初 ClaimNext＝最小 id 固定取得で実装 → 修正）: 最小 id を毎回 claim する方式だと、先頭イベントが恒久失敗（未知 event_type・壊れた payload 等の poison）した場合、毎ティック同じイベントを掴み続け、後続イベントが永久に処理されない head-of-line blocking が発生した。既知課題「Outbox DLQ・max retry 上限の未対応」を悪化させるため、候補を id 指定で処理する方式に修正し、先頭が失敗しても後続が進むようにした（internal/driver/worker/outbox/worker_test.go に回避を検証するケースあり）。なお poison を恒久的に打ち切る max-retry/DLQ は引き続き別課題。\n- これに伴い不要となった outbox の GetMaxID / MarkProcessedUpTo（sqlc クエリ・Repository メソッド）は削除した。"
+    },
+    {
+      "id": "docs/plans/guild-score-async.md#3-検証結果",
+      "file": "docs/plans/guild-score-async.md",
+      "anchor": "3-検証結果",
+      "title": "3. 検証結果",
+      "trail": "docs/plans/guild-score-async.md \u003e ギルドスコア更新の非同期化 \u003e 実装メモ（プランからの差分） \u003e 3. 検証結果",
+      "text": "- make test / make lint / make test/race 通過。カバレッジ: usecase/ranking 100%・driver/worker/outbox 94.7%・driver/batch 100%・infra/repository 86.0%・driver/http/ranking 97.4%。\n- 負荷確認（make load/points）は本コミット後に再測定予定。"
+    },
+    {
+      "id": "docs/testing/README.md#テスト設計文書の運用ルール",
+      "file": "docs/testing/README.md",
+      "anchor": "テスト設計文書の運用ルール",
+      "title": "テスト設計文書の運用ルール",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール",
+      "text": "本ファイルが「設計図とテスト仕様表をどう作り、どう保守するか」の正本。\n他の指示書（AGENTS.md §3・.claude/）は本ファイルへリンクするだけで、以下の内容を再掲しない。\n\n一般原則（言語・プロジェクト非依存の考え方）は principles/tdd-workflow.md §3〜§9 にある。\n本ファイルはそれを本リポジトリに適用した運用形であり、両者が食い違ったら本ファイルを優先する。"
+    },
+    {
+      "id": "docs/testing/README.md#0-このディレクトリの構成",
+      "file": "docs/testing/README.md",
+      "anchor": "0-このディレクトリの構成",
+      "title": "0. このディレクトリの構成",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 0. このディレクトリの構成",
+      "text": "| 置き場 | 内容 | 読み手 |\n| --- | --- | --- |\n| principles/*.md | 言語・プロジェクト非依存のテスト設計原則（4ファイル） | 全 AI エージェント・人間 |\n| 本ファイル | 設計図とテスト仕様表の運用ルール | 同上 |\n| \u003c機能\u003e.md | 機能ごとのフロー図とテスト仕様表 | 同上 |"
+    },
+    {
+      "id": "docs/testing/README.md#1-何を作るか対象の性質で決める",
+      "file": "docs/testing/README.md",
+      "anchor": "1-何を作るか対象の性質で決める",
+      "title": "1. 何を作るか（対象の性質で決める）",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 1. 何を作るか（対象の性質で決める）",
+      "text": "| 対象の性質 | 本リポジトリでの該当 | 作るもの |\n| --- | --- | --- |\n| 手順・分岐を持つ処理 | internal/usecase/, internal/driver/ | フローチャート（mermaid）+ テスト仕様表 |\n| 意味のある状態を持ち、遷移の可否が重要なエンティティ | 現時点で該当なし（将来 outbox のステータス遷移が候補） | 状態遷移図 + テスト仕様表 |\n| 単純な計算・バリデーション・値オブジェクト | internal/domain/ | 図を作らない。テストコードのケース配列自体を正本とし、各ケースに意図の注記を添える |\n\n契約表・決定表は作らない。 テストと同じ情報を別ファイルに書くと、片方だけ更新されてドリフトする。\n図を作らない対象については、テストコードが唯一の正本になる。\n\n\u003e 上表の状態遷移図の行は、対象の有無を機械照合できない（「意味のある状態を持つ\n\u003e エンティティ」が実装に現れたかを静的に判定する手段が無いため）。make docs/check の\n\u003e 時点依存チェックからは理由付きで除外してある。outbox のステータス遷移を実装する際に\n\u003e 本表を人手で更新すること。"
+    },
+    {
+      "id": "docs/testing/README.md#2-作る順序",
+      "file": "docs/testing/README.md",
+      "anchor": "2-作る順序",
+      "title": "2. 作る順序",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 2. 作る順序",
+      "text": "1. 設計図 + テスト仕様表\n2. テストコード（この時点では失敗する = RED）\n3. 実装（テストを通す = GREEN）\n\nコードだけを先行させない。図とテストが先にあることで、実装者の思い込みではなく\n「レビュー可能な形の合意」を先に固定できる。\n\n層の実装順序は依存の少ない側から: domain → usecase（モック使用）→ infrastructure。"
+    },
+    {
+      "id": "docs/testing/README.md#3-テスト仕様表の形",
+      "file": "docs/testing/README.md",
+      "anchor": "3-テスト仕様表の形",
+      "title": "3. テスト仕様表の形",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 3. テスト仕様表の形",
+      "text": "| 列 | 内容 |\n| --- | --- |\n| ケース番号 | 1 始まりの連番。欠番を作らない（削除したら詰める） |\n| 条件 | テストケース名に対応する短い説明 |\n| 図のパス | フロー図のノード ID を経路として連結（例: A→B→C→E4） |\n| 期待結果 | 戻り値・エラー・状態変化 |\n| 検証すべき呼び出し | 下位層の呼び出し（引数・回数）。driver 層など失敗経路が複数ある対象で追加する |\n\n表の1行 = テストコードの1ケース。 この1対1対応が崩れたら、どちらかが古い。"
+    },
+    {
+      "id": "docs/testing/README.md#対応づけの書き方機械判定の入力になる",
+      "file": "docs/testing/README.md",
+      "anchor": "対応づけの書き方機械判定の入力になる",
+      "title": "対応づけの書き方（機械判定の入力になる）",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 3. テスト仕様表の形 \u003e 対応づけの書き方（機械判定の入力になる）",
+      "text": "表とテストコードの対応は宣言する。make test が実行する scripts/doccheck がこれを読み、\n表の行数・ケース番号・図のパスをテストコードと突合する（§6 参照）。記法の正本は\nscripts/doccheck/doccheck.go のパッケージコメント。\n\n- 表の直前に  を置く（複数の関数へ\n  分かれている表は #関数A+関数B）。対応するテストが無い表は\n  、最終列にテスト関数名を並べる表は\n  \n- テストコード側は、ケース（テーブルの要素）の直前に // #\u003c番号\u003e \u003c図のパス\u003e を置く。\n  表の「図のパス」列をそのまま写す。1つのマーカーは次のマーカーまでの要素すべてを覆うので、\n  1行を入力違いの複数ケースへ展開しても例外宣言は要らない\n\n```go\n{\n    // #1 A→B→E1\n    name: \"pullCount が範囲外: DoInTx に入らない\",\n},\n```"
+    },
+    {
+      "id": "docs/testing/README.md#並び順と重複排除",
+      "file": "docs/testing/README.md",
+      "anchor": "並び順と重複排除",
+      "title": "並び順と重複排除",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 3. テスト仕様表の形 \u003e 並び順と重複排除",
+      "text": "- 図のパスが短い順に並べる。エラー・早期リターンが先、正常系のフルフローが後\n- 同じ長さのパスが複数あるときは エラー → 境界値 → 正常系 の順\n- 同一パスを通るケースは1つに統合する。同じコードパスなので、ケースを増やしても検出力は上がらない\n  - 「戻り値のエラーが sentinel か一般エラーか」の違いだけなら同一パス。統合する\n  - 分岐の通過が1つでも違えば別ケース"
+    },
+    {
+      "id": "docs/testing/README.md#4-カバレッジとの関係",
+      "file": "docs/testing/README.md",
+      "anchor": "4-カバレッジとの関係",
+      "title": "4. カバレッジとの関係",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 4. カバレッジとの関係",
+      "text": "Go の go test -cover は文カバレッジしか出さない（分岐カバレッジを出す標準手段が無い）。\nそのため 分岐の網羅はこの設計図のパスカバレッジで担保する。\n\n- 文カバレッジ = make test/cover/check による CI の機械判定\n- 分岐カバレッジ（代替: パスカバレッジ）= scripts/doccheck による CI の機械判定と、\n  §6 のチェックリストによるレビューゲートの二段構え（どちらが担当するかは §6 の [CI] 印）\n\nフロー図を作る対象（usecase / driver）でこの文書を省略すると、分岐の担保手段が完全に失われる。"
+    },
+    {
+      "id": "docs/testing/README.md#5-図の保守ルール",
+      "file": "docs/testing/README.md",
+      "anchor": "5-図の保守ルール",
+      "title": "5. 図の保守ルール",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 5. 図の保守ルール",
+      "text": "実装を変更したとき、以下のいずれかに該当したら対応する図の更新は必須。\n\n1. 処理ノードの追加・削除\n2. 分岐条件の変更\n3. 下位層への呼び出し内容の変更\n4. 戻り値・出力構造の変更\n\n更新順序は 図 → テスト → 実装 を維持する。コードだけ先に変えない。"
+    },
+    {
+      "id": "docs/testing/README.md#6-レビューゲート用チェックリスト",
+      "file": "docs/testing/README.md",
+      "anchor": "6-レビューゲート用チェックリスト",
+      "title": "6. レビューゲート用チェックリスト",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 6. レビューゲート用チェックリスト",
+      "text": "設計図・テスト仕様表・テストコードのいずれかを変更する PR で確認する。\nこの6項目が正本。 他の指示書で項目を抜粋・再掲しない（間引かれた写しができるため）。\n\n[CI] が付いたものは scripts/doccheck が機械判定する（make test に乗るので CI 必須）。\nレビューでは残りに集中してよい。機械判定へ移ったものもチェックリストから消さない。\n人が見る観点としては残り続けるうえ、「なぜ CI がそれを見ているか」の根拠がここにあるため。\n\n- [ ] [CI] テスト仕様表のケース番号とテストコードのケース順が一致している\n- [ ] [CI] テスト仕様表の「図のパス」の数（重複排除後）とテストコードのケース数が一致している\n- [ ] [CI] 図中のすべての終端ノード（正常終了・各エラー）に、対応するケースが最低1件ある\n- [ ] 各パスで検証すべき下位層の呼び出し（引数・回数）を確認している\n- [ ] 同一パスの重複ケースが排除されている\n- [ ] ケースが「パスが短い順」に並んでいる\n\n[CI] が付いていないものを機械判定にしていない理由: 「パスが短い順」は、表のパスに使う\n省略記号（…→G→E6）を図から復元しないと長さを比べられず、復元を誤ると「正しく並べたのに\n落ちる」誤検出になる。残る2つは「何を検証すべきか」「同一パスとみなせるか」という設計判断で、\n有限の規則に落とせない（principles/deterministic-verification.md §2）。"
+    },
+    {
+      "id": "docs/testing/README.md#7-ファイルの置き方",
+      "file": "docs/testing/README.md",
+      "anchor": "7-ファイルの置き方",
+      "title": "7. ファイルの置き方",
+      "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 7. ファイルの置き方",
+      "text": "- 機能単位で1ファイル（例: gacha.md）\n- 1ファイル内に、対象メソッドごとの「フロー図 + テスト仕様表」を並べる\n- 未解決の穴（図にはあるがテストが無いパス）は 未対応 として表に残す。消さない"
+    },
+    {
+      "id": "docs/testing/gacha.md#ガチャ機能のテスト設計",
+      "file": "docs/testing/gacha.md",
+      "anchor": "ガチャ機能のテスト設計",
+      "title": "ガチャ機能のテスト設計",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計",
+      "text": "対象: internal/usecase/gacha/usecase.go\nテスト: internal/usecase/gacha/usecase_test.go\n\n運用ルールは README.md。\n\ninternal/domain/gacha は「単純な計算・バリデーション」に該当するため図を作らない。\n確率計算・石消費・境界値の正本は internal/domain/gacha のテストケース配列そのもの。\n\n---"
+    },
+    {
+      "id": "docs/testing/gacha.md#1-usecasemulti",
+      "file": "docs/testing/gacha.md",
+      "anchor": "1-usecasemulti",
+      "title": "1. Usecase.Multi",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 1. Usecase.Multi",
+      "text": "10 連ガチャ（pullCount 回分の抽選）を単一トランザクションで実行する。"
+    },
+    {
+      "id": "docs/testing/gacha.md#1-1-フローチャート",
+      "file": "docs/testing/gacha.md",
+      "anchor": "1-1-フローチャート",
+      "title": "1-1. フローチャート",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 1. Usecase.Multi \u003e 1-1. フローチャート",
+      "text": "ロック取得順序の不変条件: F（users を FOR UPDATE）→ L（user_items を item_id 昇順）。\nL の昇順は sortedKeys が保証し、デッドロック回避のための不変条件なのでテストで順序を検証する（ケース 16）。\n単行ループではなく可変行数の bulk INSERT（UpsertUserItems / InsertGachaHistories）に集約しており、\nトランザクション内の DB 往復とロック保持時間を削減している（AGENTS.md §4 の生 SQL 例外）。\n\nH（ListItems）をトランザクションの外に置く理由: items はマスタ参照のみで更新せず、\nロック順序の対象外。トランザクションの中に置くと、users の行ロックを保持したまま\nマスタ参照の往復を1回はさむことになり、ロック保持時間がそのぶん伸びる。\n外に出すことで、マスタデータ不備（E2 / E3）のときにトランザクションを張らず\n行ロックも取らずに弾ける（マスタ不備は全リクエストが等しく踏むため、\nDB を叩かずに失敗させる価値が大きい）。\n\n読み取りが tx の外になるぶん、読んだ後にマスタが変わる余地は残る。ただし\nitems 行を削除されれば user_items / gacha_histories の FK 制約で弾かれるため、\n不整合なデータが書き込まれることはない（tx 内で読んでいた頃も、FK の検査は\nコミット時点の状態に対して行われるため事情は同じ）。"
+    },
+    {
+      "id": "docs/testing/gacha.md#1-2-draw-のサブフロー",
+      "file": "docs/testing/gacha.md",
+      "anchor": "1-2-draw-のサブフロー",
+      "title": "1-2. draw のサブフロー",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 1. Usecase.Multi \u003e 1-2. draw のサブフロー",
+      "text": "draw は Multi のノード J の内部。分岐を持つのでケースの区別に必要。"
+    },
+    {
+      "id": "docs/testing/gacha.md#1-3-テスト仕様表",
+      "file": "docs/testing/gacha.md",
+      "anchor": "1-3-テスト仕様表",
+      "title": "1-3. テスト仕様表",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 1. Usecase.Multi \u003e 1-3. テスト仕様表",
+      "text": "パスが短い順。表の1行 = テストコードの1ケース。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | pullCount が範囲外（0） | A→B→E1 | ErrInvalidPullCount | ListItems も DoInTx も呼ばれない |\n| 2 | pullCount が範囲外（上限超え） | A→B→E1 | ErrInvalidPullCount | 同上 |\n| 3 | ListItems がエラー | A→B→H→E2 | repo のエラー | DoInTx が呼ばれない（行ロックを取らない） |\n| 4 | items が空 | A→B→H→I→E3 | ErrNoItemsAvailable | 同上 |\n| 5 | DoInTx 自体がエラー | …→I→C→D→E4 | DoInTx のエラーがそのまま返る | fn が実行されない（tx 内の repo が一切呼ばれない） |\n| 6 | GetUserForUpdate がエラー | …→D→F→E5 | repo のエラーがそのまま返る（変換しない） | 後続の repo 呼び出しが無い |\n| 7 | 石が不足 | …→F→G→E6 | ErrInsufficientGems | UpdateUserGems 以降が呼ばれない |\n| 8 | 全アイテムの Weight が 0 | …→G→J→E7（D1→D2→DE） | ErrInvalidItemWeights | 同上 |\n| 9 | UpdateUserGems がエラー | …→J→K→E8 | repo のエラー | UpsertUserItems 以降が呼ばれない |\n| 10 | UpsertUserItems がエラー | …→K→L→E9 | repo のエラー | InsertGachaHistories が呼ばれない |\n| 11 | InsertGachaHistories がエラー | …→L→M→E10 | repo のエラー | — |\n| 12 | 正常系: 1件目のアイテムが当選（IntN=0） | …→M→N→Z（D4→D6→D7 即当選） | Result に pullCount 件、石が gemCost 分減る | UpsertUserItems が集約後の個数で1回／InsertGachaHistories に pullCount 件の item_id が渡る |"
+    },
+    {
+      "id": "docs/testing/gacha.md#1-3-テスト仕様表@2",
+      "file": "docs/testing/gacha.md",
+      "anchor": "1-3-テスト仕様表",
+      "title": "1-3. テスト仕様表",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 1. Usecase.Multi \u003e 1-3. テスト仕様表",
+      "text": "| 13 | 正常系: 2件目のアイテムが当選（IntN = 1件目の重みと同値） | …→M→N→Z（D6 が No→Yes） | 2件目の item が Result に入る | UpsertUserItems に2件目の item_id が渡る |\n| 14 | 正常系: Weight 0 のアイテムが混在 | …→M→N→Z（D4→D5 を通過） | Weight 0 のアイテムは1度も当選しない | 当選 item_id に Weight 0 のものが含まれない |\n| 15 | 正常系: pullCount が下限（1回） | 12 と同一 | 1件だけ当選、石は1回分だけ減る | UpsertUserItems の個数が 1、InsertGachaHistories が 1 件 |\n\nケース 15 を 12 と統合しない理由: パスは同一だが、境界値を独立ケースにする3基準のうち\n「出力が違う」と「片方だけが検出できる実装ミスがある」を満たす。\n抽選回数を pullCount ではなく MaxPullCount でハードコードする実装ミスは、\n12（pullCount = MaxPullCount）では検出できず 15 でのみ落ちる。"
+    },
+    {
+      "id": "docs/testing/gacha.md#1-4-パスの網羅状況",
+      "file": "docs/testing/gacha.md",
+      "anchor": "1-4-パスの網羅状況",
+      "title": "1-4. パスの網羅状況",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 1. Usecase.Multi \u003e 1-4. パスの網羅状況",
+      "text": "図の終端ノードは E1〜E10 と Z の 11 個。上表はすべてを最低1件ずつ通っている。\n\ndraw サブフローの分岐（D2 / D4 / D6）は、それぞれケース 8 / 14 / 13 が通る。\n\n---"
+    },
+    {
+      "id": "docs/testing/gacha.md#2-ロック取得順序の不変条件",
+      "file": "docs/testing/gacha.md",
+      "anchor": "2-ロック取得順序の不変条件",
+      "title": "2. ロック取得順序の不変条件",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 2. ロック取得順序の不変条件",
+      "text": "UpsertUserItems に item_id の昇順で並べた行が渡されること（sortedKeys が保証）。\nデッドロック回避のための不変条件なので、独立したテストで検証する。\n\n乱数の戻り値を呼び出しごとに変える必要があり、1 の表とは手続きが異なるためテーブルを分ける。\n\n| # | 条件 | 期待結果 |\n| --- | --- | --- |\n| 16 | 抽選順が ID 降順（先に ID 2、次に ID 1 が当選） | UpsertUserItems の行は ID 1 → ID 2 の昇順。InsertGachaHistories は抽選順（ID 2 → ID 1） |\n\n抽選順と ID 順が一致していると検証にならないため、フィクスチャは\n「先に当たるアイテムの ID を大きく」してある。\n\n---"
+    },
+    {
+      "id": "docs/testing/gacha.md#3-newusecase",
+      "file": "docs/testing/gacha.md",
+      "anchor": "3-newusecase",
+      "title": "3. NewUsecase",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 3. NewUsecase",
+      "text": "フロー図を作るほどの分岐は無いが、rand の nil フォールバックという分岐を持つ。\n\n| # | 条件 | 期待結果 |\n| --- | --- | --- |\n| 17 | rnd に nil を渡す | 既定実装（defaultRandomizer）が使われ、Multi が完走する |\n\n既定実装を使うため当選アイテムを固定できない。「どれかが当選して完走する」ことだけを確認し、\nどれが当たるかは検証しない（非決定的な値をアサーションに含めない）。"
+    },
+    {
+      "id": "docs/testing/gacha.md#defaultrandomizerintn-について",
+      "file": "docs/testing/gacha.md",
+      "anchor": "defaultrandomizerintn-について",
+      "title": "defaultRandomizer.IntN について",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 3. NewUsecase \u003e defaultRandomizer.IntN について",
+      "text": "math/rand/v2 への1行の委譲で、変換ロジックを持たない。\n直接のテストは書かない。理由は次の2点。\n\n- 非公開型のため外部テストパッケージから直接呼べず、テストするには export_test.go で\n  差し替え口を公開することになる。テスト都合の口を増やすのは避ける\n- ケース 17 が既定実装を経由して Multi を完走させるため、委譲が機能することは担保される\n\n---"
+    },
+    {
+      "id": "docs/testing/gacha.md#4-本設計文書の作成で見つかった問題",
+      "file": "docs/testing/gacha.md",
+      "anchor": "4-本設計文書の作成で見つかった問題",
+      "title": "4. 本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/gacha.md \u003e ガチャ機能のテスト設計 \u003e 4. 本設計文書の作成で見つかった問題",
+      "text": "この文書を作る過程で、既存テストとの突き合わせにより以下が判明した（make test/cover/check の\n文カバレッジでは usecase 層 97.6% と表示され、閾値 90% を満たしていたため検知されなかったもの）。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| パスの欠落 | ケース 1・2（pullCount 範囲外 → ErrInvalidPullCount）のテストが無かった。フローの最初の分岐が未検証 | 追加 |\n| パスの欠落 | ケース 14（Weight 0 のアイテムが混在し D4→D5 を通る）が無かった。「全部 0」のケースしか無く、一部だけ 0 の除外挙動が未検証 | 追加 |\n| パスの欠落 | ケース 16（ロック取得順序が item_id 昇順であること）が無かった。デッドロック回避の不変条件が未検証 | 追加 |\n| パスの欠落 | ケース 17（NewUsecase の rnd == nil フォールバック）が無かった | 追加 |\n| 境界値の欠落 | ケース 15（pullCount 下限）が無く、MaxPullCount でしか正常系を検証していなかった。抽選回数のハードコードを検出できない状態 | 追加 |\n| 同一パスの重複 | 「GetUserForUpdate がエラー」と「ユーザー不在（ErrUserNotFound）」は同じパス A→B→C→D→F→E3 を通る。戻り値のエラーが一般エラーか domain sentinel かの違いだけで、実行される命令列は同じ | ケース 4 に統合 |\n| テーブル駆動の形 | 各ケースが setup func(t, ctrl) (Usecase, context.Context) を持ち、モックの組み立て手順をテーブル側に書いていた。ケースごとに同じ EXPECT 列が繰り返され、テーブル駆動の形をした「無名テストの配列」になっていた | テーブルを入力・失敗地点・期待結果のデータのみにし、組み立てはランナー 1 本へ集約 |\n\nこの欠落は、いずれも文カバレッジの閾値判定をすり抜けていた（usecase 層 97.6% で閾値 90% を満たしていた）。\n図の終端ノードと表の突き合わせという手順が、閾値では見えない穴を可視化した実例として記録しておく。\n\nなお、この作業の結果 usecase 層の文カバレッジは 97.6% → 100% になった。\nただし目的は数値ではなくパスの網羅であり、100% は結果にすぎない。"
+    },
+    {
+      "id": "docs/testing/http-gacha.md#ガチャ-http-ハンドラのテスト設計",
+      "file": "docs/testing/http-gacha.md",
+      "anchor": "ガチャ-http-ハンドラのテスト設計",
+      "title": "ガチャ HTTP ハンドラのテスト設計",
+      "trail": "docs/testing/http-gacha.md \u003e ガチャ HTTP ハンドラのテスト設計",
+      "text": "対象: internal/driver/http/gacha/handler.go\nテスト: internal/driver/http/gacha/handler_test.go\n／contract_test.go\n\n運用ルールは README.md。ユースケース側の設計は gacha.md。\n\ndriver 層の責務は変換とエラー経路の網羅に限定される。\n下位層（domain / usecase）が担保済みの判定を重ねてテストしない。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-gacha.md#1-1-フローチャート",
+      "file": "docs/testing/http-gacha.md",
+      "anchor": "1-1-フローチャート",
+      "title": "1-1. フローチャート",
+      "trail": "docs/testing/http-gacha.md \u003e ガチャ HTTP ハンドラのテスト設計 \u003e 1. Handler.Multi（POST /users/:userID/gacha/multi） \u003e 1-1. フローチャート",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- 入力バリデーションで弾いた場合は usecase を呼ばない（E1 / E2 / E3）\n- E8 はエラーの詳細をレスポンスに載せない（情報漏えい防止）。詳細はログにだけ出す\n- D と G の ErrInvalidPullCount は同じメッセージを返す。\n  ハンドラ側の事前検証と usecase 側の検証が二重にあり、どちらから来ても\n  クライアントから見た応答は同一であること"
+    },
+    {
+      "id": "docs/testing/http-gacha.md#1-2-テスト仕様表",
+      "file": "docs/testing/http-gacha.md",
+      "anchor": "1-2-テスト仕様表",
+      "title": "1-2. テスト仕様表",
+      "trail": "docs/testing/http-gacha.md \u003e ガチャ HTTP ハンドラのテスト設計 \u003e 1. Handler.Multi（POST /users/:userID/gacha/multi） \u003e 1-2. テスト仕様表",
+      "text": "パスが短い順。表の1行 = テストコードの1ケース。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | userID が数値でない | A→B→E1 | 400 invalid userID | usecase が呼ばれない |\n| 2 | userID が 0 以下 | A→B→E1 | 400 invalid userID | 同上 |\n| 3 | ボディが不正な JSON | A→B→C→E2 | 400 invalid request body | 同上 |\n| 4 | pull_count が範囲外 | A→B→C→D→E3 | 400 pull_count must be between 1 and 10 | 同上 |\n| 5 | usecase が ErrInvalidPullCount | …→D→F→G→E4 | 400 pull_count must be between 1 and 10 | — |\n| 6 | usecase が ErrUserNotFound | …→F→G→E5 | 404 user not found | — |\n| 7 | usecase が ErrInsufficientGems | …→G→E6 | 402 insufficient gems | — |\n| 8 | usecase が ErrNoItemsAvailable | …→G→E7 | 503 gacha is unavailable | — |\n| 9 | usecase が ErrInvalidItemWeights | …→G→E7 | 503 gacha is unavailable | — |\n| 10 | usecase が予期せぬエラー | …→G→E8 | 500 internal server error。元のエラー文言を含まない | — |\n| 11 | 正常系 | …→F→H→Z | 200。user_id / remaining_gems / drawn_items が Result の値と一致 | Multi に userID と pull_count がそのまま渡る |\n\nケース 1 と 2 を統合しない理由: パスは同一だが、判定は err != nil || userID \u003c= 0 の\n2 条件からなる。userID \u003c= 0 の側を落とす実装ミスはケース 1 では検出できず 2 でのみ落ちる\n（境界値を独立ケースにする3基準のうち「片方だけが検出できる実装ミスがある」に該当）。"
+    },
+    {
+      "id": "docs/testing/http-gacha.md#1-2-テスト仕様表@2",
+      "file": "docs/testing/http-gacha.md",
+      "anchor": "1-2-テスト仕様表",
+      "title": "1-2. テスト仕様表",
+      "trail": "docs/testing/http-gacha.md \u003e ガチャ HTTP ハンドラのテスト設計 \u003e 1. Handler.Multi（POST /users/:userID/gacha/multi） \u003e 1-2. テスト仕様表",
+      "text": "ケース 8 と 9 を統合しない理由: 終端ノードは同じ E7 だが、errors.Is の判定対象が違う。\n片方の case を落とす実装ミスはもう片方では検出できない。\n\nケース 4 を 1 件に絞る理由: pull_count の 0 / 上限超過 / 負数はすべて同一パス A→B→C→D→E3。\nハンドラは IsValidPullCount に丸投げしているだけなので、境界の正しさは\ninternal/domain/gacha のケース配列が正本。ここで重ねない。"
+    },
+    {
+      "id": "docs/testing/http-gacha.md#1-3-パスの網羅状況",
+      "file": "docs/testing/http-gacha.md",
+      "anchor": "1-3-パスの網羅状況",
+      "title": "1-3. パスの網羅状況",
+      "trail": "docs/testing/http-gacha.md \u003e ガチャ HTTP ハンドラのテスト設計 \u003e 1. Handler.Multi（POST /users/:userID/gacha/multi） \u003e 1-3. パスの網羅状況",
+      "text": "終端ノードは E1〜E8 と Z の 9 個。上表はすべてを最低1件ずつ通っている。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-gacha.md#2-レスポンス契約",
+      "file": "docs/testing/http-gacha.md",
+      "anchor": "2-レスポンス契約",
+      "title": "2. レスポンス契約",
+      "trail": "docs/testing/http-gacha.md \u003e ガチャ HTTP ハンドラのテスト設計 \u003e 2. レスポンス契約",
+      "text": "レスポンスの構造（json タグ）の正本は\ntestdata/contracts/ の JSON ファイル。\ncontract_test.go が\ninternal/testutil/apicontract で構造のみを検証する。\n\n| # | 対象 | 契約ファイル |\n| --- | --- | --- |\n| 12 | 200 のレスポンス構造 | gacha_multi.json |\n| 13 | エラーレスポンス構造 | error.json |\n\n値の妥当性はここで見ない（1 の表の責務）。見るのはキー名の追加・削除・リネームだけ。\n構造が同じなら代表 1 パターンでよいので、エラー系の契約検証は 1 件で足りる。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-gacha.md#3-本設計文書の作成で見つかった問題",
+      "file": "docs/testing/http-gacha.md",
+      "anchor": "3-本設計文書の作成で見つかった問題",
+      "title": "3. 本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/http-gacha.md \u003e ガチャ HTTP ハンドラのテスト設計 \u003e 3. 本設計文書の作成で見つかった問題",
+      "text": "driver 層の文カバレッジは 95.8% で閾値 90% を満たしていたため検知されなかったもの。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| パスの欠落 | ケース 5（usecase が ErrInvalidPullCount を返す → 400）が無く、errors.Is の先頭の case が一度も実行されていなかった。ハンドラ側の事前検証があるため現状は到達しにくいが、二重防御の片方が未検証だった | 追加 |\n| 同一パスの重複 | pull_count の 0 / 11 / -1 の 3 ケースはすべて同一パス。境界の正しさは domain の IsValidPullCount が 6 ケースで網羅済み | 表のケース 4（1 件）へ統合 |\n| 同一パスの重複 | 「正常系: pull_count=1 でも成功」は正常系と同一パス。ハンドラは pull_count を usecase へ透過するだけで、回数による分岐を持たない（回数の境界は gacha.md のケース 15 の責務） | 表のケース 11 へ統合 |\n| 検証の欠落 | ケース 10 が「500 が返ること」しか見ておらず、元のエラー文言が漏れていないことを確認していなかった。情報漏えい防止がこの分岐の存在理由なので、そこを見ないと分岐の意味が検証されない | assert.NotContains を追加 |\n| テーブル駆動の形 | 各ケースが setupMock func(m *MockUsecase) を持ち、モックの組み立て手順をテーブル側に書いていた | テーブルをデータのみにし、組み立てはランナーへ集約 |"
+    },
+    {
+      "id": "docs/testing/http-health.md#ヘルスチェック-http-ハンドラのテスト設計",
+      "file": "docs/testing/http-health.md",
+      "anchor": "ヘルスチェック-http-ハンドラのテスト設計",
+      "title": "ヘルスチェック HTTP ハンドラのテスト設計",
+      "trail": "docs/testing/http-health.md \u003e ヘルスチェック HTTP ハンドラのテスト設計",
+      "text": "対象: internal/driver/http/health/handler.go\nテスト: internal/driver/http/health/handler_test.go\n／contract_test.go\n\n運用ルールは README.md。\n\ndriver 層の責務は変換とエラー経路の網羅に限定される。\nステータス値そのものの意味は internal/domain/health の責務。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-health.md#1-1-フローチャート",
+      "file": "docs/testing/http-health.md",
+      "anchor": "1-1-フローチャート",
+      "title": "1-1. フローチャート",
+      "trail": "docs/testing/http-health.md \u003e ヘルスチェック HTTP ハンドラのテスト設計 \u003e 1. Handler.Check（GET /healthz） \u003e 1-1. フローチャート",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- E1 はエラーの詳細をレスポンスに載せない。詳細はログにだけ出す。\n  http-gacha.md の E8・ranking ハンドラの default と同じ方針で、\n  ハンドラ間で非対称にしない。/healthz は認証なしで外部公開され、\n  依存リソースの疎通確認を追加すれば接続先やエラー文言がそのまま外へ出るため、\n  他のエンドポイントより漏えいの影響が大きい\n- E1 の値は domain の StatusDown を使う。ハンドラに状態を表す文字列リテラルを置かない\n- 応答の JSON キーは正常系・異常系で共通の status。ALB のヘルスチェックは\n  ステータスコードしか見ないが、キーを変えると解釈側（k6 シナリオ等）へ波及するため維持する\n- ハンドラは error を返さない（c.JSON の結果のみ）。\n  エラーを返すと Echo の既定ハンドラが応答を組み立て、上の契約から外れるため"
+    },
+    {
+      "id": "docs/testing/http-health.md#1-2-テスト仕様表",
+      "file": "docs/testing/http-health.md",
+      "anchor": "1-2-テスト仕様表",
+      "title": "1-2. テスト仕様表",
+      "trail": "docs/testing/http-health.md \u003e ヘルスチェック HTTP ハンドラのテスト設計 \u003e 1. Handler.Check（GET /healthz） \u003e 1-2. テスト仕様表",
+      "text": "パスが短い順。表の1行 = テストコードの1ケース。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | usecase がエラー | A→B→E1 | 503 {\"status\":\"down\"}。元のエラー文言を含まない | ERROR ログに元のエラーが出る |\n| 2 | 正常系 | A→B→Z | 200 {\"status\":\"ok\"} | Check が1回呼ばれる |\n\nケースがこの 2 件で足りる理由: ハンドラは usecase の戻り値を透過するだけで、\nステータス値による分岐を持たない。degraded などの値のバリエーションは\nstatus_test.go が正本。"
+    },
+    {
+      "id": "docs/testing/http-health.md#1-3-パスの網羅状況",
+      "file": "docs/testing/http-health.md",
+      "anchor": "1-3-パスの網羅状況",
+      "title": "1-3. パスの網羅状況",
+      "trail": "docs/testing/http-health.md \u003e ヘルスチェック HTTP ハンドラのテスト設計 \u003e 1. Handler.Check（GET /healthz） \u003e 1-3. パスの網羅状況",
+      "text": "終端ノードは E1 と Z の 2 個。上表はすべてを1件ずつ通っている。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-health.md#2-レスポンス契約",
+      "file": "docs/testing/http-health.md",
+      "anchor": "2-レスポンス契約",
+      "title": "2. レスポンス契約",
+      "trail": "docs/testing/http-health.md \u003e ヘルスチェック HTTP ハンドラのテスト設計 \u003e 2. レスポンス契約",
+      "text": "レスポンスの構造（json タグ）の正本は\ntestdata/contracts/health.json。\n\n| # | 対象 | 契約ファイル |\n| --- | --- | --- |\n| 3 | 200 / 503 のレスポンス構造 | health.json |\n\n正常系と異常系で構造が同一（status 1 キー）なので契約ファイルは 1 つ。\n値の妥当性は 1 の表の責務。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-health.md#3-本設計文書の作成で見つかった問題",
+      "file": "docs/testing/http-health.md",
+      "anchor": "3-本設計文書の作成で見つかった問題",
+      "title": "3. 本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/http-health.md \u003e ヘルスチェック HTTP ハンドラのテスト設計 \u003e 3. 本設計文書の作成で見つかった問題",
+      "text": "driver 層の文カバレッジは閾値を満たしており、いずれも数値では検知できないものだった。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| 情報漏えい | 異常系が err.Error() をそのままレスポンスに載せていた。他の 2 ハンドラは固定文言に統一しており、ここだけ非対称だった | StatusDown を返し、詳細はログへ |\n| 観測点の欠落 | ハンドラが logger を持たず、エラーを握り潰していた。c.JSON で 503 を返して nil を返すため、Echo のアクセスログにも error 属性が付かない（アクセスログが error を拾うのはハンドラが error を返したときだけ） | NewHandler に logger を追加 |\n| 検証の欠落 | 異常系のテストが「エラー文言がそのまま返る」ことを期待値として固定していた。漏えいを仕様として肯定していた状態 | 期待値を反転し、assert.NotContains で漏れていないことを検証 |\n| 契約の欠落 | このエンドポイントだけ testdata/contracts/ に契約ファイルが無く、AGENTS.md §3「レスポンス構造は契約ファイルを正本とする」から外れていた | health.json と契約テストを追加 |\n| テストの様式 | testify を使わず t.Errorf で比較しており、AGENTS.md §3「アサーションは testify」から外れていた。logger も slogtest 経由でなかった | 他ハンドラと同じ様式へ揃えた |"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#ランキング-http-ハンドラのテスト設計",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "ランキング-http-ハンドラのテスト設計",
+      "title": "ランキング HTTP ハンドラのテスト設計",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計",
+      "text": "対象: internal/driver/http/ranking/handler.go\nテスト: internal/driver/http/ranking/handler_test.go\n／contract_test.go\n\n運用ルールは README.md。ユースケース側の設計は ranking.md。\n\ndriver 層の責務は変換とエラー経路の網羅に限定される。\nlimit / offset の正規化、Points の値域といった判定は下位層の責務なので重ねてテストしない。\n\nエラー → ステータスの分類は 5 ハンドラすべてが handleError を共有する。\n図では [[handleError]] として畳み、分岐の実体は §4 に置く。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#1-一覧系-getguildrankings--getuserrankings",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "1-一覧系-getguildrankings--getuserrankings",
+      "title": "1. 一覧系: GetGuildRankings / GetUserRankings",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 1. 一覧系: GetGuildRankings / GetUserRankings",
+      "text": "2 メソッドは構造が同一（ギルド版とユーザー版）。同じ図・同じケース構成を持つ。\n片方にだけケースがある状態にしない（対称性）。"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#1-1-フローチャート",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "1-1-フローチャート",
+      "title": "1-1. フローチャート",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 1. 一覧系: GetGuildRankings / GetUserRankings \u003e 1-1. フローチャート",
+      "text": "parseNonNegativeIntQuery のサブフロー（B / C の内部）:\n\n設計上の要点: 未指定（空文字）は 0 を返し、既定値の適用は usecase に委ねる。\nハンドラが既定値を持つと、ranking.md の NormalizeLimit と二重管理になる。"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#1-2-テスト仕様表getguildrankings--getuserrankings-共通",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "1-2-テスト仕様表getguildrankings--getuserrankings-共通",
+      "title": "1-2. テスト仕様表（GetGuildRankings / GetUserRankings 共通）",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 1. 一覧系: GetGuildRankings / GetUserRankings \u003e 1-2. テスト仕様表（GetGuildRankings / GetUserRankings 共通）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | limit が数値でない | A→B→E1（P3→PE1） | 400 invalid limit | usecase が呼ばれない |\n| 2 | limit が負数 | A→B→E1（P4→PE2） | 400 invalid limit | 同上 |\n| 3 | offset が数値でない | A→B→C→E2（P3→PE1） | 400 invalid offset | 同上 |\n| 4 | offset が負数 | A→B→C→E2（P4→PE2） | 400 invalid offset | 同上 |\n| 5 | usecase が予期せぬエラー | …→C→D→X→R8 | 500 internal server error | — |\n| 6 | usecase が ErrRankingUnavailable | …→C→D→X→R9 | 503 ranking is unavailable | Retry-After ヘッダが付く |\n| 7 | 正常系: クエリ未指定 | …→D→F→Z（P1→P2） | 200 | usecase に Limit=0 / Offset=0 が渡る（正規化しない） |\n| 8 | 正常系: limit / offset 指定 | …→D→F→Z（P1→P3→P4→P5） | 200。rankings と total_count が Result と一致 | usecase に指定値がそのまま渡る |\n\nケース 1〜4 を 2 件に減らさない理由: サブフローの失敗分岐は 2 つ（PE1 / PE2）だが、\nparseNonNegativeIntQuery は limit と offset で2 回別々に呼ばれる。\nどちらのキーでどちらの分岐に落ちても正しいメッセージが返ることは、\n2×2 を通さないと非対称な穴が残る（片方だけにケースがある状態を作らない）。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#2-単一順位取得-getguildrank--getuserrank",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "2-単一順位取得-getguildrank--getuserrank",
+      "title": "2. 単一順位取得: GetGuildRank / GetUserRank",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 2. 単一順位取得: GetGuildRank / GetUserRank",
+      "text": "こちらも 2 メソッドで構造が同一。"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#テスト仕様表getguildrank--getuserrank-共通",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "テスト仕様表getguildrank--getuserrank-共通",
+      "title": "テスト仕様表（GetGuildRank / GetUserRank 共通）",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 2. 単一順位取得: GetGuildRank / GetUserRank \u003e テスト仕様表（GetGuildRank / GetUserRank 共通）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | ID が数値でない | A→B→E1 | 400 invalid guildID / invalid userID | usecase が呼ばれない |\n| 2 | ID が 0 以下 | A→B→E1 | 同上 | 同上 |\n| 3 | エンティティ未存在 | A→B→C→X→R1 / R2 | 404 guild not found / user not found | usecase に ID がそのまま渡る |\n| 4 | スコア/ポイント未登録 | …→C→X→R6 / R7 | 404 score not found / points not found | — |\n| 5 | 予期せぬエラー | …→X→R8 | 500 internal server error | — |\n| 6 | usecase が ErrRankingUnavailable | …→X→R9 | 503 ranking is unavailable | Retry-After ヘッダが付く |\n| 7 | 正常系 | …→C→D→Z | 200。全フィールドが Result の値と一致 | — |\n\nケース 1 と 2 を統合しない理由: パスは同一だが、判定は err != nil || id \u003c= 0 の 2 条件。\nid \u003c= 0 側を落とす実装ミスはケース 1 では検出できない。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#3-adduserpointspost-usersuseridpoints",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "3-adduserpointspost-usersuseridpoints",
+      "title": "3. AddUserPoints（POST /users/:userID/points）",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 3. AddUserPoints（POST /users/:userID/points）",
+      "text": "設計上の要点: 順位は worker の Redis 反映後にしか確定しないため、\nこのレスポンスに rank / guild_rank を入れない（ranking.md 参照）。\n入れてしまうと常に未確定値を返すことになるので、含まれないことをテストで固定する。\n\npoints の値域は検証しない。IsValidScore は domain の責務で、\nusecase が ErrInvalidPoints を返した場合のマッピングだけがこの層の責務。"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#テスト仕様表",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 3. AddUserPoints（POST /users/:userID/points） \u003e テスト仕様表",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | userID が数値でない | A→B→E1 | 400 invalid userID | usecase が呼ばれない |\n| 2 | userID が 0 以下 | A→B→E1 | 同上 | 同上 |\n| 3 | ボディが不正な JSON | A→B→C→E2 | 400 invalid request body | 同上 |\n| 4 | reason が空 | A→B→C→D→E3 | 400 reason is required | 同上 |\n| 5 | usecase が ErrUserNotFound | …→D→F→X→R2 | 404 user not found | userID / points / reason がそのまま渡る |\n| 6 | usecase が ErrUserNotInGuild | …→F→X→R3 | 403 user is not a member of the guild | — |\n| 7 | usecase が ErrInvalidPoints | …→X→R5 | 400 invalid points | — |\n| 8 | usecase が予期せぬエラー | …→X→R8 | 500 internal server error | — |\n| 9 | 正常系 | …→F→G→Z | 200。7 フィールドが Result と一致し、rank / guild_rank を含まない | — |\n\n---"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#4-共通のエラー分類-handleerror",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "4-共通のエラー分類-handleerror",
+      "title": "4. 共通のエラー分類: handleError",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 4. 共通のエラー分類: handleError",
+      "text": "5 ハンドラすべてが共有する。図の [[handleError]] の実体。\n\nR9 について: Redis の ZSet が揮発したことを usecase 層が検知して返す\n（ranking.md §0）。ErrPointsNotFound（R7）との違いは\n「その個人が未登録」か「ランキング全体が消えている」かで、前者は 404、後者は 503。\nRetry-After を付けるのは、クライアントに再試行が有効であること（永続的な失敗ではないこと）を\n伝えるため。503 を返すのは読み取り系 4 ハンドラのみで、AddUserPoints は\n揮発中でも成功させる（理由は ranking.md §3）。\n\nR8 と違いログを出さないのは、この状態が再構築するまで継続するため。\nリクエストごとに記録すると 1 件の障害が毎秒数千行の同一ログになり、他のエラーを埋める。\n503 を返した事実はアクセスログに残るので、観測点は失われない。\n\n各終端をどのケースが通すかの対応。空欄を作らないことがこの表の目的。\n\n| 終端 | 判定対象 | 通すケース |\n| --- | --- | --- |\n| R1 | ErrGuildNotFound | §2 ケース 3（guild） |\n| R2 | ErrUserNotFound | §2 ケース 3（user）／§3 ケース 5 |\n| R3 | ErrUserNotInGuild | §3 ケース 6 |\n| R4 | ErrInvalidScore | 未対応（下記） |\n| R5 | ErrInvalidPoints | §3 ケース 7 |\n| R6 | ErrScoreNotFound | §2 ケース 4（guild） |\n| R7 | ErrPointsNotFound | §2 ケース 4（user） |\n| R8 | その他 | §1 ケース 5／§2 ケース 5／§3 ケース 8 |\n| R9 | ErrRankingUnavailable | §1 ケース 6／§2 ケース 6 |"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#要対応r4errinvalidscoreは到達不可能",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "要対応r4errinvalidscoreは到達不可能",
+      "title": "【要対応】R4（ErrInvalidScore）は到達不可能",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 4. 共通のエラー分類: handleError \u003e 【要対応】R4（ErrInvalidScore）は到達不可能",
+      "text": "rankingdomain.ErrInvalidScore は domain/ranking/errors.go に\n定義されているが、返している実装が 1 つも無い（参照しているのは handleError だけ）。\nポイント加算の値域違反は ErrInvalidPoints を返す。\n\n到達不可能なのでテストで無理にカバーしない（AGENTS.md §6「デッドコードをテストで無理にカバーしない」）。\nErrInvalidScore ごと削除するか、ギルドスコア直接更新の API を足すときに使うかを\n仕様として決める必要がある（優先度: 低）。決まるまで本表に 未対応 として残す。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#5-レスポンス契約",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "5-レスポンス契約",
+      "title": "5. レスポンス契約",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 5. レスポンス契約",
+      "text": "レスポンスの構造（json タグ）の正本は\ntestdata/contracts/ の JSON ファイル。\ncontract_test.go が\ninternal/testutil/apicontract で構造のみを検証する。\n\n| # | 対象 | 契約ファイル |\n| --- | --- | --- |\n| 1 | ギルドランキング一覧 | ranking_rankings.json |\n| 2 | ユーザーランキング一覧 | ranking_rankings.json（構造は共通） |\n| 3 | ギルド順位 | ranking_guild_rank.json |\n| 4 | ユーザー順位 | ranking_user_rank.json |\n| 5 | ポイント加算 | ranking_add_user_points.json |\n| 6 | エラーレスポンス | error.json |\n\n値の妥当性はここで見ない（§1〜§3 の責務）。見るのはキー名の追加・削除・リネームだけ。\n\n---"
+    },
+    {
+      "id": "docs/testing/http-ranking.md#6-本設計文書の作成で見つかった問題",
+      "file": "docs/testing/http-ranking.md",
+      "anchor": "6-本設計文書の作成で見つかった問題",
+      "title": "6. 本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/http-ranking.md \u003e ランキング HTTP ハンドラのテスト設計 \u003e 6. 本設計文書の作成で見つかった問題",
+      "text": "driver 層の文カバレッジは 97.4% で閾値 90% を満たしていたため検知されなかったもの。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| パスの欠落 | parseNonNegativeIntQuery の「Atoi 失敗」分岐（PE1）が未検証だった。負数のケースしか無く、?limit=abc のような入力が一度も通っていなかった | §1 のケース 1・3 を追加 |\n| 対称性の欠如 | GetGuildRank に「予期せぬエラー → 500」のケースが無かった。同一構造の GetUserRank にはあり、片方だけにケースがある状態 | §2 のケース 5 を両方に適用 |\n| 対称性の欠如 | GetUserRankings に「クエリ未指定」のケースが無かった。GetGuildRankings にだけあった | §1 のケース 6 を両方に適用 |\n| デッドコード | handleError の ErrInvalidScore 分岐は到達不可能（§4 参照） | テストは足さず 未対応 として記録。仕様判断待ち |\n| テーブル駆動の形 | 5 つのテーブルすべてが setupMock func(m *MockUsecase) を持ち、モックの組み立て手順をテーブル側に書いていた | テーブルをデータのみにし、組み立てはランナーへ集約。構造が同一な 2 メソッドは同じテーブルを両方に流し、非対称が構造的に起きないようにする |"
+    },
+    {
+      "id": "docs/testing/http-router.md#ルーティング登録のテスト設計",
+      "file": "docs/testing/http-router.md",
+      "anchor": "ルーティング登録のテスト設計",
+      "title": "ルーティング登録のテスト設計",
+      "trail": "docs/testing/http-router.md \u003e ルーティング登録のテスト設計",
+      "text": "対象: internal/driver/http/router/router.go\nテスト: internal/driver/http/router/router_test.go\n\n運用ルールは README.md。\n\nRegister はコンポジションルート（internal/di）が組み立てた\nHandlers を受け取り、Echo にルートを登録する。分岐は「組み立て漏れの検査」1 つだけ。"
+    },
+    {
+      "id": "docs/testing/http-router.md#フローチャート",
+      "file": "docs/testing/http-router.md",
+      "anchor": "フローチャート",
+      "title": "フローチャート",
+      "trail": "docs/testing/http-router.md \u003e ルーティング登録のテスト設計 \u003e フローチャート",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- nil チェックを外すだけでは fail-fast にならない。 h.Gacha.Multi は\n  メソッド値の生成であり、レシーバが nil でもこの時点ではデリファレンスされない。\n  検査が無いと Register もサーバ起動も成功し、panic は最初のリクエストまで遅延したうえ\n  middleware.Recover() が 500 に丸める。運用側からは「特定のエンドポイントだけ 500」\n  としか見えず、原因が設定ミスだと分からない。明示的な検査が唯一の防波堤\n- nil を許して登録をスキップしない。 以前は Gacha / Ranking だけをスキップし\n  Health はしない非対称な状態だった。スキップすると該当エンドポイントが 404 になるだけで、\n  起動後も表面化しない\n- 欠けたフィールドを全部挙げる。 1 つずつ直して再起動する往復を避けるため。\n  列挙順は構造体のフィールド順で固定する（メッセージを安定させる）\n- 検査に落ちたらルートを1つも登録しない。 部分登録した Echo が呼び出し元に残ると、\n  「起動を中止する」という意図と食い違う状態を作れてしまう\n- 呼び出し元（cmd/api/main.go）は他の起動時失敗と同じく\n  log.Error + os.Exit(1) で落とす"
+    },
+    {
+      "id": "docs/testing/http-router.md#テスト仕様表",
+      "file": "docs/testing/http-router.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/http-router.md \u003e ルーティング登録のテスト設計 \u003e テスト仕様表",
+      "text": "パスが短い順。表の1行 = テストコードの1ケース。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | Health が nil | A→B→E1 | ErrMissingHandler、文言に Health | ルートが 0 件 |\n| 2 | Gacha が nil | A→B→E1 | ErrMissingHandler、文言に Gacha | 同上 |\n| 3 | Ranking が nil | A→B→E1 | ErrMissingHandler、文言に Ranking | 同上 |\n| 4 | 全て nil | A→B→E1 | 文言に Health, Gacha, Ranking | 同上 |\n| 5 | 全て非 nil | A→B→C→Z | nil | 7 ルートすべてが登録される |\n\nケース 1〜4 を統合しない理由: 同一パスだが、検査の対象はフィールドごとに別の式。\n1 フィールドを検査から書き落としても、そのフィールドのケースだけが落ちる\n（README.md §3「分岐の通過が1つでも違えば別ケース」ではなく、\n同一パスでも片方だけが検出できる実装ミスがあることによる例外）。\nケース 4 は列挙順の固定を検証する役割も兼ねる。"
+    },
+    {
+      "id": "docs/testing/http-router.md#パスの網羅状況",
+      "file": "docs/testing/http-router.md",
+      "anchor": "パスの網羅状況",
+      "title": "パスの網羅状況",
+      "trail": "docs/testing/http-router.md \u003e ルーティング登録のテスト設計 \u003e パスの網羅状況",
+      "text": "終端ノードは E1 と Z の 2 個。上表はすべてを通っている。"
+    },
+    {
+      "id": "docs/testing/http-router.md#保守トリガ",
+      "file": "docs/testing/http-router.md",
+      "anchor": "保守トリガ",
+      "title": "保守トリガ",
+      "trail": "docs/testing/http-router.md \u003e ルーティング登録のテスト設計 \u003e 保守トリガ",
+      "text": "Handlers にフィールドを追加したら、validate の fields と上表のケースを併せて追加する。\nこの連動は静的検証で捕捉していない（フィールド追加と検査追加の対応を判定する手段が無い）。"
+    },
+    {
+      "id": "docs/testing/outbox-gc.md#outbox-gc-バッチのテスト設計",
+      "file": "docs/testing/outbox-gc.md",
+      "anchor": "outbox-gc-バッチのテスト設計",
+      "title": "Outbox GC バッチのテスト設計",
+      "trail": "docs/testing/outbox-gc.md \u003e Outbox GC バッチのテスト設計",
+      "text": "対象: internal/driver/batch/outbox_gc.go\nテスト: internal/driver/batch/outbox_gc_test.go\n\n運用ルールは README.md。worker 側の設計は outbox-worker.md。\n\n処理済みの outbox_events を保持期間経過後に削除する常設バッチ。\nworker は processed_at を立てるだけで行を消さないため、これが無いとテーブルが単調増加する。\n負荷試験の実測（約 400 events/sec）では 1 日あたり約 3,400 万行が積み上がる。"
+    },
+    {
+      "id": "docs/testing/outbox-gc.md#起動経路",
+      "file": "docs/testing/outbox-gc.md",
+      "anchor": "起動経路",
+      "title": "起動経路",
+      "trail": "docs/testing/outbox-gc.md \u003e Outbox GC バッチのテスト設計 \u003e 起動経路",
+      "text": "| 環境 | 起動 | 実体 |\n| --- | --- | --- |\n| ローカル | 手動 | make db/outbox/gc（go run ./cmd/batch -gc-outbox） |\n| AWS | 定期 | EventBridge Scheduler → ECS RunTask（既定 03:00 JST 毎日） |\n\nAWS 側は outbox-gc 専用の TaskDefinition に command = [\"-gc-outbox\"] を焼き込んである\n（terraform/modules/compute_ecs）。スケジュール側で containerOverrides を渡さないのは、\nフラグ文字列が JSON に埋もれると typo が実行時の異常終了でしか分からないため。\nスケジュールの間隔・有効化は outbox_gc_schedule_expression / outbox_gc_enabled で変えられる。\n\n保持期間は OUTBOX_RETENTION（configs、既定 72h）が正本で terraform では設定しない。\nイメージタグの解決順序には注意点があるので\nterraform/ARCHITECTURE.md の「イメージタグの扱い」を参照。"
+    },
+    {
+      "id": "docs/testing/outbox-gc.md#フローチャート",
+      "file": "docs/testing/outbox-gc.md",
+      "anchor": "フローチャート",
+      "title": "フローチャート",
+      "trail": "docs/testing/outbox-gc.md \u003e Outbox GC バッチのテスト設計 \u003e フローチャート",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- 1 チャンク = 1 トランザクションにする。1 文で全削除すると undo ログとロック保持が\n  肥大し、同じテーブルへの INSERT（リクエスト経路の outbox 記録）を阻害する。\n  チャンクサイズは driver 層の定数（環境ごとに変える必要が出たら configs へ移す）\n- 境界は READ COMMITTED で開始する（下記「分離レベル」）\n- 基準時刻は SQL 側の NOW(6) で取る。アプリ側で現在時刻を取得すると AGENTS.md §2 の\n  Clock DI 規約に抵触するため、repository には「時刻」ではなく保持期間を渡す\n  （規約の実態照合は AGENTS.md §2 の ssot-assert が担当。ここでは重複させない）\n- 未処理（processed_at IS NULL）は削除しない。恒久失敗イベントの始末は\n  max retry / DLQ の責務（outbox-worker.md §4）であり、\n  GC が消すとイベントが黙って失われる\n- 終了条件は 削除件数 \u003c chunkSize。0 件でなくても、その回で対象が尽きたことを意味する\n- 途中で失敗したらその時点で打ち切ってエラーを返す。GC は次回の実行で続きを消せるため、\n  ranking-sync-batch.md のように「残りを試行してから報告」する必要がない\n  （あちらは復旧が目的なので、届く分を届けることに意味がある）"
+    },
+    {
+      "id": "docs/testing/outbox-gc.md#分離レベル",
+      "file": "docs/testing/outbox-gc.md",
+      "anchor": "分離レベル",
+      "title": "分離レベル",
+      "trail": "docs/testing/outbox-gc.md \u003e Outbox GC バッチのテスト設計 \u003e 分離レベル",
+      "text": "各チャンクの境界は READ COMMITTED で開始する。一覧は\ntransaction-boundary.md の「分離レベルの使い分け」が正本。\n\nidx_outbox_events_pending は (processed_at, id) で、InnoDB は NULL を先頭に並べる。\n\n```\n[ (NULL,1) (NULL,2) … (NULL,最大id) ] | [ (t1,x) (t2,y) … ]\n                                      ↑ 新規 INSERT の着地点\n```\n\n新規 INSERT は processed_at = NULL かつ id 最大なので NULL ブロックの末尾、つまり\n最初の非 NULL レコードの直前のギャップに入る。一方 GC の processed_at IS NOT NULL\n条件はその非 NULL レコードから走査を始めるため、既定の REPEATABLE READ では最初の\nnext-key ロック（レコード + 直前のギャップ）が同じ隙間を掴み、API 側の\nInsertOutboxEvent を INSERT_INTENTION 待ちでブロックする。worker の ListPending が\n未処理範囲の末尾で掴むのと同じギャップを、GC は先頭側から掴む形になる\n（outbox-worker.md の実測: API p95 108ms → 4.6s）。\n\nGC は同一トランザクション内の読み取り一貫性に依存しないため RC で問題ない。\nテストは全チャンクの DoInTx に渡る TxOption を shared.NewTxOptions で解決して\n検証している（仕様表の 1 行ではなく、全ケース共通の不変条件として扱う）。"
+    },
+    {
+      "id": "docs/testing/outbox-gc.md#テスト仕様表",
+      "file": "docs/testing/outbox-gc.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/outbox-gc.md \u003e Outbox GC バッチのテスト設計 \u003e テスト仕様表",
+      "text": "パスが短い順。表の1行 = テストコードの1ケース。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | DoInTx 自体が失敗 | A→B→E1 | エラーを返す | 削除が呼ばれない |\n| 2 | 削除が失敗 | A→B→C→E2 | エラーを返す | 2 チャンク目が呼ばれない |\n| 3 | 対象なし（0 件） | …→C→D→F→Z | 正常終了 | 削除が 1 回だけ 呼ばれる |\n| 4 | 端数で終わる（0 \u003c 件数 \u003c chunkSize） | …→F→Z | 正常終了 | 同上 |\n| 5 | チャンク満杯 → 次で端数 | …→F→G→B→…→F→Z | 正常終了 | 削除が 2 回 呼ばれる |\n| 6 | チャンク満杯 → ctx キャンセル | …→F→G→E3 | context.Canceled を返す | 次のチャンクへ進まない |\n\nケース 3 と 4 を統合しない理由: パスは同一だが、終了条件を\n削除件数 \u003e 0 で継続 のように書き間違えると、ケース 4（端数）だけが無限ループになり\nケース 3（0 件）では落ちない。http-gacha.md のケース 1・2 と同じ「片方だけが検出できる\n実装ミスがある」に該当する。\n\nケース 6 について: ctx が死んでいれば実際には次の DoInTx（BeginTx）が失敗するため、\nこの判定は防御的なもの。ただし worker.go の\nドレインループが同じ形の歯止めを持っており、そちらと構造を揃えている。"
+    },
+    {
+      "id": "docs/testing/outbox-gc.md#パスの網羅状況",
+      "file": "docs/testing/outbox-gc.md",
+      "anchor": "パスの網羅状況",
+      "title": "パスの網羅状況",
+      "trail": "docs/testing/outbox-gc.md \u003e Outbox GC バッチのテスト設計 \u003e パスの網羅状況",
+      "text": "終端ノードは E1・E2・E3・Z の 4 個。上表はすべてを最低 1 件ずつ通っている。\nZ は 3 通りの入り方（0 件・端数・複数チャンク後）をケース 3・4・5 で個別に通している。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#outbox-worker-のテスト設計",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "outbox-worker-のテスト設計",
+      "title": "outbox worker のテスト設計",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計",
+      "text": "対象: internal/driver/worker/outbox/worker.go\nテスト: internal/driver/worker/outbox/worker_test.go\n\n運用ルールは README.md。\n\nMySQL の outbox テーブルに積まれたイベントを読み、MySQL のギルド集計（guild_scores 加算・\nguild_score_histories 挿入）と Redis 反映を実行するワーカー。\nAddUserPoints（ranking.md）が積んだイベントの消費側にあたる。\n\n処理経路は2つある。通常はバッチ経路（applyBatch）、その適用が失敗したときだけ\nイベント単位経路（applyPerEvent）へ退避する。イベント単位 tx では1件ごとに COMMIT(fsync)\nが発生してスループット上限を決めてしまうため（実測 約27 events/sec、並列化しても約200/sec に対し\n生産は約407/sec）、通常時はバッチでまとめて1回の COMMIT にする。\n\n本 worker のトランザクションはすべて READ COMMITTED で開始する。既定の REPEATABLE READ では\nListPending の SELECT ... FOR UPDATE がギャップロックを取り、API 側の outbox INSERT が\nINSERT_INTENTION 待ちでブロックされる（実測で API の p95 が 108ms → 4.6s に悪化）。\nSKIP LOCKED はレコードロックを飛ばすだけでギャップロックは回避しない。\n一方 RankingSyncer（ranking-sync-batch.md）はスナップショット\n一貫性が必要なため、意図的に既定のままにしてある。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#0-全経路にまたがる不変条件",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "0-全経路にまたがる不変条件",
+      "title": "0. 全経路にまたがる不変条件",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 0. 全経路にまたがる不変条件",
+      "text": "個々の図に何度も現れるため、先に理由をまとめておく。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#0-1-redis-反映は-commit-の後applyredisaftercommit",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "0-1-redis-反映は-commit-の後applyredisaftercommit",
+      "title": "0-1. Redis 反映は COMMIT の後（applyRedisAfterCommit）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 0. 全経路にまたがる不変条件 \u003e 0-1. Redis 反映は COMMIT の後（applyRedisAfterCommit）",
+      "text": "Redis は MySQL のトランザクションの外側にある。tx の中で加算すると\n「Redis 加算済み → MarkProcessedByIDs か COMMIT が失敗 → MySQL だけ巻き戻る」が起こり、\nイベントが未マークのまま再取得されて Redis だけ二重に加算される。しかも再試行のたびに\n積み増されるため、ずれは1回ぶんに留まらず累積する。\n\nそこで MySQL 側（加算・履歴・処理済みマーク）を COMMIT で確定させてから Redis を反映する。\nこれにより誤差は次の性質を持つ側へ倒る。\n\n| | tx 内で反映（旧） | COMMIT 後に反映（現） |\n| --- | --- | --- |\n| 失敗時のずれ | 二重加算（過剰） | 欠落（過小） |\n| ずれの上限 | リトライのたびに累積 | 高々1バッチぶん・累積しない |\n\nCOMMIT 後の Redis 失敗は再試行しない。MySQL は確定済みでロールバックできず、再適用すると\n今度こそ二重加算になるためで、ERROR ログのみに留める。欠落の復旧は RankingSyncer\n（ranking-sync-batch.md）の焼き直しに委ねる。\n\n副次的な効果として、Redis の往復が MySQL の tx から外れるぶんロック保持時間が短くなる。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#0-2-ドレインの枯渇判定は前進件数で見る",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "0-2-ドレインの枯渇判定は前進件数で見る",
+      "title": "0-2. ドレインの枯渇判定は「前進件数」で見る",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 0. 全経路にまたがる不変条件 \u003e 0-2. ドレインの枯渇判定は「前進件数」で見る",
+      "text": "runOnce は候補が枯れるまで ListPending を繰り返す（ドレイン）。この打ち切り条件を\n取得件数（ListPending が返した件数）だけで見てはならない。\n\nListPendingOutboxEvents は ORDER BY id ASC で拾うため、失敗イベントは\n上限（§0-4）に到達するまで何度でも取得される。取得件数だけで判定すると、\n失敗イベントが batchSize 件以上先頭に滞留したときに毎回ちょうど batchSize 件が返り続け、\nドレインが永久に終わらない（tickTimeout で打ち切られても drainNow がスリープなしで\n再入するため、ListPending と IncrementRetry を連打するビジーループになる）。\n\nmax retry 上限（§0-4）を入れた後も本判定は必要。上限は恒久失敗が窓を占め続けることを\n有限回で終わらせるだけで、上限到達までの再取得と、一時的な失敗（MySQL/Redis 障害）で\napplied == 0 になる状況は残るため。\n\nそこで各経路は listed（取得件数）と applied（処理済みマークまで到達した件数）を\n別々に返し、runOnce は次の条件で判定する。\n\n| 条件 | 判定 | 理由 |\n| --- | --- | --- |\n| listed == 0 | 枯渇 | 候補なし |\n| listed \u003c batchSize | 枯渇 | 窓に空きがある = 残りがない |\n| listed == batchSize \u0026\u0026 applied == 0 | 滞留（stalled）。ドレインを打ち切る | 窓が恒久失敗で埋まっており、読み直しても必ず同じ結果になる |\n| それ以外 | ドレイン継続 | 前進している |\n\nstalled を listed == batchSize に限定するのが要点。listed \u003c batchSize（poison が数件だけ）で\n滞留扱いすると、新規イベントは窓に入るのに処理されず pollInterval 待ちになってしまう。\n窓が満杯のときだけ「新規イベントは id 順で窓の外にあり、読み直しても無駄」が保証される。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#0-3-滞留中は通知駆動のドレインを抑止するrun",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "0-3-滞留中は通知駆動のドレインを抑止するrun",
+      "title": "0-3. 滞留中は通知駆動のドレインを抑止する（Run）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 0. 全経路にまたがる不変条件 \u003e 0-3. 滞留中は通知駆動のドレインを抑止する（Run）",
+      "text": "打ち切っただけでは足りない。OutboxSubscriber はバッファ1のチャネルへノンブロッキング送信する\n実装で、API の書き込みが続く限り Run の select にはほぼ常に通知が入っている。滞留状態で\n通知を受けるたびに再入すると、結局スリープなしで同じ窓を読み直し続けることになる。\n\nそのため Run は直近のドレインが滞留で終わったかを保持し、滞留中は通知を捨てて ticker まで待つ。\n滞留中は新規イベントも窓の外にあって処理できないため、通知を捨てても失うものはない。\nticker では必ず再試行するので、poison が上限に到達して窓から外れれば pollInterval 以内に復帰する。\n\n\u003e 時間ベースのバックオフを採らない理由: .golangci.yml の forbidigo が time.Now を禁止しており、Clock インターフェースは未実装。\n\u003e バックオフのために Clock を新設すると usecase の interface 追加と infrastructure 実装が\n\u003e 必要になり、変更の範囲が本質から外れる。既存の ticker を再開トリガに使えば\n\u003e 新しい依存を作らずに済む。\n\n本節が止めるのは「滞留しているあいだ DB を叩き続けること」だけで、head-of-line blocking\nそのものを解くのは次節の max retry 上限。両者は役割が違うので、上限を入れた後も本節の抑止は残す。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#0-4-恒久失敗は-retry_count-上限で窓から外すmax-retry--dlq",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "0-4-恒久失敗は-retry_count-上限で窓から外すmax-retry--dlq",
+      "title": "0-4. 恒久失敗は retry_count 上限で窓から外す（max retry / DLQ）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 0. 全経路にまたがる不変条件 \u003e 0-4. 恒久失敗は retry_count 上限で窓から外す（max retry / DLQ）",
+      "text": "ListPendingOutboxEvents と ClaimPendingOutboxEventByID は retry_count \u003c maxRetry を\n条件に含める。上限に達したイベントは以降 worker から見えなくなり、DLQ に置いたのと同じ扱いになる。\n\nこれが無いと、payload が壊れたイベント（poison）は IncrementRetry されるだけで\nprocessed_at IS NULL のまま何度でも拾われ、次の2つが起きる。\n\n| 症状 | 内容 |\n| --- | --- |\n| head-of-line blocking | poison が batchSize 件以上先頭を占めると、後続の正常なイベントが永久に処理されない |\n| retry 記録の再実行 | ドレインのたびに poison 件数ぶんの IncrementRetry tx が発行される |\n\n上限は ClaimByID にも掛ける。 候補取得と claim のあいだに別 worker が上限へ到達させた場合、\nfound=false になって processOne が前進として数える（滞留を作らない）。\n\n打ち切りの観測は「閾値に到達した瞬間の ERROR ログ」1点に絞る（outbox event dead-lettered）。\nrecordRetry が IncrementRetry の tx に成功した後、IncrementRetry が返す\n加算後の値が maxRetry とちょうど一致したら出す。成功後に判定するのは、記録できなかった\nイベントは retry_count が据え置きのまま次ティックで再処理され、まだ打ち切られていないため。\n以降そのイベントは ListPending に現れないので同じログが繰り返し出ることもない。\n\nclaim 時点の retry_count に +1 して代用してはならない。 claim tx はロールバック済みで\n行ロックが解放されているため、recordRetry が加算するまでの間に別 worker が同一イベントを\n再 claim して加算しうる（複数 worker 構成は SKIP LOCKED の設計意図どおり想定内）。\nスナップショット値で判定すると次の2つが起きる。\n\n| 競合の形 | スナップショット判定の結果 |\n| --- | --- |\n| 2 worker が maxRetry-1 を読んで両方加算 | 同じ遷移の ERROR ログが二重に出る |\n| 2 worker が maxRetry-2 を読んで両方加算 | どちらも上限未満と判定し、ログが一度も出ないまま静かに DLQ 化する |"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#0-4-恒久失敗は-retry_count-上限で窓から外すmax-retry--dlq@2",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "0-4-恒久失敗は-retry_count-上限で窓から外すmax-retry--dlq",
+      "title": "0-4. 恒久失敗は retry_count 上限で窓から外す（max retry / DLQ）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 0. 全経路にまたがる不変条件 \u003e 0-4. 恒久失敗は retry_count 上限で窓から外す（max retry / DLQ）",
+      "text": "後者は障害が輻輳して再試行が集中する場面、つまりこのログが最も必要なときに観測が抜ける。\n\nIncrementRetry は加算後の値を返す。MySQL には UPDATE ... RETURNING が無いため\ninfrastructure 層が同一トランザクション内で UPDATE → SELECT の2文を発行するが、UPDATE が\n取った行ロックの下で読むので他 worker の加算は割り込めず、返る値は自分の加算結果そのものになる。\n\n判定を \u003e= ではなく == にしているのも競合対策。加算は行ロックで直列化されるため、\n競合してもちょうど1つの worker だけが maxRetry と等しい値を観測する。\u003e= にすると\n後から加算した側（maxRetry+1 以降）も条件を満たし、二重ログが復活する。\n\n滞留件数を数える COUNT クエリは置かない。processed_at IS NULL の行を index 走査するため、\nバックログが大きいときのコストが読めない（実測で 8,959 件の滞留が発生した経緯がある）。\n\nトレードオフ: retry_count は失敗の種類を区別しないため、MySQL/Redis の障害が続くと\n健全なイベントも回数を消費して打ち切られうる。時間ベースのバックオフで緩和できない事情は\n§0-3 と同じ（Clock を新設せずに済ませたい）なので、既定値（OUTBOX_MAX_RETRY）を\n大きめに取ったうえで、復旧は\nUPDATE outbox_events SET retry_count = 0 WHERE id IN (...) の運用手順に委ねる。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#1-runループ",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "1-runループ",
+      "title": "1. Run（ループ）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 1. Run（ループ）",
+      "text": "設計上の要点:\n\n- drainNow の失敗はログのみでループを継続する。一過性の DB/Redis 障害で\n  worker プロセスが落ちてはならない。ticker 経路・通知経路の双方が同じ扱いになることを\n  両方のテストで通す（実装は共通ヘルパー drainAndLog に集約してあるが、\n  呼び分けの分岐は経路ごとに独立しているため両方通す必要がある）\n- 各トリガは runOnce を1回ではなく drainNow（枯れるまで自走） で呼ぶ。runOnce は\n  tickTimeout で打ち切られるため1回で枯れるとは限らず、打ち切り時点で次のトリガを待つと\n  通知が途切れたタイミングでバックログの消化が pollInterval（既定10分）停止する\n  （実測で 8,959 件が 440 秒間まったく処理されない状態が発生した）\n- 滞留中（stalled）は通知を捨て、ticker でのみ再試行する（§0-3）。\n  エラーで終わった場合は stalled を立てない（次の通知で普通に再試行してよい）"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#1-runループ@2",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "1-runループ",
+      "title": "1. Run（ループ）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 1. Run（ループ）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 対応テスト |\n| --- | --- | --- | --- | --- |\n| 1 | Subscribe が失敗 | B→C | ポーリングのみで継続する | TestWorker_Run_Subscribe_failure |\n| 2 | 通知チャネルが閉じる | L→X | 以降ポーリングのみで継続する | TestWorker_Run_notify_channel_closed |\n| 3 | 通知でティックが起きる | L→NQ→N | drainNow が走る | TestWorker_Run_notify_triggered |\n| 4 | ticker でティックが起きる | L→T | drainNow が走る | TestWorker_Run_ticker_driven |\n| 5 | ticker 経由の drainNow が失敗 | T→TE | エラーを返さずループ継続 | TestWorker_Run_ティック処理の失敗はループを止めない/ticker 経由で runOnce が失敗しても継続する |\n| 6 | 通知経由の drainNow が失敗 | N→NE | エラーを返さずループ継続 | TestWorker_Run_ティック処理の失敗はループを止めない/通知経由で runOnce が失敗しても継続する |\n| 7 | 滞留後に通知が来る | L→NQ→ND | 通知を捨てる。ListPending を再発行しない | TestWorker_Run_滞留中は通知を捨てtickerで再開する |\n| 8 | ティック期限切れ後も枯れるまで自走する | T→S→L | pollInterval を待たずに次のティックへ入る | TestWorker_drainNow_ティック期限切れ後も自走する |\n| 9 | ctx がキャンセルされる | L→Z | nil を返して終了 | TestWorker_Run_ctxキャンセルはnilを返して終了する |"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#2-runonce1ティックぶんの処理",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "2-runonce1ティックぶんの処理",
+      "title": "2. runOnce（1ティックぶんの処理）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理）",
+      "text": "runOnce はバッチ経路を回し、失敗したときだけイベント単位経路へ退避する。\nどちらの経路も (listed, applied) を返し、判定は §0-2 の表に従う。\n\n設計上の要点（テストで守る不変条件）:\n\n- applyBatch の実エラーを握りつぶさず、かつフォールバックの手前で return しない。\n  以前の実装は absorbTickDeadline の戻り値を先に返しており、実エラーでも\n  applyPerEvent に到達しなかった（バッチ内に恒久失敗イベントがあるとそのバッチが\n  永久に前進しない head-of-line blocking が発生していた）\n- ティック期限切れはエラーではなく打ち切り。drained=false で復帰し drainNow が続ける。\n  per-event / per-batch tx のため打ち切りによる取りこぼしは生じない\n- 判定に使うのは applied（前進件数）であって listed（取得件数）ではない（§0-2）。\n  listed だけで判定する実装に戻すと、全件デコード不能なバッチでドレインが終わらなくなる"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#2-runonce1ティックぶんの処理@2",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "2-runonce1ティックぶんの処理",
+      "title": "2. runOnce（1ティックぶんの処理）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | テスト |\n| --- | --- | --- | --- | --- |\n| 1 | ListPending がエラー | B→E1 相当 | ティックを中断（MySQL/Redis に到達しない） | TestWorker_runOnce_ListPendingエラー |\n| 2 | tickTimeout の適用 | A2→A3 | deadline 付き ctx が渡る | TestWorker_runOnce_appliesTickTimeout |\n| 3 | 窓が全件デコード不能で埋まる | C→SW→ZS | 1巡で打ち切る（ListPending は1回だけ） | TestWorker_runOnce_全件前進しなければドレインを打ち切る |\n| 4 | 候補が batchSize ちょうど続く | C→B のループ | 枯れるまで繰り返す | TestWorker_runOnce_候補が枯れるまでドレインする |\n| 5 | バッチ適用が失敗 | B→W→P | フォールバックで同じイベントが前進する | TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替わり処理が前進する |\n| 6 | tickCtx が期限切れ | B→D1 | drained=false, err=nil で復帰し、drainNow が次ティックで継続する | TestWorker_drainNow_ティック期限切れ後も自走する |\n| 7 | フォールバックも失敗 | P→E2 | absorbTickDeadline を通してエラーを返す | 未対応（下記） |\n\nケース 7（E2）が未対応の理由: applyPerEvent 自体の失敗（PE0 / PE1 / PE2）は\n§2-2 の表で直接検証しているが、その戻り値を runOnce が absorbTickDeadline 経由で\n返すことは通っていない。ティック期限切れをエラーに変えてしまう実装ミスが素通りする穴で、\nrunOnce を直接叩けるテスト用の口が無いため（現状は Run 越しの検証）保留している。\nテストを足すか、Run 越しに「エラーでもループが止まらない」ことで代替するかは別タスク。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#2-1-バッチ経路applybatch通常時",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "2-1-バッチ経路applybatch通常時",
+      "title": "2-1. バッチ経路（applyBatch・通常時）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-1. バッチ経路（applyBatch・通常時）",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- スコアは合算するが履歴は合算しない。加算は可換なのでギルド／ユーザー単位にまとめて\n  DB 往復を減らせるが、履歴は「誰がいつ何点入れたか」を残す必要がある\n- MySQL は tx 内・Redis は COMMIT 後（§0-1）。tx 内のどのステップで失敗しても\n  ApplyScoreDeltas に到達しないことが二重加算を防ぐ要。逆に Redis の失敗では\n  ロールバックもフォールバックもしない（MySQL は確定済みで、再適用は二重加算になる）\n- デコード不能イベントはバッチに混ぜない。未知の event_type / 壊れた payload は\n  決定的な失敗なので、適用対象から外してコミット後に個別で retry 記録する。\n  バッチ tx に混ぜると巻き添えでロールバックされる\n- ListPending の FOR UPDATE SKIP LOCKED がそのまま claim として働くため、\n  この経路では ClaimByID を発行しない"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#2-1-バッチ経路applybatch通常時@2",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "2-1-バッチ経路applybatch通常時",
+      "title": "2-1. バッチ経路（applyBatch・通常時）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-1. バッチ経路（applyBatch・通常時）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | テスト |\n| --- | --- | --- | --- | --- |\n| 1 | ListPending が空 | B2→BZ | 即座に終了。tx は1回だけ | TestWorker_applyBatch_pending無しは即座に終了する |\n| 2 | 全件デコード不能 | B3→BC→R→RT | MySQL も Redis も呼ばれない。applied=0 | TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない |\n| 3 | 除外イベントの IncrementRetry が失敗 | RT | ログのみ。エラーを伝播しない | TestWorker_applyBatch_IncrementRetry失敗はログのみ |\n| 4 | COMMIT 後の Redis 反映が失敗 | R→RE→RT | ERROR ログのみ。エラーを返さずフォールバックもしない | TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォールバックしない |\n| 5 | M1 / M2 / MK の各失敗 | →BE2 | 全副作用が巻き戻り、Redis に到達せずフォールバック経路へ切り替わる | TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォールバックする（3 サブテスト） |\n| 6 | デコード不能イベントが混在 | B3→…→BC→R→RT | 正常なイベントだけ適用され、壊れたものは個別 retry | TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる |\n| 7 | 正常系の適用順序 | M1→M2→MK→BC→R | MySQL 2本 → マーク → COMMIT → Redis の順（gomock.InOrder） | TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後にRedis |\n| 8 | 同一ギルド／ユーザーの複数イベント | 同上 | スコアは合算、履歴はイベント件数ぶん、MarkProcessedByIDs に全 ID | TestWorker_applyBatch_同一ギルドは合算され履歴はイベント単位で作られる |\n| 9 | ListPending がエラー | B2→BE1 | ティックを中断。MySQL / Redis に到達しない | TestWorker_runOnce_ListPendingエラー |"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#2-1-バッチ経路applybatch通常時@3",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "2-1-バッチ経路applybatch通常時",
+      "title": "2-1. バッチ経路（applyBatch・通常時）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-1. バッチ経路（applyBatch・通常時）",
+      "text": "ケース 9 が末尾にある理由: パスは最短だが、検証しているのは §2 のケース 1 と同一の\nテストで、視点（バッチ tx の中から見た ListPending）だけが違う。既存ケースの番号は\nテストコードのコメント（[§2-1 ケース N]）から参照されているため、繰り上げずに追加した。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#2-2-イベント単位経路applypereventバッチ失敗時のフォールバック",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "2-2-イベント単位経路applypereventバッチ失敗時のフォールバック",
+      "title": "2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック）",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック）",
+      "text": "listCandidates で候補を取り、concurrency 本の goroutine で1件ずつ独立した tx に流す。\n\n設計上の要点（テストで守る不変条件）:\n\n- この経路の存在意義は head-of-line blocking の回避。バッチは1件でも失敗すると全体が\n  ロールバックされるため、恒久失敗イベントが混ざるとそのバッチが永久に前進しない。\n  1件ずつ独立した tx にすれば失敗イベントを隔離して残りを前進させられる\n- MySQL は tx 内・Redis は COMMIT 後（§0-1）。バッチ経路と同じ理由で、Redis 反映は\n  MarkProcessed の COMMIT が確定してから1回だけ行い、失敗しても retry 記録に回さない\n- applyEventInTx の失敗は別 tx で IncrementRetry する。同一 tx だと ROLLBACK で\n  retry 記録も巻き戻る\n- IncrementRetry 自体の失敗はログのみ（次ティックで再処理される）。一方\n  ClaimByID / MarkProcessed の失敗はティックを中断する（DB が壊れている）\n- applied に数えるのは「MarkProcessed が成功した」か「found=false」のときだけ。\n  applyEventInTx が失敗したイベントは前進していないので数えない（§0-2 の判定に使う）\n- dead-letter のログは IncrementRetry が成功した後にだけ出す（§0-4）。記録に失敗した\n  イベントは retry_count が据え置きのまま次ティックで再処理されるので、まだ打ち切られていない"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#テスト仕様表",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック） \u003e テスト仕様表",
+      "text": "TestWorker_applyPerEvent_フォールバック経路_正常系_異常系 のテーブルと 1 対 1 で対応する。\nlisted / applied は ApplyPerEventForTest の戻り値。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | 候補なし | LC→PZ0 | listed=0, applied=0 | イベント単位 tx を張らない |\n| 2 | ClaimByID が found=false | P2→PS→PZ | listed=1, applied=1（前進扱い） | applyEventInTx / MarkProcessed / IncrementRetry のいずれも呼ばれない |\n| 3 | 未知の event_type | H→RB→RT | listed=1, applied=0 | last_error に ErrUnknownEventType の文言が残る |\n| 4 | payload が不正で Unmarshal 失敗 | H→RB→RT | 同上 | MySQL / Redis の副作用が一切呼ばれない |\n| 5 | IncrementRetry が失敗 | RT→RTE | エラーを伝播させない（ログのみ） | — |\n| 6 | MySQL IncrementGuildScore が失敗 | M1→RB→RT | listed=1, applied=0 | InsertGuildScoreHistory 以降に到達しない |\n| 7 | MySQL InsertGuildScoreHistory が失敗 | M2→RB→RT | 同上 | MarkProcessed / Redis に到達しない |\n| 8 | COMMIT 後の Redis 反映が失敗 | R→RE→PZ | listed=1, applied=1。ログのみ | IncrementRetry が呼ばれない（再適用しない） |\n| 9 | 正常系 | …→M1→M2→MK→CM→R | listed=1, applied=1 | MySQL 2件 → MarkProcessed → Redis の順序（gomock.InOrder） |\n| 10 | 先頭イベントが恒久失敗 | 1件目 →RB→RT、2件目 →MK→CM→R | listed=2, applied=1 | 先頭で IncrementRetry／後続で MarkProcessed |\n\n手続きが異なるため別テスト関数に切り出しているもの:"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#テスト仕様表@2",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック） \u003e テスト仕様表",
+      "text": "| 条件 | 図のパス | 期待結果 | テスト関数 |\n| --- | --- | --- | --- |\n| listCandidates の ListPending がエラー | LC→PE0 | ティックを中断 | TestWorker_applyPerEvent_フォールバック経路_ListPendingエラー |\n| ClaimByID がエラー | P2→PE1 | ティックを中断。IncrementRetry は呼ばれない | TestWorker_applyPerEvent_フォールバック経路_ClaimByIDエラー |\n| MarkProcessed がエラー | MK→PE2 | ティックを中断 | TestWorker_applyPerEvent_フォールバック経路_MarkProcessedエラー |\n| concurrency 本での並列処理 | PB | 候補が並列に処理される | TestWorker_applyPerEvent_フォールバック経路_並列処理 |\n| 全件が claim 不可 | P2→PS | 何も適用されない | TestWorker_applyPerEvent_フォールバック経路_claim不可はスキップ |\n| 加算後の値が上限にちょうど到達 | RT→DL→DLE | dead-letter の ERROR ログが 1 回出る | TestWorker_recordRetry_上限到達でdeadLetterログを出す |\n| 加算後の値が上限未満 | RT→DL→PZ | dead-letter ログを出さない | 同上（サブテスト） |\n| 競合で上限を追い越した（加算後 = 上限+1） | RT→DL→PZ | dead-letter ログを出さない（上限ちょうどを観測した側が既に出している） | 同上（サブテスト） |\n| 競合で claim 時点より進んで上限に到達（claim 時点 = 上限-2、加算後 = 上限） | RT→DL→DLE | dead-letter ログを 1 回出す（claim 時点の値で判定していると出ない） | 同上（サブテスト） |\n| IncrementRetry が失敗（回数は上限相当） | RT→RTE | dead-letter ログを出さない（記録できていない） | 同上（サブテスト） |\n\nmaxRetry が渡ることの検証: ListPending / ClaimByID の各 EXPECT が maxRetry を\n引数に含めるため、渡し忘れは既存ケースが軒並み落ちる。新しいパスを増やさないので\n専用ケースは作らない（README.md の「同一パスを通るケースは統合する」）。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#テスト仕様表@3",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック） \u003e テスト仕様表",
+      "text": "DoInTx の呼び出し回数について: テストは wall-clock sleep ではなく DoInTx の\n呼び出しシグナルを数えて同期点にしている（invokeDoInTxAndSignal + waitForCalls）。\nバッチ経路は1ティック1回、フォールバックに落ちると\n「バッチ適用 1 + listCandidates 1 + 候補数 + retry 記録の回数」になり、\n期待回数が仕様表の「どこまで進むか」と対応する。\napplyRedisAfterCommit は tx の外なので DoInTx の回数を増やさない。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#3-本設計文書の作成で見つかった問題",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "3-本設計文書の作成で見つかった問題",
+      "title": "3. 本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 3. 本設計文書の作成で見つかった問題",
+      "text": "| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| パスの欠落 | payload が不正で Unmarshal に失敗する経路（§2-2 の表のケース 4）が未検証だった。applyEventInTx（当時は handleEvent）の return err が一度も実行されていない | 追加 |\n| パスの欠落 | ticker 経由・通知経由それぞれの「runOnce が失敗したときにログのみで継続する」分岐（§1 の表のケース 5・6）が未検証だった。既存の ticker / notify のテストは成功パスしか通していなかった | 追加 |\n| 不変条件の誤り | Redis 反映を tx 内に置いていたため、MarkProcessedByIDs / COMMIT の失敗で Redis だけ二重加算される窓があった（§0-1）。旧実装（イベント単位）にも同じ窓があったが、バッチ化で一度に最大 batchSize 件へ影響が拡大していた | COMMIT 後へ移動 |\n| 回帰 | ドレインの枯渇判定を取得件数で行っていたため、全件デコード不能なバッチでループが終わらなかった（§0-2）。1ティック1回だった旧実装には無く、ドレイン導入で生じた回帰 | 前進件数での判定 + 滞留時の通知抑止 |\n| テーブル駆動の形 | dispatch テーブルの各ケースが setup func(t, ctrl) *workeroutbox.Worker を持ち、モックの組み立て手順をテーブル側に書いていた | 一度データのみのテーブルへ寄せたが、ギルド集計の非同期化とバッチ経路の追加で1ケースあたりの組み立てが分岐込みで長くなり、setup 形式へ戻している。データのみのテーブルに戻すのは別タスク（README.md の縮約の罠に該当するため、縮約でカバレッジが落ちないことを確認してから行う） |"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#処理済みレコードの削除-—-gc-バッチへ分離",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "処理済みレコードの削除-—-gc-バッチへ分離",
+      "title": "処理済みレコードの削除 — GC バッチへ分離",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 4. 未対応（本実装の範囲外） \u003e 処理済みレコードの削除 — GC バッチへ分離",
+      "text": "worker は processed_at を立てるだけで行を消さない。保持期間を過ぎた処理済み行の削除は\nGC バッチ（cmd/batch -gc-outbox）の責務で、設計は outbox-gc.md にある。\nworker 側の設計には影響しないため、本ファイルではこれ以上扱わない。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#dead-letter-された行の掃除",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "dead-letter-された行の掃除",
+      "title": "dead-letter された行の掃除",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 4. 未対応（本実装の範囲外） \u003e dead-letter された行の掃除",
+      "text": "retry_count が上限に達した行は processed_at IS NULL のままなので、GC バッチの対象外\n（GC は未処理行を消さない。outbox-gc.md）。テーブルには残り続ける。\n\n自動削除しないのは意図的で、消すとイベントが黙って失われるため。件数が問題になる規模で\n運用する場合は、内容を確認したうえで手動で削除するか、別テーブルへ退避する運用を用意する。"
+    },
+    {
+      "id": "docs/testing/outbox-worker.md#redis-欠落の自動復旧",
+      "file": "docs/testing/outbox-worker.md",
+      "anchor": "redis-欠落の自動復旧",
+      "title": "Redis 欠落の自動復旧",
+      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 4. 未対応（本実装の範囲外） \u003e Redis 欠落の自動復旧",
+      "text": "§0-1 のとおり COMMIT 後の Redis 失敗はイベントを再処理せず ERROR ログのみに留めるため、\nその差分は RankingSyncer を実行するまで残る。RankingSyncer は現状バッチの手動起動であり、\nRedis 揮発・欠落の検知と自動再構築は未実装（SyncAll の呼び出し元は cmd/batch の手動実行のみ）。"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#ci決定論的検証静的解析の原則",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "ci決定論的検証静的解析の原則",
+      "title": "CI・決定論的検証（静的解析）の原則",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則",
+      "text": "コードを実行せずに構文・構造・命名規則を検証する仕組み（静的解析・契約チェッカー等）の設計原則。\nテストコードそのものの品質（実行して振る舞いを検証する話）は testing-principles.md、これらをどの順序で作るかは tdd-workflow.md、層構造・境界を持つ設計固有の観点は layered-architecture-testing.md を参照。ここでは重複させない。"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#1-何を機械的検証ciの対象にするか",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "1-何を機械的検証ciの対象にするか",
+      "title": "1. 何を機械的検証（CI）の対象にするか",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 1. 何を機械的検証（CI）の対象にするか",
+      "text": "コードレビューで毎回同じ指摘をしている規約は、人間の目視確認に依存させず機械的検証の対象にする。\n\n- 目視確認は見落としが発生し、レビュアーごとに判断がブレる\n- 機械的検証にすることで、レビューコストを「機械では判断できない設計判断」に集中させられる\n- 対象化の判断基準: (a) 規則が明確に記述可能（「〜という文字列パターンは禁止」等）、(b) 違反の影響が大きい、(c) 過去に見落としで問題が発生した実績がある"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#2-規約の機械的強制と命名規則",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "2-規約の機械的強制と命名規則",
+      "title": "2. 規約の機械的強制と命名規則",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 2. 規約の機械的強制と命名規則",
+      "text": "命名規則のような「本来は文脈判断が伴うもの」を機械的に強制する場合、判断基準を有限の規則セットに落とし込み、規則に当てはめるだけで決定できるようにする。\n\n- 「その都度の主観的な妥当性判断」に頼ると、実装者ごとに結果がブレて機械検証と乖離する\n- 規則は「入力の性質（値だけで判定可能か／現在状態を参照するか等）」で分岐する形にすると、恣意性を排除しやすい\n- 規則に当てはまらないケースを見つけた場合、その場で個別の例外名・アドホックな対応を作らない。実装より先に規則セット自体を拡張してから実装する。個別コメントで例外を正当化する運用は、規則の形骸化を招くため避ける"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#3-構文解析ベースで判定する",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "3-構文解析ベースで判定する",
+      "title": "3. 構文解析ベースで判定する",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 3. 構文解析ベースで判定する",
+      "text": "文字列の字面マッチ（正規表現等）だけで規約違反を検出するチェッカーは、以下のパターンで誤検出（false positive）・検出漏れ（false negative）を起こしやすい。\n\n- 呼び出しの書き方の揺れ（メソッドチェーンの改行位置、括弧の有無等）で、実際には規約に違反していないコードを違反と誤判定する\n- 逆に、ファイルスコープ（関数の外側）での利用など、字面パターンが想定する構造から外れた書き方は検出をすり抜ける\n\n可能な限り言語の構文解析（AST）ベースで判定するチェッカーを使う。文字列マッチに頼らざるを得ない場合は、既知の誤検出パターンと回避策（「〜という書き方をすれば誤検出を避けられる」）を明文化しておく。"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#4-ホワイトリスト方式",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "4-ホワイトリスト方式",
+      "title": "4. ホワイトリスト方式",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 4. ホワイトリスト方式",
+      "text": "「原則禁止、許可されたものだけ例外」という設計にする対象（グローバル変数・特定のAPI呼び出し等）は、ホワイトリスト（許可リスト）方式でチェッカーを実装する。\n\n- 許可リストに載っていないものはすべて違反として検出する（ブラックリスト方式は新しい違反パターンの追加を後追いし続けることになり漏れが生じる）\n- 許可リストの各項目には「なぜ許可されるか」の理由を対応づけて管理する"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#5-warnとerrorの使い分け",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "5-warnとerrorの使い分け",
+      "title": "5. WARNとERRORの使い分け",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 5. WARNとERRORの使い分け",
+      "text": "静的検証の結果は「即座にCIを落とす（ERROR）」と「警告に留める（WARN）」を区別する。\n\n- ERROR: 実装済みのコードが規約に違反している場合（例: 未登録の識別子を使用している、禁止パターンを使用している）\n- WARN: 「まだ使われていないが将来使われる可能性がある定義が先行登録されている」場合（例: 定数だけ先に登録して実装は後続タスクに回す運用を許容したい場合）。実装順序の自由度を残すため、これはCIを落とさない\n\nこの区別により、チーム内で「先に枠だけ作っておく」という段階的な実装を機械的検証と両立できる。"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#6-差分駆動とフォールバック",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "6-差分駆動とフォールバック",
+      "title": "6. 差分駆動とフォールバック",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 6. 差分駆動とフォールバック",
+      "text": "大規模なコードベース全体を毎回全件スキャンするとCI時間が増大するため、通常は変更差分のみを対象に検証する。\n\n- ただし、検証ルールの正本（SSoTとなる定義ファイル。例: 命名とコードの対応表、契約定義ファイル）自体が変更された場合は、差分駆動では検知できない不整合が全体に波及し得るため、その変更をトリガーに全件スキャンへフォールバックする\n- 「通常は差分駆動、SSoT変更時のみ全件」という2段構えにすることで、通常時の高速性と正本変更時の網羅性を両立する"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#7-ローカルとciの等価性",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "7-ローカルとciの等価性",
+      "title": "7. ローカルとCIの等価性",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 7. ローカルとCIの等価性",
+      "text": "静的検証チェッカーは、CI環境専用の仕組みにせず、開発者がローカルで同一のチェッカーを同一引数で実行できるようにする。\n\n- CI失敗後に「ローカルでは再現しない」状態を避け、修正→再確認のサイクルをローカルで完結させる\n- 個別ファイル指定・対象なし（全件）の両方をサポートすると、実装中のインクリメンタルな確認と最終確認の両方に使える"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#8-生成物と双方向契約検証",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "8-生成物と双方向契約検証",
+      "title": "8. 生成物と双方向契約検証",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 8. 生成物と双方向契約検証",
+      "text": "「実体（クラス定義・関数群等）」と「実体の情報を元に自動生成される派生物（モック定義・スタブ等）」の整合を保つ場合、以下の設計にする。\n\n- 生成物は手動編集を禁止し、生成元スクリプトの再実行でのみ更新する\n- 実体側に変更（メソッド追加・削除・リネーム等）があった場合に「再生成が必要な変更かどうか」を種類別に一覧化しておく（シグネチャ変更は必要、内部ロジックのみの変更は不要、等）\n- 生成後は契約検証テストで以下を双方向にチェックする\n  1. 正方向: 生成物に定義された要素が実体に実在するか\n  2. 逆方向: 実体が持つ公開要素がすべて生成物に反映されているか\n- 双方向にすることで「再生成を忘れた」という凡ミスを検出できる（片方向だけでは、生成物に定義されているものの実在確認しかできず、実体側の新規追加漏れを見逃す）"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#9-アーキテクチャ規約の静的強制",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "9-アーキテクチャ規約の静的強制",
+      "title": "9. アーキテクチャ規約の静的強制",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 9. アーキテクチャ規約の静的強制",
+      "text": "層構造・境界を持つ設計（layered-architecture-testing.md参照）特有の規約は、テストだけでなく静的検証でも二重に守ることが望ましい。テストは「守られている一例」を確認するに留まるが、静的検証は「違反が一件も存在しないこと」を悉皆的に保証できるため。\n\n- 生成箇所の一元化（layered-architecture-testing.md 8節）: コンポジションルート以外の場所で対象クラス群のインスタンスを生成しているコードを検出する。対象クラス群をパッケージ名やディレクトリの規則で機械的に特定し、生成箇所（new等のコンストラクタ呼び出し）の出現位置がコンポジションルートに一致するかを構文解析で確認する\n- 隠れた共有状態の検出（layered-architecture-testing.md 10節）: モジュールスコープ（呼び出し単位をまたいで生存する場所）に可変な変数宣言が無いかを検出する。定数の宣言のみを許可リスト化し、それ以外のモジュールスコープ変数は違反として検出する\n- 構造化エラー識別子の登録漏れ検出（layered-architecture-testing.md 9節）: エラーの意味づけに使う識別子（エラー名・コード等）が、実際に送出されている箇所と、識別子を一元管理する定義箇所の両方に存在するかを突合する。定義済みだが送出されていない識別子は警告に留め（5節のWARN/ERRORの使い分け）、送出されているが未定義の識別子はエラーにする"
+    },
+    {
+      "id": "docs/testing/principles/deterministic-verification.md#10-外部インターフェース契約の構造検証",
+      "file": "docs/testing/principles/deterministic-verification.md",
+      "anchor": "10-外部インターフェース契約の構造検証",
+      "title": "10. 外部インターフェース契約の構造検証",
+      "trail": "docs/testing/principles/deterministic-verification.md \u003e CI・決定論的検証（静的解析）の原則 \u003e 10. 外部インターフェース契約の構造検証",
+      "text": "複数のシステム・チーム（例: フロントエンドとバックエンド）が共有する外部インターフェース（API応答の形状等）の整合を保証する場合、以下の設計にする。\n\n- インターフェースの契約をデータ（JSON等のスキーマファイル）として外部化し、正本として管理する。コードの中にハードコードしない\n- 契約検証では値そのものは比較せず、構造（フィールドの過不足・キー名の一致）のみを検証する。値の中身の妥当性は別のテスト（ドメインロジックのテスト）の責務であり、契約検証の責務ではない\n- 実際の応答値を比較可能な表現に一度変換（シリアライズ→デシリアライズ等の正規化）してから構造比較すると、直接比較できない値（関数参照等）が紛れ込んでいる不具合も同時に検出できる\n- この設計により、契約ファイル（データ）を更新するだけで、対応するテストコードを変更せずに新しい契約でも自動的に検証されるようになる。逆に、実装側だけがキー構造を変更した場合はテストが失敗し変更漏れを検知する\n- 契約に複数のバリエーション（同一エンドポイントの異なるレスポンスパターン等）がある場合、構造が同一なら代表1パターンのみ検証すればよい。構造が異なるパターンのみ個別に追加検証する"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#レイヤードアーキテクチャclean-architecture系のテスト観点",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "レイヤードアーキテクチャclean-architecture系のテスト観点",
+      "title": "レイヤードアーキテクチャ（Clean Architecture系）のテスト観点",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点",
+      "text": "Domain/Entity層・UseCase層・Repository層・DIコンテナ境界のような明確な層構造とその境界を持つ設計に固有のテスト観点を扱う。\n層構造を前提としない一般的なテスト原則は testing-principles.md、静的検証は deterministic-verification.md、進め方は tdd-workflow.md を参照。ここでは重複させない。"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#0-適用範囲",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "0-適用範囲",
+      "title": "0. 適用範囲",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 0. 適用範囲",
+      "text": "本ファイルが対象とするのは、以下のような性質を持つ設計である。\n\n- 内側の層（ドメインモデル）が外側の層（永続化・外部I/O）に依存しない一方向の依存関係を持つ\n- 永続化層がRepository等の抽象を介して差し替え可能になっている\n- 複数の処理をひとまとまりの成功/失敗単位（トランザクション等）でくくる境界がある\n- 依存性の解決（生成）をコンポジションルートに集約している\n\nこのような構造を持たない小規模なコード（層分けのないスクリプト等）には無理に適用しない。\n\n4ファイル全体の役割分担の正本は testing-principles.md 0節であり、ここでは再掲しない。"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#1-層構造がテスタビリティを決める",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "1-層構造がテスタビリティを決める",
+      "title": "1. 層構造がテスタビリティを決める",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 1. 層構造がテスタビリティを決める",
+      "text": "内側の層（ドメインモデル）が外部依存（永続化・グローバルな実行時状態等）を持たないという設計上の制約は、副次的な効果としてテストの単純化をもたらす。\n\n- 内側の層に外部依存の使用を禁止すると、その層のテストは外部リソースの初期化・モック化が一切不要になり、testing-principles.md 3節の「値オブジェクトは実物を使う」がそのまま成立する\n- 依存の向きとテストを書く順序は対応する。依存されない層（最も内側）から着手すると、後続の層のテストで前の層を安心してそのまま使える（tdd-workflow.md 2節「層の実装順序」の設計側の根拠）\n- 依存禁止ルールに例外を作る場合（例: 定数参照のみ許可等）は、「参照」と「実行時の副作用を伴う依存」を区別し、後者のみを禁止対象にする"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#2-内側の層には解決済みの値だけを渡す",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "2-内側の層には解決済みの値だけを渡す",
+      "title": "2. 内側の層には解決済みの値だけを渡す",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 2. 内側の層には解決済みの値だけを渡す",
+      "text": "外部由来の生データ（DBの生カラム値、設定の生構造等）の解釈・正規化は、内側の層の手前（外側の層）で完了させ、内側の層には「解決済みの単純な値（真偽値・列挙値等）」のみを渡す。\n\n- この分離により、内側の層のテストは「真偽値・列挙値の組み合わせ」だけで完結し、外部データの生成・モック化が不要になる\n- データソースが未確定の除外条件・分岐は、「常に固定値を返すフック」として内側の層に持たせておき、生データの解決は後続作業に回してもよい。これにより内側の層の設計・テストを先に完成させられる\n- この原則が破られると（内側の層が生データの形式を知ってしまうと）、内側の層のテストに外部データ形式のモックが必要になり、1節の利点が失われる"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#3-ドメインの不変条件はmutationメソッドで守る",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "3-ドメインの不変条件はmutationメソッドで守る",
+      "title": "3. ドメインの不変条件はmutationメソッドで守る",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 3. ドメインの不変条件はmutationメソッドで守る",
+      "text": "エンティティ（ドメインモデル）の属性は読み取り専用として公開し、値の変更は必ず「不変条件（範囲・符号・状態遷移の可否等）を自ら保証する名前付きの業務メソッド」を経由させる。生の setter は公開しない。\n\n- 最終防御はmutationメソッドに置く。外部入力（呼び出し元の層からの引数）を直接受け取るのはこれらの業務メソッドであり、不正値の拒否責任もここに集約する。呼び出し側の層（ユースケース層等）で事前チェックしてからmutationメソッドを呼ぶ、という二重防御は行わない（testing-principles.md 5節「責務の重複禁止」と同じ考え方をドメイン層内部にも適用する）\n- 生成用ファクトリ・復元用コンストラクタは対象外にできる。信頼された内部境界（永続化層からの復元等、外部入力を直接受けない経路）だけから呼ばれるものは、値域検証・その境界値テストの対象外にしてよい。データの型・制約は元のデータソース（スキーマ等）側に委ね、二重実装しない\n- テストの焦点はmutationメソッドの境界。不変条件のテスト（testing-principles.md 7節の境界値3基準）は、この「業務メソッドの引数」に対して行う。生成時の値そのままの組み合わせを網羅する必要はない\n- この設計により、ドメイン層のテストは外部依存なしに「業務メソッドを呼んで不変条件が守られるか」だけを検証すればよくなり、1節の単純化がエンティティの内部にも及ぶ"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#4-集約ロジックはコレクションクラスに閉じ込める",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "4-集約ロジックはコレクションクラスに閉じ込める",
+      "title": "4. 集約ロジックはコレクションクラスに閉じ込める",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 4. 集約ロジックはコレクションクラスに閉じ込める",
+      "text": "複数件のデータに対する集計・フィルタ・探索といったビジネスロジックは、呼び出し元の層（オーケストレーション層等）に直接書かず、複数件をラップする専用のコレクションクラス（ファーストクラスコレクション）にカプセル化する。\n\n- 永続化層から複数件を返す操作は、素の配列ではなく、上記コレクションクラスのインスタンスを返す\n- 「所持数順に上限まで選ぶ」のような複数候補を横断する選択アルゴリズムも、呼び出し元でループを書かず、コレクションクラス自身のメソッドとして実装する。呼び出し元はコレクションのメソッドを呼ぶだけの薄いラッパーに徹する\n- この設計はテスト責務を明確に分割する: 呼び出し元の層は集約ロジックの分岐網羅を担当しない（コレクションクラスに委譲しているため）。集約ロジックの境界値・分岐網羅（複数候補にまたがるケース、端数処理等）はコレクションクラス自身のテストでのみ担保する\n- 呼び出し元の層のテストで、配列を直接ループして期待値を組み立てるようなテストコードが必要になった場合は、集約ロジックが誤って呼び出し元に漏れ出しているサインである"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#5-永続化層repository等のテスト必須ケース",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "5-永続化層repository等のテスト必須ケース",
+      "title": "5. 永続化層（Repository等）のテスト必須ケース",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 5. 永続化層（Repository等）のテスト必須ケース",
+      "text": "Repositoryのような「オブジェクトと永続化ストレージの境界」を担う層は、CRUD一般に共通する以下のパターンについて必須テストケースを定める。\n\n| パターン | 必須テストケース |\n|---------|----------------|\n| 単件取得（ロック無し） | レコードあり→ドメインオブジェクトに変換 / レコードなし→未取得を表す値を返す |\n| 単件取得（ロック有り・更新目的） | レコードあり→ドメインオブジェクト + 内部の追跡状態に登録 / レコードなし→未取得 / 取得済みキーの再取得→同一インスタンスを返し再クエリしない / 1回目の変更が2回目の取得に反映される（lost update防止） |\n| 新規作成 | 作成後の戻り値と渡したドメインオブジェクトを追跡状態に登録する / 作成直後の同一キーへの更新操作が二重作成ではなく更新経路になる / 作成失敗時（永続化層からの異常な戻り値）は例外にする |\n| 読み取り（作成・ロック取得済みの反映） | 取得済み・作成済みのキーは再クエリせず同一インスタンスを返す |\n| 複数件取得（一覧） | ロック済み行の差し替え / 未変更行はキャッシュ値のまま / 作成済み（まだ一覧に現れない）行は追加 / 権限外の行は除外 / 差し替えと追加が混在しても重複しない / 空一覧でも作成済み行は返る |\n| 更新 | ロック取得済み→更新を発行する / ロック取得済みで同一キーへの複数回更新が成立する / 変更なし判定時は更新クエリを発行しない / ロック未取得→更新を発行せず、作成でもない後続処理に委ねる |\n\n- 「同一キーに対して同一トランザクション内で常に同一インスタンスを返す」（Identity Map相当の仕組み）は、read-modify-writeの連鎖（読む→変更する→別の操作でまた読む→書く）で後勝ち上書き（lost update）を防ぐための不変条件である。この仕組みを検証するテストを削除・簡略化しない\n- 複数件取得の必須ケースは「件数が合っているか」ではなく、上表の個々のシナリオ（差し替え・追加・除外・重複なし・空一覧）を独立したケースとして持つ（testing-principles.md 10節の「件数だけで合格にしない」の永続化層版）"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#6-基底クラスとサブクラスのテスト責務分割",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "6-基底クラスとサブクラスのテスト責務分割",
+      "title": "6. 基底クラスとサブクラスのテスト責務分割",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 6. 基底クラスとサブクラスのテスト責務分割",
+      "text": "永続化層に「共通ヘルパーを提供する基底クラス」と「対象ごとの実装を持つサブクラス」という構造がある場合、テストの責務を以下のように分割する。\n\n| 責務 | テスト対象 |\n|------|-----------|\n| 5節の表にある分岐網羅（Identity Map・overlay等の汎用ロジック） | 基底クラスのテストで一度だけ担保する。サブクラスのテストで再現しない |\n| 対象固有のレコード⇔ドメインオブジェクト変換ロジック | サブクラスのテストで検証する |\n| クエリ構築時の引数（読み取り専用か更新目的でロックを取るか、対象データの所属範囲を絞る条件が正しいか等） | サブクラスのテストでのみ検証可能。基底クラスは「どんな引数でクエリが呼ばれたか」を知らないため、この検証は基底テストでは代替できない |\n\n基底クラスのテストが手厚いことを理由に、サブクラス側の「クエリ構築引数の検証」を省略しない。ここを省略すると、意図した整合性レベル（読み取り専用のつもりが実は更新ロックを取っていた等）の欠落を検出できなくなる。"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#7-トランザクション境界の契約テスト",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "7-トランザクション境界の契約テスト",
+      "title": "7. トランザクション境界の契約テスト",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 7. トランザクション境界の契約テスト",
+      "text": "複数の操作をまとめて成功/失敗させる境界（トランザクション）を提供する仕組みは、以下の契約をテストで担保する。\n\n| # | シナリオ | 期待される契約 |\n|---|---------|----------------|\n| 1 | 境界内の処理が失敗する | 失敗を検知し、取り消し処理（ロールバック相当）を実行してから、元の失敗原因をそのまま再送出する（取り消し処理の実行が失敗原因を別のものにすり替えない） |\n| 2 | 取り消し処理自体が失敗する | 取り消し処理の失敗を握り潰さず、それでも元の失敗原因を再送出する（取り消し失敗のログは別途残してよいが、呼び出し元には元の原因を伝える） |\n| 3 | 確定処理（コミット相当）自体が失敗する | 確定処理の失敗をそのまま呼び出し元に伝搬する |\n| 4 | 境界内の処理が空の結果（値なし）で成功する | 空の結果を確定処理の対象として正しく確定し、値なしをそのまま返す（異常系と誤認しない） |\n\n- この4シナリオは、境界を提供する仕組み自体（例: Transaction に相当するクラス）の単体テストで担保する。境界を使う側（ユースケース層）のテストでは境界自体をモックしてよく、境界の契約は境界自身のテストでのみ検証する\n- 境界内で行う処理は「取り消し不可能な処理（ロック取得が必要な処理等）」に限定し、ロックを伴わない事前検証・値解決は境界の外で完了させる。境界の外で完了できる処理を境界内に持ち込むと、ロック保持時間が延び、並行処理時の待ち合わせが増える（テストとしては「境界に入る前に検証済みであること」を確認する）\n- 複数の永続化対象に同時にロックを取る場合は、取得順序を決定的（例: 識別子の昇順）にする。この決定性はデッドロック回避のための不変条件であり、テストで取得順序を検証する場合は「常に同じ順序で要求されること」を確認する"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#8-diとテストシームの規律",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "8-diとテストシームの規律",
+      "title": "8. DIとテストシームの規律",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 8. DIとテストシームの規律",
+      "text": "依存性注入（DI）を手動配線（コンストラクタ引数渡し等、フレームワークを使わない場合を含む）で行う設計では、以下をテストと運用の両面で守る。\n\n- 生成箇所を1箇所（コンポジションルート）に集約する。層をまたいだ複数箇所でオブジェクトを生成すると、5節のIdentity Map等、リクエスト単位で一意であるべき状態が複数系統に分裂し、不変条件が壊れる。テストでも「コンポジションルート以外の場所から生成されていないこと」を確認できると良い（静的検証で担保する場合は deterministic-verification.md 9節参照）\n- テスト用の差し替え口（シーム）を本番コードから使わせない。テストの都合で用意した差し替え可能な注入ポイントに、本番コードから参照可能なアクセサ（getter）を公開すると、本番コードが誤ってテスト用の差し替え経路を辿れてしまう。差し替え口は内部実装として隠し、外部からは通常の呼び出し経路のみを公開する"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#9-エラーの層別責務とテスト位置",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "9-エラーの層別責務とテスト位置",
+      "title": "9. エラーの層別責務とテスト位置",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 9. エラーの層別責務とテスト位置",
+      "text": "層をまたいで例外・エラーを伝搬させる設計では、「どの層がエラーの意味づけ（種別の決定）をするか」を一意に決め、テストもその層でのみ意味づけを検証する。\n\n- 各層が独自の判断でエラー種別・メッセージを決めると、同じ失敗原因が呼び出し経路によって異なるエラー種別として観測され、テストの期待値が場当たり的になる\n- 最下層（既存の実装をラップするだけの薄い層等）は、失敗の意味づけをせず、成否を単純な形（真偽値等）で返すだけに留める。同じ最下層の実装が複数の上位処理から再利用される場合、最下層がエラー名を決めてしまうと、名前と実際の呼び出し文脈が乖離するため\n- エラーの意味づけは、その失敗が何を意味するかを判断できる立場の層（多くの場合、業務判断を行うユースケース層）に集約する。テストは「意味づけをする層で、意味づけが正しく行われているか」を検証し、最下層のテストでは「成否がそのまま伝わるか」だけを検証する\n- 上位層がエラーを判定する際は、単一の判別可能なキー・属性のみで判定する契約にする。判定条件を複数箇所に分散させない"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#10-共有状態不変性のテスト観点",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "10-共有状態不変性のテスト観点",
+      "title": "10. 共有状態・不変性のテスト観点",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 10. 共有状態・不変性のテスト観点",
+      "text": "プロセスやインスタンスがリクエスト・呼び出しをまたいで再利用される実行環境（長時間稼働するワーカープロセス等）では、状態の意図しない共有がテストで検出すべき重大な不具合になる。\n\n- インスタンスが複数の呼び出し単位（リクエスト等）をまたいで生存する設計（シングルトンキャッシュ等）を避け、呼び出しごとに新しいインスタンスを生成する設計にする。テストでは「別呼び出しのインスタンスが前回の状態を引き継がないこと」を確認する\n- 設定値・定数を保持するオブジェクトを不変（イミュータブル）にする場合、生成後の値変更を許さない設計にする。テストで一時的に異なる値を使いたい場合は、共有インスタンスの値を書き換えるのではなく、別の値を持つ新しいインスタンスを生成する。共有インスタンスを書き換えるテストは、他のテスト（並行実行される場合は他の呼び出しも含む）に汚染を波及させる"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#11-層別カバレッジ目標とレガシー境界の扱い",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "11-層別カバレッジ目標とレガシー境界の扱い",
+      "title": "11. 層別カバレッジ目標とレガシー境界の扱い",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 11. 層別カバレッジ目標とレガシー境界の扱い",
+      "text": "層構造を持つ設計にカバレッジ目標（testing-principles.md 11節）を適用する際、新規に設計する層と既存資産をラップする層とで目標達成の難易度が異なる。\n\n- 新規に設計するコア層（ドメイン・ユースケース・新設のRepository等）は、外部依存を持たない設計にできるため、高いカバレッジ目標を適用しやすい\n- 既存の大規模・複雑な資産（レガシーコード）をそのまま利用する箇所は、目標達成が著しく困難な場合がある。その場合、既存資産自体に高いカバレッジを求めるのではなく、新設する境界層（ラッパー）側で入出力の契約を保証するテストを整備し、そちらでカバレッジ目標を達成する（アンチコラプション層的な発想）。既存資産の内部までは踏み込まない\n- この判断（目標達成困難と判断してラッパー側に責務を移す）を行った場合は、その理由をコードコメントやドキュメントに残し、目標を下げたのではなく責務の置き場所を変えたことを明確にする"
+    },
+    {
+      "id": "docs/testing/principles/layered-architecture-testing.md#12-層別クイックリファレンス",
+      "file": "docs/testing/principles/layered-architecture-testing.md",
+      "anchor": "12-層別クイックリファレンス",
+      "title": "12. 層別クイックリファレンス",
+      "trail": "docs/testing/principles/layered-architecture-testing.md \u003e レイヤードアーキテクチャ（Clean Architecture系）のテスト観点 \u003e 12. 層別クイックリファレンス",
+      "text": "上記の各節は「トピック別」に並んでいるため、実装対象の層から逆引きできるよう、層ごとに必須の観点と参照先を整理する。\n\n| 層 | 必須テスト観点 | 参照先 |\n|----|--------------|--------|\n| Domain/Entity層 | 属性はmutationメソッド経由でのみ変更・不変条件を自ら保証／境界値3基準はmutationメソッドの引数に適用／集約ロジックはコレクションクラスに委譲／既存要素を返す探索は参照同一性で検証／状態遷移が意味を持つ場合のみ状態遷移図を設計源にする | 3節、4節、testing-principles.md 6・7節、tdd-workflow.md 3節 |\n| UseCase/オーケストレーション層 | 下位層（Domain）の判定結果を受けた分岐のみ検証し境界値を重複させない／トランザクション境界はモックしてよいが境界自身の契約は別テストで担保／エラーの意味づけはこの層に集約／フロー図パスカバレッジで網羅 | testing-principles.md 5節、7節、9節、tdd-workflow.md 3・4・7節 |\n| Repository/Infra層 | CRUD必須ケース（Identity Map・新規作成追跡・overlay・差分なし更新）／基底とサブクラスの責務分割／最下層のゲートウェイはエラーの意味づけをしない | 5節、6節、9節 |\n| Driver/外部インターフェース層 | 値の変換のみで下位層の判定を再テストしない（View/Presenter責務限定）／提供形態ごとのエラー段階数に応じた最低パス数を満たす／外部契約とのキー構造整合を自動検証 | testing-principles.md 9節、tdd-workflow.md 7節、deterministic-verification.md 10節 |\n| 横断（DI・共有状態） | 生成箇所はコンポジションルートに一元化／テスト用シームを本番コードに公開しない／インスタンスは呼び出し単位で使い捨て、定数は不変 | 8節、10節 |"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#tddワークフローの原則",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "tddワークフローの原則",
+      "title": "TDDワークフローの原則",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則",
+      "text": "「何を（どんな順序で）作るか」に関する進め方の原則。\nテストコード自体の品質は testing-principles.md、静的検証の設計は deterministic-verification.md、層構造・境界を持つ設計固有の観点は layered-architecture-testing.md を参照。ここでは重複させない。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#1-成果物の作成順序図-→-テスト-→-実装",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "1-成果物の作成順序図-→-テスト-→-実装",
+      "title": "1. 成果物の作成順序（図 → テスト → 実装）",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 1. 成果物の作成順序（図 → テスト → 実装）",
+      "text": "新しい処理（ユースケース・ハンドラ等）を追加する際は、以下の順序で成果物を作成する。\n\n1. 設計図（フローチャート・状態遷移図等。3節参照）+ テスト仕様表\n2. テストコード（RED状態。実装がまだ無いので失敗する）\n3. 実装コード（テストを通す。GREEN化）\n\nコードだけを先行させてはならない。図とテストが先に存在することで、実装者の思い込みではなく設計上の合意（レビュー可能な形）を先に固定できる。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#2-層の実装順序",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "2-層の実装順序",
+      "title": "2. 層の実装順序",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 2. 層の実装順序",
+      "text": "レイヤードアーキテクチャの場合、依存の少ない層から実装・テストする。\n\n1. 値オブジェクト/ドメイン層を先にテストする（外部依存なし。最も高速にRED/GREENを回せる）\n2. ユースケース/オーケストレーション層をモックテストする（下位の協調オブジェクトをテスト用モックに差し替える）\n3. インフラ層（永続化等）は単体テストと統合テストの両方で担保する: 実リソースなしに検証できる振る舞い（Identity Map等の既定パターン。詳細: layered-architecture-testing.md 5節）は単体テストで先に担保し、実リソースとの結合部分（接続設定・クエリ構文・スキーマ整合等）のみを統合テストで補完する。実行速度・環境依存を理由に最後に回すのはあくまで「実リソースとの結合確認」であり、振る舞いの検証を先送りにしてはならない\n\nこの順序にすることで、下位層のバグを先に潰してから上位層のテストに進める（上位層のテスト失敗が下位層由来なのか上位層由来なのか切り分けやすい）。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#3-フロー図を設計源にする",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "3-フロー図を設計源にする",
+      "title": "3. フロー図を設計源にする",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 3. フロー図を設計源にする",
+      "text": "対象の性質によって、作るべき設計図の種類を使い分ける。\n\n| 対象の性質 | 設計図 | テスト仕様表の持ち方 |\n|-----------|--------|---------------------|\n| 手順・分岐を持つ処理（ユースケース、ハンドラ） | フローチャート（処理の流れ図） | 図とは別にテスト仕様表を作り、テストケース配列にマッピングする |\n| 複数の意味のある状態を持ち、遷移の可否が重要なエンティティ | 状態遷移図 | 同上。ただし契約表・決定表という別文書は作らない（テストとの重複でドリフトするため） |\n| 単純な計算・バリデーション・状態を持たない値オブジェクト | 図は作らない | テストコードのテストケース配列自体をSSoT（唯一の真実の源）とする。各ケースに意図を説明する短い注記（given/when/then相当）を添える |\n\n契約表・決定表のような「テストと同じ情報を別ファイルに書く」文書は作らない。同じ情報を2箇所に持つとドリフト（片方だけ更新される）が発生するため、テストコード自体を正本にする。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#4-テスト仕様表の構造",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "4-テスト仕様表の構造",
+      "title": "4. テスト仕様表の構造",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 4. テスト仕様表の構造",
+      "text": "フロー図を作る対象については、以下の列を持つテスト仕様表を作成する。\n\n| 列 | 説明 |\n|----|------|\n| 対象メソッド/関数名 | テスト対象 |\n| ケース番号 | 1始まり連番。欠番不可（削除したら詰める） |\n| 条件（シナリオ概要） | テストケース名に対応 |\n| 図のパス | フロー図のノードIDを経路として連結したもの（例: A→B→C→ERR1）。分岐条件がある場合は分岐先の条件も注記する |\n| 期待結果 | 戻り値・状態変化・呼び出し回数など |\n\nテスト仕様表の1行 = テストコードの1テストケースという1対1対応を維持する。この対応により「図で表現された仕様」と「実行されるテスト」の乖離を防げる。\n\n外部インターフェース層（ハンドラ等）で複数の失敗経路がある場合は、この基本列に加えて「検証すべき呼び出し」（下位層の呼び出し引数、エラー通知の呼び出しコード等）の列を追加する。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#5-ケースの重複排除",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "5-ケースの重複排除",
+      "title": "5. ケースの重複排除",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 5. ケースの重複排除",
+      "text": "フロー図上で同一の経路（同一パス）を通るケースは、1つのテストケースに統合する。\n\n- 同一パス＝同一コードパスであるため、パスが同じ複数のケース（例: 「ケースA」「ケースAの言い換え」）を別々にテストしても実行される命令列は変わらず、テストの本数が増えるだけで検出力は上がらない\n- パスが異なる（少なくとも1つの分岐の通過が異なる）場合のみ、別ケースとして扱う"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#6-ケース並び順",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "6-ケース並び順",
+      "title": "6. ケース並び順",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 6. ケース並び順",
+      "text": "テスト仕様表・テストコードのケースは、フロー図のパスが短い順（経由ノード数が少ない順）に並べる。\n\n- 短いパス（エラー・早期リターン）を先に、長いパス（正常系のフルフロー）を後に置く\n- 同じ長さのパスが複数ある場合は、エラーケース → 境界値 → 正常系の順にする\n\nこの並びにより、「どの分岐でフローが枝分かれするか」を表の上から順に追いやすくなる。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#7-パスカバレッジによる網羅",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "7-パスカバレッジによる網羅",
+      "title": "7. パスカバレッジによる網羅",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 7. パスカバレッジによる網羅",
+      "text": "処理の複雑さが「入出力の値のパターン」ではなく「経由する分岐・エラー処理の段階」に起因する層（特に外部インターフェース層）では、入出力の値のバリエーションではなくフローのパス（経路）を網羅することをテストの目標にする。\n\n- 失敗処理が複数の段階（例: 「業務エラーとして構造化された失敗」「想定内だが構造化されていない失敗」「想定外の失敗」）に分かれる設計の場合、提供形態・処理系統ごとに「最低限満たすべきパス数」を定義する\n- 各パスで、そのパスを通った際に呼ばれるべき下位層の呼び出し（引数・回数）まで検証する。単に「例外が飛ぶこと」だけでなく「正しい経路で正しい変換処理が呼ばれたこと」を確認する"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#8-図↔テストの対応チェックリスト",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "8-図↔テストの対応チェックリスト",
+      "title": "8. 図↔テストの対応チェックリスト",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 8. 図↔テストの対応チェックリスト",
+      "text": "設計図とテストファイルを作成・変更する際は、以下をレビューゲートとして確認する。\n\n- [ ] テスト仕様表のケース番号とテストコードのケース番号が一致している\n- [ ] テスト仕様表の「図のパス」の数（重複排除後）と、テストコードのケース数が一致している\n- [ ] 提供形態・処理系統ごとに必要な最低パス数を満たしている\n- [ ] 各パスで検証すべき呼び出し（引数・回数）を確認している\n- [ ] 同一パスの重複ケースが排除されている\n- [ ] ケースが「パスが短い順」に並んでいる\n\nこのチェックリストを設計変更のたびに回すことで、「コードだけ直してテスト仕様表を更新し忘れる」ドリフトを防ぐ。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#9-図の保守ルール",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "9-図の保守ルール",
+      "title": "9. 図の保守ルール",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 9. 図の保守ルール",
+      "text": "実装コードを変更する際、以下のいずれかに該当する場合は対応する設計図の更新が必須とする。\n\n1. 処理ノードの追加・削除\n2. 分岐条件の変更\n3. 下位層への呼び出し内容の変更\n4. 戻り値・出力構造の変更\n\n更新順序は「図の更新 → テストの変更 → 実装の変更」を維持する。コードだけを先に変更し、図やテストを後回しにしてはならない（1節の作成順序と同じ原則を、変更時にも適用する）。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#10-カバレッジを受入基準にする",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "10-カバレッジを受入基準にする",
+      "title": "10. カバレッジを受入基準にする",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 10. カバレッジを受入基準にする",
+      "text": "実装が完了したと判断する基準に、カバレッジ数値（行・分岐カバレッジ、testing-principles.md 11節参照）を用いる。これにより「完了」の判断を主観に頼らず客観化できる。\n\n- 既存のテストにケースを追加すべきかどうかは、まず現状のカバレッジを実計測してから判断する。計測せずに「たぶん足りているはず」で追加要否を決めない"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#11-改善ループと打ち切り",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "11-改善ループと打ち切り",
+      "title": "11. 改善ループと打ち切り",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 11. 改善ループと打ち切り",
+      "text": "カバレッジが目標未達の場合、以下のサイクルで改善する。このループには必ず試行回数の上限を設ける（無限に未達ケースを探し続けない）。\n\n1. 未カバー行/分岐の特定: カバレッジ計測ツールの詳細出力から、実行されていない行・分岐を抽出する\n2. 到達可能性の判定: 各未カバー箇所を以下に分類する\n\n   | 分類 | 対応 |\n   |------|------|\n   | 通常の分岐（到達可能） | テストケースを追加する |\n   | エントリポイント関数本体等、設計上テスト対象コードパスの外にあるもの | スキップ（testing-principles.md 11節の「関数カバレッジは参考値」に該当） |\n   | デッドコード（到達不可能） | スキップし、リファクタ候補として報告する |\n   | 外部要因に強く依存し再現が困難なもの | 再現可能ならテスト追加、困難ならスキップして報告する |\n\n3. 到達可能と判定した箇所のみテストケースを追加する\n4. 再計測する\n\n過剰モック禁止: 「到達可能性の判定」を経ずに、未カバー行を無理やり実行させるためだけの不自然なモック・テストケースを追加しない。デッドコードや設計上の制約をテストで無理にカバーしようとすると、テストが実装の都合に引きずられて可読性・保守性が下がる。\n\n試行上限に達しても未達の場合: 改善作業を打ち切り、未カバー箇所の内訳（行・分類・理由）を報告する。数値目標の達成を無限に追求せず、「なぜ未達か」を人間が判断できる形で終了する。"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#12-縮約時の分岐カバレッジの罠",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "12-縮約時の分岐カバレッジの罠",
+      "title": "12. 縮約時の分岐カバレッジの罠",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 12. 縮約時の分岐カバレッジの罠",
+      "text": "複数の呼び出し元が同じ共有処理（ヘルパー関数等）を呼んでいる場合、「共有処理を直接テストして1回網羅し、各呼び出し元のテストは代表1件に絞る」という縮約をしたくなる。だが縮約の仕方を誤ると分岐カバレッジが激減するため、以下を区別する。\n\n| 分岐の種類 | 具体例 | 統合可否 |\n|-----------|--------|---------|\n| 共有処理の内部にある分岐 | 共有ヘルパー内の条件分岐 | 単一のソース箇所に存在するため、どの呼び出し元経由でも1回通ればそのカバレッジは満たされる。安全に1回へ統合してよい |\n| 各呼び出し元に個別に書かれた条件文 | 各呼び出し元が持つ独自のガード条件（認可チェックの成否分岐等） | 共有処理を呼んでいても、呼び出し元の条件行自体は呼び出し元ごとに別々のソース行。カバレッジツールは行単位で計測するため、呼び出し元の数だけ真偽両方を踏まないと分岐カバレッジが落ちる |\n\n- 判断基準: 統合してよいか迷ったら「その分岐の条件文はソースコード上に何箇所存在するか」を確認する。1箇所（共有処理内）なら統合可、複数箇所（各呼び出し元にコピペ）なら各箇所ごとに最低1回は真偽両方のテストケースが必要\n- 縮約してよい例: 同じ分岐を何度も「異なる入力値」でテストしているだけのケース（分岐は同一なので代表1件でよい）\n- 縮約してはいけない例: 各呼び出し元固有の条件行（同じ関数名でも呼び出し元ごとに独立して存在する条件式）\n- 作業フロー: (1) リファクタ・縮約後は必ずカバレッジを再計測する (2) カバレッジが下がったら「どの行が未網羅か」を疑い、詳細レポートで原因を特定する (3) 計画外の劣化を発見したら、黙って戻さずに縮約方針自体の見直しが必要かを含めて報告し、方針を確認してから修正する"
+    },
+    {
+      "id": "docs/testing/principles/tdd-workflow.md#13-チャンク分割とレビュー挿入",
+      "file": "docs/testing/principles/tdd-workflow.md",
+      "anchor": "13-チャンク分割とレビュー挿入",
+      "title": "13. チャンク分割とレビュー挿入",
+      "trail": "docs/testing/principles/tdd-workflow.md \u003e TDDワークフローの原則 \u003e 13. チャンク分割とレビュー挿入",
+      "text": "複数ファイルにまたがる大きな変更は、一度に実行せず、レビュー可能な単位（チャンク）に分割し、チャンクごとに完了させて都度レビューを受けてから次に進む。\n\n- 理由1: 変更ファイル数が多いと人間がレビューしきれなくなる\n- 理由2: 実行系（自動生成・自動実装ツール等）も、一度に扱う範囲が大きくなるほど出力品質が劣化しやすい\n- 大きな計画を一括で最後まで実行せず、区切りごとに立ち止まる運用にする"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#テスト設計原則",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "テスト設計原則",
+      "title": "テスト設計原則",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則",
+      "text": "言語・フレームワークに依存しない、テストコードそのものの設計原則を扱う。\n「いつ・どの順で書くか」は tdd-workflow.md、「機械的に強制するか」は deterministic-verification.md、「層構造・境界を持つ設計固有の観点」は layered-architecture-testing.md を参照。"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#0-前提-4ファイルの役割分担",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "0-前提-4ファイルの役割分担",
+      "title": "0. 前提: 4ファイルの役割分担",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 0. 前提: 4ファイルの役割分担",
+      "text": "同じトピックを複数ファイルに書くと内容がドリフト（乖離）する。各トピックの正本は1ファイルに固定し、他ファイルからはリンクのみで参照し本文を再掲しない。\n\n| ファイル | 扱う問い |\n|---------|---------|\n| 本ファイル | 良いテストとは何か（実行して振る舞いを検証する側の一般原則。層構造の有無によらない） |\n| deterministic-verification.md | コードを実行せず構文・構造で検証するもの（静的解析・生成物整合） |\n| tdd-workflow.md | どの順で書き、いつ完了とみなすか |\n| layered-architecture-testing.md | Domain/UseCase/Repository等、層構造・境界を持つ設計固有のテスト観点 |\n\n---"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#1-検出力のないテストを書かない",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "1-検出力のないテストを書かない",
+      "title": "1. 検出力のないテストを書かない",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 1. 検出力のないテストを書かない",
+      "text": "テストは「実装が壊れたら失敗する」ことに価値がある。壊れても失敗しないテストは保守コストだけを残すため、以下のパターンを避ける。\n\n- トートロジー検証の禁止: 「探索キーに使った値」をそのまま出力から再アサートしない。例えば find_by_level(2) の結果に対し result.level == 2 を検証しても、実装が正しい要素を探せているかは検証できない（探索条件を言い換えているだけ）。既存要素をそのまま返す契約のメソッドは、値ではなく参照同一性で検証する（詳細は 6. 参照同一性 vs 値比較）\n- 定数値のテスト側ベタ書き禁止: 実装の定数マップ・設定値をテスト側にも同じ値でハードコードして突合すると、値変更のたびに両方を書き換えるだけになり、バグ検出力がゼロになる（二重管理）。定数の妥当性を見るテストは「値そのもの」ではなく「構造」（キーの存在、マップ間の整合、型）を検証する\n- 同値クラスの機械的増殖の禁止: 同じ分岐を通り、同じ検出力を持つ入力違いのケースを機械的に増やさない。カバレッジ指標（行・分岐網羅率）は同値クラス内の冗長を検出できないため、「ケースを増やす前に、このケースが他と違うバグを検出できるか」を自問する"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#2-テーブル駆動テスト",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "2-テーブル駆動テスト",
+      "title": "2. テーブル駆動テスト",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 2. テーブル駆動テスト",
+      "text": "テストケースを配列（データ）として宣言し、共通ランナー（手続き）で実行する。\n\n- 原則: テーブルは「データ」、ランナーは「手続き」。テーブルの各行が持つのは入力と期待値だけ。テスト対象の生成・呼び出し・アサーションはランナー側に1本だけ書く\n- アンチパターン: 各行に無名関数（実行手続き）を持たせる書き方。テーブル駆動の見た目をした「無名テストの配列」になり、ケースが増えるほど重複と縦長化が進む\n- ケース固有の追加検証がどうしても必要な場合は、「結果を受け取るだけの検証コールバック」を許容する。ただし組み立て手順（対象の生成・呼び出し）はテーブル側に書かない\n- 手続きが違うケースはテーブルを分ける: 同じランナーで回せない（前提が異なる、対象を複数回呼ぶ必要がある等）場合はテーブルとランナーを分ける。ケースが1件でもテーブル形式を保ち、素の手続き的テストに戻さない\n- 公開する操作が複数ある場合はテーブルも分ける: 1つの配列に異なる操作のケースを混在させない。操作ごとにテーブルとランナーを分離する\n- 目安: 検証コールバックが長くなる、または複数ケースで同じ検証コードをコピペしている場合はランナー側へ抽出するサイン"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#3-モック対象の選択基準",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "3-モック対象の選択基準",
+      "title": "3. モック対象の選択基準",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 3. モック対象の選択基準",
+      "text": "何をモックし、何を実物のまま使うかは以下の基準で判断する。\n\n- 副作用のない値オブジェクト・定数・純粋なドメインモデルはモックしない。モックする理由（DB・外部通信等の依存排除）がそもそも存在しないため、モック化は冗長かつ実装変更への追従漏れを招く\n- 外部依存（DB・API・時刻等、非決定的・低速・副作用を持つもの）のみモックする\n- フラットな代用データで済ませない: 構造化された値オブジェクトの代わりにフラットなデータ構造で代用すると、実装側のアクセスパターンとの乖離（属性の入れ子構造の有無等）を検知できず、モックやフラットデータが実装のバグと共犯関係になる\n- 例外的にモック（スタブ）してよいもの: 対象自体は実物のまま使うが、対象が内部で呼ぶ基盤・フレームワーク依存の関数（DB接続やロケール依存の文脈を要求する等、テスト環境で成立しない外部呼び出し）は、対象本体をモックせず、その依存関数だけをピンポイントでスタブしてよい"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#4-モックの安全性",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "4-モックの安全性",
+      "title": "4. モックの安全性",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 4. モックの安全性",
+      "text": "モックを使う場合、モックが実体と乖離しないための仕組みを備える。\n\n- モックは実クラスと同じ操作（メソッド）セットを持たせる（ダックタイピングの安全性）\n- 存在しない操作名をモックの差し替え対象に指定した場合、その場で即座にエラーにする（タイポの早期検出）\n- 個々のテストファイルが独自に手書きのモックヘルパーを定義する方式は避け、共通のモック生成機構（ファクトリ）に集約する。手書きモックが増えると、対象の操作が変わった際に全箇所を手動で追従する必要が生じる\n- テスト間の独立性（モックのリストア保証）: グローバルなシンボル・関数を差し替える方式のモックは、テストが例外で中断した場合でも必ず元の状態に復元されることを保証する仕組み（スコープ終了時の自動復元等）を用いる。これがないと、あるテストの失敗が別の無関係なテストにモックを残留させ、不安定な連鎖失敗を引き起こす\n- モック生成機構自体の自動生成・実体との双方向契約検証は deterministic-verification.md 8節を参照"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#5-層別テスト責務マトリクス",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "5-層別テスト責務マトリクス",
+      "title": "5. 層別テスト責務マトリクス",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 5. 層別テスト責務マトリクス",
+      "text": "テストケースは「正常系・境界値・異常系」に加え、対象データの型に着目した4分類でも整理する。\n\n| 分類 | 定義 |\n|------|------|\n| 単純値の入出力 | スカラー値（bool・数値・文字列等）を返す操作の検証 |\n| 複雑値/オブジェクトの入出力 | 複数属性を持つオブジェクト・構造体の返却、状態変更の検証 |\n| 境界値 | 閾値の直上・直下・ちょうどの値での振る舞い |\n| 例外パターン | 不正入力・ドメインエラー・通信エラー等での失敗伝搬 |\n\nアーキテクチャがドメイン層・ユースケース層・インフラ層・ドライバ層のように分かれている場合、層ごとにどの分類が必須かを定義し、責務が重複するテストを書かない。\n\n下記は4層構成の一般的な目安である（層構成は各プロジェクトに合わせて読み替える）。\n\n| 分類 | ドメイン層 | ユースケース層 | インフラ層 | ドライバ層 |\n|------|:---:|:---:|:---:|:---:|\n| 単純値の入出力 | 必須 | – | – | – |\n| 複雑値/オブジェクトの入出力 | 必須 | – | 必須 | – |\n| 境界値 | 必須（集約） | – | – | – |\n| 例外パターン | 必須 | パスカバレッジで包含 | 必須 | パスカバレッジで包含 |\n\n- 境界値判定は、判定ロジックを実装している層（多くの場合ドメイン層）に集約し、そこで境界値を網羅する\n- 上位層（オーケストレーション層）は「下位層の判定結果を受けた分岐」だけを検証し、下位層が既に担保した境界値バリエーションを重ねてテストしない\n- 上位層・ドライバ層の例外パターンは、個別の入力値バリエーションではなく、tdd-workflow.md 7節の「パスカバレッジ」で網羅する\n- Repository/Transaction/DI境界等、レイヤードアーキテクチャ（Clean Architecture系）固有の層別テスト観点は layered-architecture-testing.md を参照"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#6-参照同一性-vs-値比較",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "6-参照同一性-vs-値比較",
+      "title": "6. 参照同一性 vs 値比較",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 6. 参照同一性 vs 値比較",
+      "text": "コレクション内の既存要素を検索してそのまま返す契約の操作（get_by_xxx 等）は、属性値ではなく参照同一性（同じインスタンスであること）で検証する。\n\n- 探索キーに使った属性をそのまま出力からアサートしない（1. 検出力のないテストを書かない参照）\n- 期待値には元のコレクション内のインスタンスそのもの（またはそのインデックス）を持たせ、参照比較で突合する\n- 判定単位は「返る器（コレクション）」ではなく「器の中の要素」。フィルタ・ソート等で新しいコレクションを組み立てて返す操作であっても、中の要素自体は元のインスタンスをそのまま維持する契約であれば、要素は参照同一性で検証する。コレクション自体が新規生成であることは、要素の参照同一性検証を免除する理由にならない\n- 深い値比較（再帰的な属性値比較）は参照同一性の検証にならない。オブジェクトであっても中身を値として比較してしまうため、新しいオブジェクトに差し替わっていても一致してしまい、「一部属性が欠落した新規オブジェクトを返す」バグを検出できない\n- 対象外: 新規にオブジェクトを組み立てて返す操作、スカラー値を返す操作"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#7-境界値ケース分離の3基準",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "7-境界値ケース分離の3基準",
+      "title": "7. 境界値ケース分離の3基準",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 7. 境界値ケース分離の3基準",
+      "text": "0・負数・上限直下/直上のような境界値は、機械的に全パターンを並べるのではなく、次のいずれかを満たす場合のみ独立したケースにする。いずれも満たさない値は同値クラスとして1ケースに集約し、意図（カバー範囲）を明記する。\n\n1. 通る分岐が違う\n2. 出力が違う\n3. 同じ分岐を通っても、片方だけが検出できる現実的な実装ミスがある（例: \u003e= を \u003e に取り違えるオフバイワン、符号チェックの欠落等、境界値の種類ごとに異なる不具合を狙い撃ちできる）\n\n- カバレッジ指標は同値クラス内の冗長を検出できない（同じ分岐を通るため指標上は変化しない）。ケースを増やす前にこの3基準で判定する\n- 数量・カウントを表す引数は、設定値だけでなく数量引数側にも0・負数の境界値を確認する。負数は符号反転により、対になる操作（消費⇔加算等）の不変条件を迂回できてしまうことがあるため、片方の引数種別だけに適用して終わらせない"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#8-対称性チェック",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "8-対称性チェック",
+      "title": "8. 対称性チェック",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 8. 対称性チェック",
+      "text": "対になる操作（可否判定とその実行、加算と減算等）がある場合、双方のテストケースの件数・観点を突き合わせる。\n\n- 片方にだけ境界値・0/負数のケースがあり、もう片方に無い場合は見落としを疑う\n- 意図的に非対称にする場合は、その根拠をテストコード上に残す（コメント・ケース名等）"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#9-変換層viewpresenterテストの責務限定",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "9-変換層viewpresenterテストの責務限定",
+      "title": "9. 変換層（View/Presenter）テストの責務限定",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 9. 変換層（View/Presenter）テストの責務限定",
+      "text": "ドメインの値を外部提供用の形式（表示用構造体・レスポンス等）へ変換するだけの層は、変換層固有の責務のみをテストし、下位層（ドメイン等）の責務を再テストしない。\n\n| 検証する（変換層固有の責務） | 検証しない |\n|------|------|\n| プレゼンテーション計算（割合・上限クランプ・ゼロ除算ガード等） | 下位層の判定結果そのもの（可否判定・境界判定 → 下位層テストの責務） |\n| デフォルト値処理（未指定時の既定値適用等） | 純粋な透過マッピングの値バリエーション（そのまま右から左へ渡すだけの項目） |\n| 出力構造（正常系1件で全項目の存在・透過を確認） | 下位層の値を変えただけの同一分岐パス（冗長な再計算） |\n\n- 変換層固有の分岐（三項演算子によるデフォルト処理、閾値超えの条件分岐等）は true/false を各1ケースで網羅する。下位層から来る値の差異だけでケースを増やさない\n- 透過マッピングは正常系1件で構造を担保すれば十分。値違いのケースを追加しない\n- 結果として、計算ロジックを持たない変換層（純粋な透過＋デフォルト処理のみ）は「正常系1件＋デフォルト処理1件」が必要十分になることが多い"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#10-コレクション検証",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "10-コレクション検証",
+      "title": "10. コレクション検証",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 10. コレクション検証",
+      "text": "複数件を返す操作のテストは、件数の一致だけで合格にしない。\n\n- 件数（サイズ）の一致は、「変換漏れの要素が紛れ込む」「順序が入れ替わる/反転する」といった不具合を検出できない\n- 識別子（IDなど）を順序込みで配列化し、期待する順序のまま比較する\n- 全属性の変換検証は単体取得側のテストで既に担保されている場合、複数件取得側は識別子のみの検証で十分（フィールドマッピング全体の再アサートは冗長）\n- フィクスチャの2件目以降は、比較対象の識別子1項目のみを変え、他フィールドは1件目と揃える。複数フィールドを同時に変えると、どのキーで取り違えが起きたか検出できなくなる"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#11-カバレッジ指標の重み付け",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "11-カバレッジ指標の重み付け",
+      "title": "11. カバレッジ指標の重み付け",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 11. カバレッジ指標の重み付け",
+      "text": "カバレッジ指標には性質の異なるものが混在するため、重み付けを分けて扱う。指標の必須/参考の分類はここが正本であり、他ファイルで再定義しない。\n\n| 指標カテゴリ | 扱い | 理由 |\n|------|------|------|\n| 行/文カバレッジ、分岐カバレッジ | 必須指標。両方が目標値を満たすことを確認する | 分岐カバレッジは if/else 等の各パスが実行されたかを示し、品質の核心に直結する |\n| 条件カバレッジ（論理AND/OR・三項演算子等の複合条件の全組み合わせ） | 参考値のみ（目標から除外） | 複合条件の全組み合わせを要求するため性質上低く出やすく、必須にすると過剰なケース増殖を招く |\n| 関数/サブルーチンカバレッジ | 参考値のみ（目標から除外） | エントリポイント関数はテスト時に丸ごと差し替えられる設計上の理由で、関数本体自体がテストでは実行されないことがある。これは設計上の制約であり達成の妨げとして扱わない |\n\n- 重視すべきは行カバレッジだけでなく分岐カバレッジ。next unless や if/elsif/else の各パスが実際に実行されているかが品質を左右する\n- 具体的な閾値（80%・90%等）はプロジェクトごとに定める。本原則が定めるのは「どの指標を必須とし、どれを参考値とするか」という重み付けの考え方"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#12-テスト対象外の明示",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "12-テスト対象外の明示",
+      "title": "12. テスト対象外の明示",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 12. テスト対象外の明示",
+      "text": "テスト実行を補助するためだけのヘルパー（アサーションヘルパー、契約検証ヘルパー等）自体は、単体テスト・カバレッジ計測の対象から明示的に除外してよい。これらは対象を使う側のテスト（正常系テスト等）から利用されることで間接的に動作が担保されるため。除外する場合は「なぜ対象外か」をコメント等に明記する。"
+    },
+    {
+      "id": "docs/testing/principles/testing-principles.md#13-単体テストに残る初期化時依存の明示",
+      "file": "docs/testing/principles/testing-principles.md",
+      "anchor": "13-単体テストに残る初期化時依存の明示",
+      "title": "13. 単体テストに残る初期化時依存の明示",
+      "trail": "docs/testing/principles/testing-principles.md \u003e テスト設計原則 \u003e 13. 単体テストに残る初期化時依存の明示",
+      "text": "外部依存を排除した単体テストであっても、対象モジュールを読み込む（インポートする）時点で、依存モジュールの初期化処理を通じて外部リソース（DB接続等）へのアクセスが発生する場合がある。これはテスト対象コードの実行ロジックとは無関係な、モジュールの構造に起因する制約である。\n\n- この種の制約がある場合、テストファイルに「モジュール初期化時に外部リソースへの接続が必要」と明記し、単体テストなのに外部リソースが必要な理由を利用者が誤解しないようにする\n- この制約は「モックで外部依存を排除した」という主張と矛盾しない。排除しているのはテスト対象の実行ロジックの依存であり、モジュール読み込み時の依存とは別の話であることを明確にする"
+    },
+    {
+      "id": "docs/testing/ranking-sync-batch.md#ランキング同期バッチのテスト設計",
+      "file": "docs/testing/ranking-sync-batch.md",
+      "anchor": "ランキング同期バッチのテスト設計",
+      "title": "ランキング同期バッチのテスト設計",
+      "trail": "docs/testing/ranking-sync-batch.md \u003e ランキング同期バッチのテスト設計",
+      "text": "対象: internal/driver/batch/ranking_sync.go\nテスト: internal/driver/batch/ranking_sync_test.go\n\n運用ルールは README.md。\n\nMySQL のスナップショット（guild_scores / user_points）を Redis ZSet へ全件反映する\n揃え直し（rebuild）専用バッチ。Redis 揮発時の復旧に用いる。\n\nguild_scores は outbox-worker がイベントを exactly-once に適用して維持するため、\n本バッチは outbox イベントの processed マークには一切関与しない。"
+    },
+    {
+      "id": "docs/testing/ranking-sync-batch.md#フローチャート",
+      "file": "docs/testing/ranking-sync-batch.md",
+      "anchor": "フローチャート",
+      "title": "フローチャート",
+      "trail": "docs/testing/ranking-sync-batch.md \u003e ランキング同期バッチのテスト設計 \u003e フローチャート",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- 読み取りは単一トランザクション（REPEATABLE READ）で行う。guild_scores と\n  user_points のスナップショットが互いに整合している必要があるため\n- outbox には触れない。processed マークは outbox-worker の責務であり、本バッチが\n  マークすると worker が未適用のイベントを取りこぼす\n- Redis 反映は COMMIT 後。個別 SET の失敗でループを止めない（届く分は届ける）が、\n  1 件でも失敗したら最後にエラーを返す。本バッチは Redis 揮発からの復旧手段であり、\n  「復旧できていないのに正常終了する」と cmd/batch が exit 0 を返し、運用側が\n  Redis が空のままであることに気づけない。部分失敗で打ち切らないことと\n  失敗を終了ステータスに乗せることは両立させる\n- 返すエラーには失敗件数を添え、最初の失敗を wrap する（errors.Is で原因を辿れるように）\n- センチネルキー（ranking.md §0）を立てるのは 全件成功したときだけ。\n  部分的にしか復旧していない状態でキーを立てると、読み取り経路が 503 をやめて\n  欠けたランキングを 200 で返し始める。図で MarkInitialized を H -- No の\n  枝にのみ置いているのはこのため\n- 本バッチはランキング読み取りを再開させる唯一の手段でもある。MarkInitialized が\n  失敗したら Redis のデータが揃っていても 503 が続くので、エラーとして返して\n  cmd/batch を非ゼロ終了させる（成功扱いにすると、運用側は復旧したつもりで放置する）\n- worker 稼働中に実行すると、スナップショット取得後に worker が反映した数件が SET で\n  上書きされ Redis 側で一時的に欠落しうる。MySQL は常に正しいので次回の再構築で自己修復する。\n  原則として揮発復旧など書き込みが静穏な状況で実行する"
+    },
+    {
+      "id": "docs/testing/ranking-sync-batch.md#テスト仕様表",
+      "file": "docs/testing/ranking-sync-batch.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/ranking-sync-batch.md \u003e ランキング同期バッチのテスト設計 \u003e テスト仕様表",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | DoInTx 自体が失敗 | A→B→E1 | エラーを返す | 内部処理も Redis SET も呼ばれない |\n| 2 | ListAllGuildScores が失敗 | A→B→C→E2 | エラーを返す | Redis SET が呼ばれない |\n| 3 | ListAllUserPoints が失敗 | …→C→D→E3 | エラーを返す | 同上 |\n| 4 | MarkInitialized が失敗 | …→D→E→F→H→I→E5 | エラーを返す | SET は全件呼ばれている |\n| 5 | 正常系: 空テーブル | …→D→E→F→H→I→Z | 正常終了 | Redis SET が1件も呼ばれない。MarkInitialized は呼ばれる |\n| 6 | 正常系: スナップショットが反映される | …→E→F→H→I→Z | 正常終了 | SetGuildScore / SetUserPoints が全件ぶん呼ばれる |\n| 7 | Redis SET の一部が失敗 | …→F→G→F→H→E4 | エラーを返す | 1件目が失敗しても残り全件の SET が呼ばれる（打ち切らない）。MarkInitialized が呼ばれない |\n\nエラーの伝搬について: 1〜4 と 7 はいずれも errors.Is で原因のエラーを辿れること\n（ラップが原因をすり替えないこと）をランナーで一律に検証している。\n\n「全件失敗」のケースが無い理由: 一部失敗と全件失敗は同じパス（…→F→G→F→H→E4）を通る。\n失敗件数が 1 か N かで振る舞いは変わらないため、README §3 の統合ルールに従い\nケース 7 に一本化している。"
+    },
+    {
+      "id": "docs/testing/ranking-sync-batch.md#本設計文書の作成で見つかった問題",
+      "file": "docs/testing/ranking-sync-batch.md",
+      "anchor": "本設計文書の作成で見つかった問題",
+      "title": "本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/ranking-sync-batch.md \u003e ランキング同期バッチのテスト設計 \u003e 本設計文書の作成で見つかった問題",
+      "text": "既存テストは上表のパスをすべて通っていた（パスの欠落は無し）。\n\n一方でテーブル駆動の形に問題があった。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| テーブル駆動の形 | 各ケースが setup func(t, ctrl) *batch.RankingSyncer を持ち、モックの組み立て手順をテーブル側に書いていた | テーブルをデータのみにし、組み立てはランナーへ集約 |\n| 検証の欠落 | エラーケースで require.Error しか見ておらず、どのエラーが返るかを確認していなかった（errors.Is での検証は別テスト関数に1件だけ切り出されていた） | ランナーで全エラーケースに assert.ErrorIs を適用し、切り出されていた関数を統合 |\n| デッドコード | expectDoInTxNotCalled というコメントだけのヘルパー宣言（「現状未使用」と明記されていた）が残っていた | 削除 |"
+    },
+    {
+      "id": "docs/testing/ranking.md#ランキング機能のテスト設計",
+      "file": "docs/testing/ranking.md",
+      "anchor": "ランキング機能のテスト設計",
+      "title": "ランキング機能のテスト設計",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計",
+      "text": "対象: internal/usecase/ranking/usecase.go\nテスト: internal/usecase/ranking/usecase_test.go\n\n運用ルールは README.md。\n\ninternal/domain/ranking は図を作らない。IsValidScore / NormalizeLimit / NormalizeOffset の\n境界値の正本は constants_test.go のケース配列。\n\n\u003e 本ファイルの前提: 境界値は判定ロジックを実装している層（domain）に集約する。\n\u003e usecase 層は「下位層の判定結果を受けた分岐」だけを検証し、domain が既に担保した\n\u003e 境界値バリエーションを重ねてテストしない。\n\n---"
+    },
+    {
+      "id": "docs/testing/ranking.md#0-読み取り経路の前提-ランキングの初期化検知",
+      "file": "docs/testing/ranking.md",
+      "anchor": "0-読み取り経路の前提-ランキングの初期化検知",
+      "title": "0. 読み取り経路の前提: ランキングの初期化検知",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 0. 読み取り経路の前提: ランキングの初期化検知",
+      "text": "Redis の ZSet が揮発（ノード障害・フェイルオーバ・人為ミス）すると、\nZREVRANGE はエラーではなく空配列を、ZSCORE は redis.Nil を返す。\nそのまま返すと一覧は「200 OK で空」、順位は「404 points not found」になり、\n揮発を正常なレスポンスとして返してしまう。\n\nさらに揮発後は outbox-worker の ZINCRBY が 0 から加算を再開するため、\n時間が経つほど「揮発以降の増分だけで育った、それらしく見える嘘のランキング」になる。\n空である時間は短く、放置するほど検知が難しくなる。\n\nこれを防ぐため、RankingSyncer が再構築の完了時にセンチネルキー\nranking:meta:initialized（domain/ranking/constants.go）を立て、\n読み取り系の 4 メソッドは処理の先頭でその存在を確認する。\n無ければ ErrRankingUnavailable を返し、driver 層が 503 に変換する\n（http-ranking.md §4）。\n\n設計上の要点:\n\n- センチネルキーに TTL を付けない。期限切れが偽陽性（揮発していないのに 503）になる\n- キーは ZSet と同じ Redis に置く。揮発すれば必ず一緒に消えるので偽陰性が生じない\n- 判定は読み取りのたびに毎回行う。一度成功した結果をプロセス内にキャッシュすると、\n  キャッシュ期間中は揮発しても嘘を返し続け、この仕組みの目的を損なう\n- AddUserPoints（書き込み）はこの判定の対象外。書き込み経路は Redis を一切触らず\n  MySQL にしか書かないため、揮発中でも記録は正しく残る。ここを 503 にすると、\n  復旧すれば失われずに済んだ加算を落とすことになる\n- 揮発中も worker は ZINCRBY を続けて嘘の値を育てるが、読み取りが 503 で塞がっている\n  あいだは露出しない。SyncAll が MySQL の値で SET 上書きするので復旧時に是正される"
+    },
+    {
+      "id": "docs/testing/ranking.md#1-読み取り系-getguildrankings--getuserrankings",
+      "file": "docs/testing/ranking.md",
+      "anchor": "1-読み取り系-getguildrankings--getuserrankings",
+      "title": "1. 読み取り系: GetGuildRankings / GetUserRankings",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 1. 読み取り系: GetGuildRankings / GetUserRankings",
+      "text": "2 メソッドは構造が同一（ギルド版とユーザー版）。同じ図・同じケース構成を持つ。\n片方にだけケースがある状態にしない（対称性）。\n\nH の No 側について: ランキングの正本は Redis の ZSet、名前の正本は MySQL であり、\n両者はずれうる（ユーザー/ギルド削除、ZSet 揮発後の再構築中など）。\nこのときエントリを黙って落とすと順位と件数が食い違うため、Name を空のまま返す設計にしている。\n図に現れない if _, ok := ... の分岐だが、ずれたときの振る舞いを決める分岐なのでケースを立てる。"
+    },
+    {
+      "id": "docs/testing/ranking.md#テスト仕様表getguildrankings--getuserrankings-共通",
+      "file": "docs/testing/ranking.md",
+      "anchor": "テスト仕様表getguildrankings--getuserrankings-共通",
+      "title": "テスト仕様表（GetGuildRankings / GetUserRankings 共通）",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 1. 読み取り系: GetGuildRankings / GetUserRankings \u003e テスト仕様表（GetGuildRankings / GetUserRankings 共通）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | IsInitialized がエラー | A→I→E4 | エラーを返す | 後続が一切呼ばれない |\n| 2 | 未初期化（揮発） | A→I→E5 | ErrRankingUnavailable | 同上。空配列を 200 で返さない |\n| 3 | store の取得がエラー | A→I→B→C→E1 | エラーを返す | 名前解決も total count も呼ばれない |\n| 4 | entries が空 | A→I→B→C→D→F→Z | 空の Rankings、TotalCount は返る | ListXxxByIDs が呼ばれない |\n| 5 | 名前解決がエラー | …→D→G→E2 | エラーを返す | total count が呼ばれない |\n| 6 | total count がエラー | …→G→H→H2→F→E3 | エラーを返す | — |\n| 7 | 正常系: 名前がマージされる | …→H→H2→F→Z | Rankings の各要素に Name が入る | ListXxxByIDs に entries の ID 配列が渡る |\n| 8 | 正規化した値が store に渡る | 7 と同一 | 正常終了 | GetXxxRankings に正規化後の offset/limit が渡る |\n| 9 | 名前マップに ID が無い | …→H→H3→F→Z | 該当エントリの Name は空文字。件数は減らない | — |\n\nケース 2 と 4 を分けている理由: どちらも「ランキングが空」に見えるが、\n2 は異常（揮発）、4 は正常（まだ誰も加点していない）。この 2 つを区別できることが\nセンチネルキーを置く目的そのものなので、統合しない。\n\nケース 8 について: limit=0 → DefaultRankingLimit、limit\u003eMax → Max に丸め、offset\u003c0 → 0\nといった正規化の値の検証は domain の責務。ここで検証するのは\n「usecase が正規化を通した結果を store へ渡している」という結線だけなので、1 ケースで足りる。\n\n---"
+    },
+    {
+      "id": "docs/testing/ranking.md#2-単一順位取得-getguildrank--getuserrank",
+      "file": "docs/testing/ranking.md",
+      "anchor": "2-単一順位取得-getguildrank--getuserrank",
+      "title": "2. 単一順位取得: GetGuildRank / GetUserRank",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 2. 単一順位取得: GetGuildRank / GetUserRank",
+      "text": "こちらも 2 メソッドで構造が同一。"
+    },
+    {
+      "id": "docs/testing/ranking.md#テスト仕様表getguildrank--getuserrank-共通",
+      "file": "docs/testing/ranking.md",
+      "anchor": "テスト仕様表getguildrank--getuserrank-共通",
+      "title": "テスト仕様表（GetGuildRank / GetUserRank 共通）",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 2. 単一順位取得: GetGuildRank / GetUserRank \u003e テスト仕様表（GetGuildRank / GetUserRank 共通）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | IsInitialized がエラー | A→I→E6 | エラーを返す | repo も store も呼ばれない |\n| 2 | 未初期化（揮発） | A→I→E7 | ErrRankingUnavailable | 同上。404 を返さない |\n| 3 | repo.GetXxx がエラー | A→I→B→E1 | repo のエラーを変換せず返す | store が一切呼ばれない |\n| 4 | スコア/ポイント取得がエラー | A→I→B→C→E2 | エラーを返す | rank / total count が呼ばれない |\n| 5 | スコア/ポイント未登録（exists=false） | …→C→D→E3 | ErrScoreNotFound / ErrPointsNotFound | 同上 |\n| 6 | rank 取得がエラー | …→D→F→E4 | エラーを返す | total count が呼ばれない |\n| 7 | total count がエラー | …→F→G→E5 | エラーを返す | — |\n| 8 | 正常系 | …→G→Z | 名前・スコア・順位・総数がすべて入る | — |\n\nケース 2 と 5 を分けている理由: 揮発した ZSet では ZSCORE が redis.Nil を返すため、\n初期化検知が無いとケース 5（ErrPointsNotFound → 404）に落ちる。\n「まだ加点していない個人」と「ランキング全体の消失」が同じ 404 になるのが\nこの対策以前の問題そのものなので、両者を別ケースとして固定する。\n\n---"
+    },
+    {
+      "id": "docs/testing/ranking.md#3-adduserpoints",
+      "file": "docs/testing/ranking.md",
+      "anchor": "3-adduserpoints",
+      "title": "3. AddUserPoints",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 3. AddUserPoints",
+      "text": "ポイント加算。MySQL の更新（個人・ギルド・履歴）と Redis 反映用 outbox イベント登録を\n同一トランザクション内で原子的に実行する。Redis 反映は outbox-worker が非同期に行うため、\nこのメソッドは順位を返さない。\n\n設計上の要点（テストで守る不変条件）:\n\n- 初期化検知（§0）の対象外。このメソッドは Redis を一切触らず MySQL にしか書かないため、\n  ZSet が揮発していても記録は正しく残る。ここを 503 にすると、復旧すれば失われずに\n  済んだ加算を落とすことになる。図に IsInitialized のノードが無いのは意図的\n- IsValidScore の判定は DoInTx の外。不正入力でトランザクションを張らない\n- ギルド集計（IncrementGuildScore / InsertGuildScoreHistory）は\n  この tx で行わない。ホット行（1ギルド=1行）の排他ロックを同期リクエスト経路から\n  除去するため outbox-worker へ非同期化した（outbox-worker.md）。\n  同期レスポンスも GuildID のみを返し、ギルドの previous/new total は返さない\n- Notify はコミット後に呼ぶ。コミット前だと worker が空振りする\n- Notify の失敗はリクエストを失敗させない。worker のポーリングがフォールバックになる\n- 累計値は加算の「後」に読む（N）。加算前に読んだ値へアプリ側で加算すると、\n  同一ユーザーへの同時リクエストが同じ previous_total を読み、双方が同じ\n  new_total を返す（MySQL の値は points = points + ? なので正しいまま、\n  レスポンスだけが誤る）。加算後に同一 tx で読み直せば、後発のトランザクションは\n  先行のコミット結果を含んだ値を得る。PreviousTotal は NewTotal - Points で導出する\n- N は ErrPointsNotFound を正常扱いしない。IncrementUserPoints は\n  INSERT ... ON DUPLICATE KEY UPDATE なので、成功直後に行が存在しないのは異常であり、\n  そのままエラーとして返す（初回ユーザーもこの時点では必ず行がある）"
+    },
+    {
+      "id": "docs/testing/ranking.md#テスト仕様表",
+      "file": "docs/testing/ranking.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 3. AddUserPoints \u003e テスト仕様表",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | IsValidScore が false | A→B→E1 | ErrInvalidPoints | DoInTx が呼ばれない |\n| 2 | GetUser がエラー（ユーザー不在） | A→B→C→D→E3 | repo のエラーをそのまま返す | 以降の repo が呼ばれない |\n| 3 | GetUserGuildID がエラー（ギルド未所属） | …→D→F→E4 | ErrUserNotInGuild | 同上 |\n| 4 | InsertUserPointHistory がエラー | …→F→K→E5 | エラーを返す | 同上 |\n| 5 | IncrementUserPoints がエラー | …→K→M→E6 | エラーを返す | 同上 |\n| 6 | 加算後の GetUserPoints がエラー | …→M→N→E7 | エラーを返す | InsertEvent が呼ばれない |\n| 7 | InsertEvent がエラー | …→N→O→E8 | エラーを返す | Notify が呼ばれない |\n| 8 | 正常系 | …→O→P→Q→Z | NewTotal は再読値、PreviousTotal は NewTotal - Points | outbox に RankingScoreAdded が積まれる／Notify が呼ばれる／ギルド集計の repo が呼ばれない |\n| 9 | Notify が失敗 | …→Q→R→Z | リクエストは成功する（エラーを返さない） | WARN ログが出る |\n\nDoInTx 自体のエラー（E2）について: トランザクション境界の契約は\ntransaction-boundary.md が Transactor 自身のテストで担保する。\nusecase 側は境界をモックしてよく、契約の検証を重複させない。\nただし「不正入力で境界に入らないこと」（ケース 1）は usecase 固有の責務なので、ここで検証する。\n\n「初回ユーザー」のケースが無い理由: 累計を加算後に読む設計では、初回ユーザーも\n既存ユーザーも …→M→N→O→… という同一のパスを通る（IncrementUserPoints の\nupsert により、N の時点では必ず行が存在する）。同一パスのケースは統合するという\nREADME §3 の方針に従い、ケース 8 に一本化した。"
+    },
+    {
+      "id": "docs/testing/ranking.md#テスト仕様表@2",
+      "file": "docs/testing/ranking.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 3. AddUserPoints \u003e テスト仕様表",
+      "text": "同時実行による誤りは、この表では検知できない: ケース 8 が守るのは「再読した値を\nNewTotal に使う」という結線までで、「同一トランザクション内の再読が自身の書き込みを\n見る」という InnoDB の性質はモックでは検証できない。ここは実 DB でしか確かめられない。\nなお points.js は randUserID() で対象を全ユーザーに散らすため、\n同一ユーザーの同時加算はほぼ起きない。この経路を実地で踏むには対象ユーザーを絞る必要がある。\n\nなぜギルド側に同じ問題が無いか: ギルドスコアの previous/new total は\nguild-score-async.md の設計でレスポンスから削除済みで、\nそもそも同期経路が値を返さない。読み直しが要るのは個人ポイントだけ。\n\n---"
+    },
+    {
+      "id": "docs/testing/ranking.md#4-本設計文書の作成で見つかった問題",
+      "file": "docs/testing/ranking.md",
+      "anchor": "4-本設計文書の作成で見つかった問題",
+      "title": "4. 本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 4. 本設計文書の作成で見つかった問題",
+      "text": "usecase 層の文カバレッジは 100% であり、この 4 件はいずれも数値では検知できないものだった。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| 層をまたぐ責務の重複 | GetGuildRankings に limit=0 → 既定値／limit\u003eMax → 丸め／offset\u003c0 → 0 の 3 ケースがあった。これは NormalizeLimit / NormalizeOffset の境界値であり、constants_test.go が既に 11 ケースで網羅している。usecase で検証すべきは「正規化を通した値を store へ渡している」という結線だけ | 表のケース 6（1 件）へ統合 |\n| 対称性の欠如 | 上記 3 ケースは GetGuildRankings にだけあり、同一構造の GetUserRankings には 1 件も無かった。片方だけにケースがある状態 | 両者を同じケース構成に揃える |\n| 層をまたぐ責務の重複 | AddUserPoints の「負数で ErrInvalidPoints」「最大値超過で ErrInvalidPoints」は同一パス（A→B→E1）。IsValidScore の境界は domain が 5 ケースで網羅済み | 表のケース 1 へ統合 |\n| 同一パスの重複 | AddUserPoints の「境界値: Points=MaxScore でも加算成功」は正常系（ケース 8）と同一パス。MaxScore が有効値であることは domain の責務 | ケース 8 へ統合 |\n| テーブル駆動の形 | 5 つのテーブルすべてが setup func(t, ctrl) ranking.Usecase を持ち、モックの組み立て手順をテーブル側に書いていた | テーブルをデータのみにし、組み立てはランナーへ集約 |\n\n教訓: gacha（Phase 4）では「テストが足りない」穴が出たが、ranking では逆に\n「下位層が担保済みの境界値を上位層で重ねてテストしている」過剰が出た。\nどちらもカバレッジ数値では見えない。層別の責務分担は図と表で突き合わせるしかない。\n\n---"
+    },
+    {
+      "id": "docs/testing/ranking.md#5-図とテストの再突き合わせで見つかった問題",
+      "file": "docs/testing/ranking.md",
+      "anchor": "5-図とテストの再突き合わせで見つかった問題",
+      "title": "5. 図とテストの再突き合わせで見つかった問題",
+      "trail": "docs/testing/ranking.md \u003e ランキング機能のテスト設計 \u003e 5. 図とテストの再突き合わせで見つかった問題",
+      "text": "本文書とテストコードを改めて突き合わせた際に見つかったもの。いずれも文カバレッジ 100% のまま見逃されていた。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| パスの欠落 | 名前解決の結果に entry の ID が含まれない分岐（if _, ok := ... の No 側）が、図・表・テストのいずれにも無かった。Redis の ZSet と MySQL がずれたときの振る舞いが未定義のまま | 図に H の分岐を追加し、表のケース 7 とテストを追加 |\n| 検証の欠落 | ケース 10 の「検証すべき呼び出し」に WARN ログが出るとあるのに、テストは「エラーを返さない」ことしか見ていなかった。ログは「通知失敗を握り潰していない」ことの唯一の観測点なので、出ていないと検証が成立しない | このケースだけログ捕捉用の logger に差し替えて assert を追加 |"
+    },
+    {
+      "id": "docs/testing/transaction-boundary.md#トランザクション境界の契約テスト",
+      "file": "docs/testing/transaction-boundary.md",
+      "anchor": "トランザクション境界の契約テスト",
+      "title": "トランザクション境界の契約テスト",
+      "trail": "docs/testing/transaction-boundary.md \u003e トランザクション境界の契約テスト",
+      "text": "対象: internal/infrastructure/mysql/transactor.go\nテスト: internal/infrastructure/mysql/transactor_test.go\n\nTransactor は「複数の操作をひとまとまりの成功/失敗単位でくくる」仕組みそのもの。\n分岐フローではなく契約を持つ対象なので、フロー図ではなくシナリオ表で管理する。\n\nこの契約は境界を提供する Transactor 自身のテストでのみ検証する。\n境界を使う側（usecase 層）のテストでは Transactor をモックしてよく、\n契約の検証をそちらに重複させない。"
+    },
+    {
+      "id": "docs/testing/transaction-boundary.md#必須シナリオ",
+      "file": "docs/testing/transaction-boundary.md",
+      "anchor": "必須シナリオ",
+      "title": "必須シナリオ",
+      "trail": "docs/testing/transaction-boundary.md \u003e トランザクション境界の契約テスト \u003e 必須シナリオ",
+      "text": "| # | シナリオ | 期待される契約 | 対応テスト |\n| --- | --- | --- | --- |\n| 1 | 境界内の処理（fn）が失敗する | ROLLBACK を実行してから、元の失敗原因をそのまま再送出する。ROLLBACK の実行が失敗原因をすり替えない | TestTransactor_DoInTx_異常系_fnがerrorを返すとROLLBACKされる |\n| 2 | 取り消し処理（ROLLBACK）自体が失敗する | ROLLBACK の失敗を握り潰さずログに残し、それでも元の失敗原因を再送出する | TestTransactor_DoInTx_異常系_ROLLBACK失敗でも元のエラーを返しログに残す\u003cbr\u003eTestTransactor_DoInTx_異常系_panic時のROLLBACK失敗でも再panicしログに残す |\n| 3 | 確定処理（COMMIT）自体が失敗する | COMMIT の失敗をそのまま呼び出し元に伝搬する | TestTransactor_DoInTx_異常系_Commit失敗はラップされる |\n| 4 | 境界内の処理が値なしで成功する | 値なしを正しく確定し、そのまま返す（異常系と誤認しない） | TestTransactor_DoInTx_正常系_fnがnilを返すとCOMMITされる |"
+    },
+    {
+      "id": "docs/testing/transaction-boundary.md#本リポジトリ固有の追加シナリオ",
+      "file": "docs/testing/transaction-boundary.md",
+      "anchor": "本リポジトリ固有の追加シナリオ",
+      "title": "本リポジトリ固有の追加シナリオ",
+      "trail": "docs/testing/transaction-boundary.md \u003e トランザクション境界の契約テスト \u003e 本リポジトリ固有の追加シナリオ",
+      "text": "| # | シナリオ | 期待される契約 | 対応テスト |\n| --- | --- | --- | --- |\n| 5 | 境界の確立（BEGIN）に失敗する | fn を実行せずエラーを返す | TestTransactor_DoInTx_異常系_BeginTx失敗はラップされる |\n| 6 | 境界内で panic する | ROLLBACK してから元の panic を再送出する | TestTransactor_DoInTx_異常系_panic時にROLLBACKして再panic |\n| 7 | ROLLBACK が sql.ErrTxDone を返す | 既にコミット済みの正常な状態なのでログに出さない。元の失敗原因は返す | TestTransactor_DoInTx_ROLLBACK_ErrTxDoneはloggerに出力されない |\n| 8 | fn に渡される Tx の実体 | *SQLTx が渡り、IsTx() / Raw() が呼べる | TestTransactor_DoInTx_正常系_fnにSQLTxが渡される\u003cbr\u003eSQLTx_Raw_内部のsqlTxを返す |\n| 9 | 分離レベルを明示する | オプション無し／IsolationDefault は driver 既定（*sql.TxOptions が nil）、IsolationReadCommitted は sql.LevelReadCommitted で BEGIN する | TestTransactor_DoInTx_分離レベル（3 サブテスト） |\n\nシナリオ 9 の検証方法について: go-sqlmock は BeginTx に渡る *sql.TxOptions を\n検証できないため、疎通だけを見ると「常に nil を返す」実装でも通ってしまう。\n変換関数 toSQLTxOptions を export_test.go 経由で直接呼んで戻り値を検証し、\n併せてオプション付きでも BEGIN/COMMIT が通常どおり行われることを確認している。"
+    },
+    {
+      "id": "docs/testing/transaction-boundary.md#分離レベルの使い分け",
+      "file": "docs/testing/transaction-boundary.md",
+      "anchor": "分離レベルの使い分け",
+      "title": "分離レベルの使い分け",
+      "trail": "docs/testing/transaction-boundary.md \u003e トランザクション境界の契約テスト \u003e 分離レベルの使い分け",
+      "text": "既定は DB のデフォルト（MySQL では REPEATABLE READ）。変更が必要な箇所だけ\nトランザクション開始時に shared.WithIsolation で明示する（AGENTS.md §4）。\n\n| 利用箇所 | 分離レベル | 理由 |\n| --- | --- | --- |\n| outbox worker の全 tx | READ COMMITTED | REPEATABLE READ だと ListPending の SELECT ... FOR UPDATE がギャップロックを取り、API 側の outbox INSERT を INSERT_INTENTION 待ちでブロックする（outbox-worker.md）。worker は同一 tx 内の読み取り一貫性に依存しない |\n| outbox GC の全 tx | READ COMMITTED | 同じギャップを反対側から掴む。新規 INSERT は idx_outbox_events_pending の NULL ブロック末尾に着地し、GC の processed_at IS NOT NULL はその直後のレコードから走査を始めるため、REPEATABLE READ では最初の next-key ロックが着地点のギャップを含む（outbox-gc.md）。GC もスナップショット一貫性に依存しない |\n| RankingSyncer | 既定（REPEATABLE READ） | guild_scores と user_points のスナップショットが互いに整合している必要がある（ranking-sync-batch.md） |\n| API リクエスト経路 | 既定 | 明示が必要な事情が無い |"
+    },
+    {
+      "id": "docs/testing/transaction-boundary.md#境界の外でやること",
+      "file": "docs/testing/transaction-boundary.md",
+      "anchor": "境界の外でやること",
+      "title": "境界の外でやること",
+      "trail": "docs/testing/transaction-boundary.md \u003e トランザクション境界の契約テスト \u003e 境界の外でやること",
+      "text": "- 境界内で行う処理は「取り消し不可能な処理（ロック取得が必要な処理等）」に限定する\n- ロックを伴わない事前検証・値解決は境界の外で完了させる。境界内に持ち込むとロック保持時間が延び、\n  並行処理時の待ち合わせが増える\n  - 実例: gacha.Multi は pullCount の妥当性検証を DoInTx の外で行っている\n    （docs/testing/gacha.md のケース 1・2 が「DoInTx が呼ばれない」ことを検証している）\n- 複数の永続化対象に同時にロックを取る場合は取得順序を決定的にする\n  - 実例: gacha.Multi の users → user_items（item_id 昇順）\n    （docs/testing/gacha.md のケース 16）"
+    },
+    {
+      "id": "docs/testing/transaction-boundary.md#本設計文書の作成で見つかった問題",
+      "file": "docs/testing/transaction-boundary.md",
+      "anchor": "本設計文書の作成で見つかった問題",
+      "title": "本設計文書の作成で見つかった問題",
+      "trail": "docs/testing/transaction-boundary.md \u003e トランザクション境界の契約テスト \u003e 本設計文書の作成で見つかった問題",
+      "text": "シナリオ 2（取り消し処理自体が失敗するケース）に対応するテストが存在しなかった。\n\nsql.ErrTxDone が返るケース（シナリオ 7）のテストはあったが、\nそれ以外のエラーで ROLLBACK が失敗したときにログ出力の分岐へ入る経路が\n通常経路・panic 経路ともに未検証だった。\n\n「ROLLBACK の失敗が元の失敗原因をすり替えないこと」は握り潰しバグに直結するため、\nassert.NotErrorIs で明示的に検証するケースを追加した。"
+    },
+    {
+      "id": "loadtest/README.md#loadtest-—-k6-負荷試験",
+      "file": "loadtest/README.md",
+      "anchor": "loadtest-—-k6-負荷試験",
+      "title": "loadtest — k6 負荷試験",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験",
+      "text": "ROADMAP フェーズ3の負荷試験シナリオ一式。ローカルで API に負荷をかけ、ボトルネックを特定する。"
+    },
+    {
+      "id": "loadtest/README.md#前提",
+      "file": "loadtest/README.md",
+      "anchor": "前提",
+      "title": "前提",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 前提",
+      "text": "- k6 インストール済み（brew install k6）\n- MySQL / Redis 起動済み（docker compose -f deployments/docker-compose.yml up -d）\n- マイグレーション適用済み（make db/migrate/up）\n- API と outbox-worker 起動済み（make run / make run/outbox-worker）"
+    },
+    {
+      "id": "loadtest/README.md#手順",
+      "file": "loadtest/README.md",
+      "anchor": "手順",
+      "title": "手順",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 手順",
+      "text": "```bash\n# 1. データ投入（users/guilds/items/初期スコア）。Redis 反映まで込み\nmake load/seed                       # 既定 users=10000 guilds=100\nmake load/seed SEED_USERS=100000 SEED_GUILDS=500\n\n# 2. 初期スコアを Redis に反映（load/seed 後は不要。Redis を飛ばしたときの復旧用）\nmake load/warm\n\n# 3. 疎通確認（必ず最初に）\nmake load/smoke\n\n# 4. 各シナリオ実行\nmake load/gacha        # 書き込み系（トランザクション+行ロック）\nmake load/points       # 書き込み系（スコア加算+ギルド集計+outbox）\nmake load/ranking      # 読み取り系（Redis ZSet 参照）\n```\n\n\u003e ランキング参照が 503 ranking is unavailable を返す場合、Redis にランキングが構築されていない\n\u003e （load/seed / load/warm の未実行、または Redis の揮発）。make load/warm で再構築する。\n\u003e 揮発を空配列や 404 で誤魔化さないための仕様なので、閾値の緩和ではなく再構築で対処すること。\n\u003e 詳細は docs/testing/ranking.md §0。"
+    },
+    {
+      "id": "loadtest/README.md#負荷の調整環境変数",
+      "file": "loadtest/README.md",
+      "anchor": "負荷の調整環境変数",
+      "title": "負荷の調整（環境変数）",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 負荷の調整（環境変数）",
+      "text": "| 変数 | 意味 | 既定 |\n|---|---|---|\n| RATE | 維持する目標RPS | シナリオ毎（gacha/points=500, ranking=1000） |\n| START_RATE | ramp 開始RPS | 50 |\n| RAMP | ramp-up 時間 | 30s |\n| DURATION | 維持時間 | 1m |\n| MAX_VUS | 最大VU数 | 1000 |\n| BASE_URL | 対象API | http://localhost:8080 |\n| SEED_USERS / SEED_GUILDS | seed 規模（k6のID空間と一致させる） | 10000 / 100 |\n\n例（stress: RPSを上げて限界点を探る）:\n\n```bash\nRATE=3000 RAMP=1m DURATION=3m make load/ranking\n```"
+    },
+    {
+      "id": "loadtest/README.md#シナリオ一覧",
+      "file": "loadtest/README.md",
+      "anchor": "シナリオ一覧",
+      "title": "シナリオ一覧",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e シナリオ一覧",
+      "text": "| ファイル | 種別 | 対象 |\n|---|---|---|\n| smoke.js | 疎通 | 全エンドポイントを低VUで一巡 |\n| gacha.js | 書き込み | POST /users/:id/gacha/multi |\n| points.js | 書き込み | POST /users/:id/points |\n| ranking.js | 読み取り | GET /rankings/*, GET /{users,guilds}/:id/ranking |\n| watch_outbox.sh | 計測 | outbox バックログ推移（負荷シナリオと併走） |\n\n共通ヘルパ・負荷形状は lib/common.js に集約。"
+    },
+    {
+      "id": "loadtest/README.md#outbox-バックログの計測make-loadwatch",
+      "file": "loadtest/README.md",
+      "anchor": "outbox-バックログの計測make-loadwatch",
+      "title": "outbox バックログの計測（make load/watch）",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e outbox バックログの計測（make load/watch）",
+      "text": "points シナリオはギルド集計を outbox-worker へ非同期化しているため、API のレイテンシが良好でも\n非同期側に積み残している可能性がある。k6 の数値だけでは見えないので、バックログを直接観測する。\n\n負荷シナリオとは別ターミナルで併走させる:\n\n```bash\n# T1: 計測開始（先に回す）\nmake load/watch WATCH_OUT=run1.csv WATCH_DURATION=600\n\n# T2: 負荷（ramp30s + 維持60s + 減衰10s ≒ 100秒）\nmake load/points\n```\n\n負荷終了後も計測は止めないこと。 テールの消化速度が最重要の観測対象。\n\n| 変数 | 意味 | 既定 |\n|---|---|---|\n| WATCH_OUT | 出力 CSV | outbox_metrics.csv |\n| WATCH_DURATION | 計測秒数 | 900 |\n| WATCH_INTERVAL | サンプリング間隔（秒） | 1 |"
+    },
+    {
+      "id": "loadtest/README.md#計測オーバーヘッドについて",
+      "file": "loadtest/README.md",
+      "anchor": "計測オーバーヘッドについて",
+      "title": "計測オーバーヘッドについて",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e outbox バックログの計測（make load/watch） \u003e 計測オーバーヘッドについて",
+      "text": "計測が対象を歪めないことが前提なので、docker exec は計測全体で1回だけ起動し、常駐した\nmysql クライアントの標準入力にクエリを流し込む。サンプリング毎に docker exec すると\nDocker Desktop for Mac では1回あたり約 110ms かかり（クエリ本体は約 30ms）、毎秒払うと\nMySQL と同じ VM 内でプロセス生成が繰り返されて計測対象の API レイテンシに影響する。\n\nそれでも影響が疑われる場合は WATCH_INTERVAL=5 などで間隔を広げる。バックログの傾向を\n見るだけなら 5 秒間隔で十分。"
+    },
+    {
+      "id": "loadtest/README.md#出力列と読み方",
+      "file": "loadtest/README.md",
+      "anchor": "出力列と読み方",
+      "title": "出力列と読み方",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e outbox バックログの計測（make load/watch） \u003e 出力列と読み方",
+      "text": "| 列 | 意味 |\n|---|---|\n| pending | 未処理イベント数（= guild_scores に未反映の加算） |\n| processed_delta | 間隔あたりの消化数（= worker の実スループット） |\n| guild_scores_sum | guild_scores.score 総和（反映の進捗） |\n\n| 観測 | 判定 |\n|---|---|\n| 負荷中に pending が単調増加 | worker が生産レートに追いつかない |\n| processed_delta が頭打ち | その値が worker のスループット上限 |\n| 負荷終了後に pending が平坦なまま | 通知が尽き OUTBOX_POLL_INTERVAL 待ち（既定 10m）。runOnce は1回 OUTBOX_BATCH_SIZE 件で返るため、テールは「間隔ごとに batch 件」しか進まない |\n| 負荷終了後に継続的に減り 0 になる | 遅延は実質なし |\n\nOUTBOX_POLL_INTERVAL=1s make run/outbox-worker で worker を起動し直して再計測すると、\nテールの消化が poll 間隔律速かどうかを切り分けられる。"
+    },
+    {
+      "id": "loadtest/README.md#整合性の最終確認pending--0-になった後",
+      "file": "loadtest/README.md",
+      "anchor": "整合性の最終確認pending--0-になった後",
+      "title": "整合性の最終確認（pending = 0 になった後）",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e outbox バックログの計測（make load/watch） \u003e 整合性の最終確認（pending = 0 になった後）",
+      "text": "```bash\ndocker exec -e MYSQL_PWD=game game-api-mysql mysql -u game game_db -e \"\nSELECT\n  (SELECT COUNT(*) FROM user_point_histories WHERE reason='loadtest') AS user_hist,\n  (SELECT COUNT(*) FROM guild_score_histories) AS guild_hist,\n  (SELECT SUM(points) FROM user_point_histories WHERE reason='loadtest') AS user_pt_sum,\n  (SELECT SUM(score) FROM guild_scores) AS guild_score_sum;\"\n```\n\n件数・合計が一致すれば outbox の exactly-once が効いている（seed の初期スコア分はオフセットとして差し引く）。"
+    },
+    {
+      "id": "loadtest/README.md#合否基準thresholds",
+      "file": "loadtest/README.md",
+      "anchor": "合否基準thresholds",
+      "title": "合否基準（thresholds）",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 合否基準（thresholds）",
+      "text": "- エラー率 http_req_failed \u003c 1%\n- レイテンシ p95 \u003c 200ms / p99 \u003c 500ms\n\n閾値超過で k6 は exit code≠0 を返す（CI 連携時の合否判定に使える）。"
+    },
+    {
+      "id": "loadtest/README.md#結果の見方",
+      "file": "loadtest/README.md",
+      "anchor": "結果の見方",
+      "title": "結果の見方",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 結果の見方",
+      "text": "k6 の要約（http_req_duration の p95/p99、http_reqs の実RPS、http_req_failed）と、\n同時刻の CloudWatch メトリクス（ECS CPU / Aurora Deadlocks・CPU / ElastiCache Evictions 等）を\n突き合わせてボトルネックを特定する。詳細は ROADMAP.md フェーズ3参照。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#aws-インフラ構成図phase-2-完了時点",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "aws-インフラ構成図phase-2-完了時点",
+      "title": "AWS インフラ構成図（Phase 2 完了時点）",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点）",
+      "text": "本ドキュメントは ROADMAP フェーズ2 で構築する AWS インフラの構成・モジュール分割・デプロイフローを mermaid で可視化したもの。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#コンテナ実行時セキュリティ",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "コンテナ実行時セキュリティ",
+      "title": "コンテナ実行時セキュリティ",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e コンテナ実行時セキュリティ",
+      "text": "compute_ecs の全 TaskDef（api / outbox-worker / batch / migrate）は、コンテナ侵害時の影響範囲を狭めるデプスディフェンス（多層防御）として以下を共通適用する。設定は locals.container_security に集約し、各 container_definitions へ merge() で合成しているため、追加漏れと値の不整合を防いでいる。\n\n| 設定 | 値 | 効果 / 前提 |\n|---|---|---|\n| readonlyRootFilesystem | true | ルートFSを読み取り専用化し、侵害後のツール書き込み・永続化を阻止。アプリ（distroless static / migrate）はローカル書き込みをしないため writable volume は不要。将来 temp 書き込みが必要になった場合は Fargate のエフェメラル volume + mountPoints で書込先を限定的に開ける（tmpfs は Fargate 非対応） |\n| linuxParameters.capabilities.drop | [\"ALL\"] | 全 Linux capability を剥奪。コンテナは nonroot 実行かつ待受は 8080(\u003e1024) のため NET_BIND_SERVICE 等の追加は不要。Fargate は drop を完全サポート |\n\nイメージ側も gcr.io/distroless/static-debian12:nonroot（api/batch/outbox-worker）で非 root・最小構成を担保している（migrate のみ alpine ベース）。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#db-接続情報の注入dsn-secret",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "db-接続情報の注入dsn-secret",
+      "title": "DB 接続情報の注入（DSN secret）",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e DB 接続情報の注入（DSN secret）",
+      "text": "アプリ（api/outbox-worker/batch）は configs/config.go が単一の MYSQL_DSN（go-sql-driver 形式 user:pass@tcp(host:3306)/db?parseTime=true\u0026loc=Local）を読み、migrate は MIGRATE_DSN（golang-migrate URL 形式 mysql://...?multiStatements=true）を読む。いずれもパスワードを含む合成文字列だが、ECS は Secrets Manager の値を単独の env としてしか注入できず、env 文字列への補間ができないため、task def 側で host:user:pass:db から DSN を組み立てることはできない。\n\nそこで Aurora のパスワードを生成している database モジュールが、完全な DSN を組み立てて Secrets Manager に格納する（${name_prefix}/aurora/dsn、JSON で app / migrate の2キーを同梱）。task def は valueFrom = \"\u003cdsn_secret_arn\u003e:app::\"（api/worker/batch → MYSQL_DSN）/ :migrate::（migrate → MIGRATE_DSN）で JSON キー抽出注入する。app と migrate で DSN 形式・クエリ（parseTime vs multiStatements）が異なるため2キーに分けている。ECS task execution role には当該 secret の GetSecretValue と暗号化 CMK の kms:Decrypt のみを許可する。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#イメージタグの扱いterraform-と-ci-の役割分担",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "イメージタグの扱いterraform-と-ci-の役割分担",
+      "title": "イメージタグの扱い（terraform と CI の役割分担）",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e イメージタグの扱い（terraform と CI の役割分担）",
+      "text": "ECR は image_tag_mutability = \"IMMUTABLE\"（modules/registry）。同じタグへの再 push は\nImageTagAlreadyExistsException で失敗するため、latest のような可変タグは運用に使えない。\ndeploy.yml が push するのはコミット SHA 由来の sha-\u003c12桁\u003e タグだけ。\n\nその結果、イメージ参照は次の二層構造になる。\n\n| 層 | 何を持つか | イメージ参照 |\n|---|---|---|\n| terraform（compute_ecs） | TaskDefinition の形（cpu/memory/env/secrets/ログ設定/セキュリティ） | var.image_tags[...]（既定 latest）。配線用のプレースホルダで、この revision は起動できない |\n| deploy.yml | 実際に動くイメージのバージョン | sha-\u003c12桁\u003e タグで TaskDefinition を register し直した revision |\n\ndeploy.yml は4種すべてを sha タグで登録し直す。api / outbox-worker は登録後に\nupdate-service、migrate は登録後に RunTask、batch / outbox-gc は登録のみ行う\n（起動主体がそれぞれ手動と EventBridge Scheduler のため）。\n\nこの構造にしている理由は、CI から terraform へ -var でタグを渡す方式が\nterraform.yml（タグを知らないまま plan/apply する）と両立しないため。渡す方式にすると\nterraform 側が毎回 latest へ戻す差分を出し、deploy.yml の precheck が要求する\n「plan が no-op」を永久に満たせなくなる。\n\n帰結として次の順序依存がある（承知のうえで受け入れている）。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#イメージタグの扱いterraform-と-ci-の役割分担@2",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "イメージタグの扱いterraform-と-ci-の役割分担",
+      "title": "イメージタグの扱い（terraform と CI の役割分担）",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e イメージタグの扱い（terraform と CI の役割分担）",
+      "text": "- outbox-gc の EventBridge Scheduler は revision を含まない TaskDefinition ARN を参照し、\n  実行時に最新 ACTIVE revision を解決する。通常は deploy.yml が登録した sha revision が最新\n- terraform 側で outbox-gc の TaskDefinition の設定（cpu / memory / env 等）を変更して\n  apply すると、latest を参照するプレースホルダ revision が最新 ACTIVE になる。\n  latest は存在しないため、次のスケジュール実行だけがイメージ pull で失敗する\n- 通常は terraform.yml の apply → deploy.yml の順に流れて解消する。apply だけで止めると\n  窓が残るので、TaskDefinition を触る変更のあとは deploy を1回流すこと\n- 失敗はタスクの stopped reason と CloudWatch Logs に出る（黙って壊れはしない）\n\nECR ライフサイクルは tagged を直近 30 件保持する（image_retention_count）。デプロイ頻度が\n上がって古い sha タグが expire すると、その revision を指したままの起動は pull に失敗する。\n毎デプロイで登録し直すため通常は問題にならない。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#後続フェーズへの前方互換phase-2-設計に組み込む配慮",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "後続フェーズへの前方互換phase-2-設計に組み込む配慮",
+      "title": "後続フェーズへの前方互換（Phase 2 設計に組み込む配慮）",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e 後続フェーズへの前方互換（Phase 2 設計に組み込む配慮）",
+      "text": "| 後続フェーズの追加要件 | Phase 2 設計での配慮 |\n|---|---|\n| §フェーズ3: Redis を cache/ranking 2系統に分離（REDIS_CACHE_ADDR / REDIS_RANKING_ADDR） | ECS TaskDef の env をリスト構造で記述し、後から REDIS_RANKING_ADDR を追加しても破壊変更にならない形にする。database モジュールの ElastiCache もリスト/可変構造で定義し、2台目を増やせる構造に |\n| §フェーズ4: EKS 比較 / App Runner 候補 | network / database / registry を compute_ecs から疎結合に保ち、compute_eks を別モジュールで追加可能にする。VPC/Subnet は compute_ecs が所有しない |\n| §フェーズ5: マスタデータ配信（S3 + CloudFront、S3 VPC Gateway Endpoint） | network モジュールが route table ID を output として expose。Phase 5 で aws_vpc_endpoint（S3 Gateway, 無料）を後付けできる形に。実装は Phase 5 と同 PR で行う（先取りしない） |\n| §フェーズ5: パッカー用 ECR 追加 | registry モジュールは for_each = var.repositories でリポジトリ集合を扱い、Phase 5 で packer を1行追加できる形に |"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#cicd-ワークフローの安全装置",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "cicd-ワークフローの安全装置",
+      "title": "CI/CD ワークフローの安全装置",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e CI/CD ワークフローの安全装置",
+      "text": ".github/workflows/ の ci.yml / terraform.yml / deploy.yml には以下の安全装置を組み込んでいる。\n\n| 安全装置 | 内容 | 防ぐ事象 |\n|---|---|---|\n| CI ゲート | deploy.yml は workflow_run トリガで ci.yml の成功完了時のみ起動する | テスト未通過のコードが本番デプロイされる |\n| 環境有無ゲート | terraform.yml / deploy.yml の全ジョブはリポジトリ変数 INFRA_ENABLED == 'true' のときだけ実行する（下記【運用ルール】参照） | AWS 環境が無い間、OIDC assume の失敗で CI の赤が常態化しレビューのシグナルが死ぬ |\n| concurrency 共有 | terraform.yml と deploy.yml は同一 concurrency グループ（infra-deploy-${ref}）。先着が走り他方は待機 | インフラ変更とアプリデプロイが同時に ECS を書き換える競合 |\n| Terraform ドリフト検査 | deploy.yml の precheck ジョブが terraform plan を実行し、未適用差分（no-op 以外の全リソース変更）が1件でもあればデプロイを停止 | terraform 側の未適用変更（タスク定義の env/secrets、ALB リスナー、SG ルール等）のまま「新コード × 旧インフラ」でデプロイされる |\n| マイグレーション先行 | deploy.yml は ECS サービス更新前に migrate タスクを RunTask し、exit code≠0 で停止 | スキーマ不整合のままアプリが起動する |\n| ECS ウェイター timeout | deploy.yml の aws ecs wait（migrate tasks-stopped 600s / services-stable 900s）を timeout でラップし、超過時にジョブを fail | migrate タスクや ECS デプロイのハングで CI ジョブが AWS デフォルト上限（最大約40分）まで長時間ブロックされる |"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#cicd-ワークフローの安全装置@2",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "cicd-ワークフローの安全装置",
+      "title": "CI/CD ワークフローの安全装置",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e CI/CD ワークフローの安全装置",
+      "text": "precheck は tf_plan IAM ロールを流用する。tf_plan には ReadOnlyAccess を基本付与しているが、同マネージドポリシーは機密保護のため secretsmanager:GetSecretValue / kms:Decrypt を含まない。plan の refresh で CMK 暗号化された Aurora マスター Secret（aws_secretsmanager_secret_version）を読む必要があるため、当該 Secret と暗号化 CMK に限定して この2アクションのみインラインで補っている（権限拡張は対象リソース限定のスコープに留める）。\n\ntf_plan の信頼ポリシー（assume 条件）は OIDC sub クレームを StringEquals で repo:${owner}/${repo}:pull_request（terraform.yml の plan）と repo:${owner}/${repo}:ref:refs/heads/main（deploy.yml の precheck / main 上の dispatch）の2値のみに限定する。以前は StringLike + repo:${owner}/${repo}:* で全 ref を許可しており、リポジトリ内の任意ブランチ・PR・environment コンテキスト（細工された任意ワークフロー含む）が同ロールを assume して Aurora 認証情報を読み取れる状態だった。これを塞ぐためワイルドカードを排した（deploy / tf_apply は元から StringEquals 限定）。なお非 main ブランチからの workflow_dispatch による手動 plan は assume 不可となるため、plan は PR か main 文脈で実行する。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#cicd-ワークフローの安全装置@3",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "cicd-ワークフローの安全装置",
+      "title": "CI/CD ワークフローの安全装置",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e CI/CD ワークフローの安全装置",
+      "text": "tf_apply は PowerUserAccess + IAMFullAccess（実質 admin 相当）を付与しており、IAMFull により「admin 権限を持つ別 role を作って assume する」等の権限昇格が原理上可能になる。assume を environment:production-apply に限定し、GitHub Environment の承認（required reviewers）を歯止めとしているが、この承認設定はリポジトリの IaC では検知できない GitHub 側設定であるため、唯一の歯止めが Terraform 管理外にある状態だった。これを補うため tf_apply ロールに permissions boundary（${name_prefix}-tf-apply-boundary）を付与する。boundary は実効権限の上限であり、Terraform 運用に必要な広範な権限（Allow *）は残しつつ、(1) boundary を継承しない IAM エンティティの作成、(2) boundary の付替・剥奪、(3) boundary ポリシー自身の改変、を Deny で封じる。これにより GitHub 側設定に依存せず、コード（IaC）で昇格経路を遮断する。GitHub Environment 側の保護（承認者・wait timer）は引き続き併用すること。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#運用ルールaws-環境が無い間は-terraform--deploy-を止める",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "運用ルールaws-環境が無い間は-terraform--deploy-を止める",
+      "title": "【運用ルール】AWS 環境が無い間は terraform / deploy を止める",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e CI/CD ワークフローの安全装置 \u003e 【運用ルール】AWS 環境が無い間は terraform / deploy を止める",
+      "text": "terraform.yml と deploy.yml の全ジョブは、リポジトリ変数 INFRA_ENABLED が true のときだけ実行する（未設定なら全ジョブ skip）。\n\nAWS 環境が未構築（state が空、または全 destroy 済み）の状態では、CI が assume する OIDC provider と tf_plan / tf_apply / deploy ロールがそもそも存在しない。この状態で両ワークフローを回すと、terraform に到達する前の Configure AWS credentials が Could not assume role with OIDC で必ず失敗する。PR ごと・main マージごとに赤が出続け、CI がレビューのシグナルとして機能しなくなる（本当の失敗と区別できなくなる）ため、明示的なフラグで止める。\n\nAWS 側を実際に照会して自動判定する案は採らない。判定に必要な AWS 認証がまさに失敗している対象であり、鶏と卵になる。\n\n| 操作 | コマンド |\n|---|---|\n| 有効化（環境をフル apply した後） | gh variable set INFRA_ENABLED --body true |\n| 無効化（環境を destroy した後） | gh variable delete INFRA_ENABLED |\n| 現在値の確認 | gh variable list |\n\nスキップ中も make tf/check（fmt -check + validate）はローカルで有効で、terraform コードの構文・整形の検証はこちらが担う。環境をフル apply したら INFRA_ENABLED の設定を忘れないこと。忘れるとインフラ変更が CI で apply されないまま、deploy.yml のドリフト検査も走らない状態になる。\n\nなお INFRA_ENABLED を GitHub のブランチ保護で required status check に指定していると、skip されたジョブが待機扱いでマージをブロックする可能性がある。止めている間は terraform plan を required から外す。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#運用ルール新規-iam-ロールを追加する変更は初回だけ人手で-apply-する",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "運用ルール新規-iam-ロールを追加する変更は初回だけ人手で-apply-する",
+      "title": "【運用ルール】新規 IAM ロールを追加する変更は初回だけ人手で apply する",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e CI/CD ワークフローの安全装置 \u003e 【運用ルール】新規 IAM ロールを追加する変更は初回だけ人手で apply する",
+      "text": "boundary の DenyCreateWithoutBoundary は「boundary を継承しない iam:CreateRole」を拒否する。拒否対象は iam:CreateRole だけで、既に存在するロールの更新・利用は妨げない。 そのため定常運用（既存リソースの変更）は CI の apply で完結するが、terraform に IAM ロールを1つでも新規追加した変更は tf_apply ロールでは apply できない。\n\ncompute_ecs の task / task_execution / scheduler、iam_oidc の deploy / tf_plan はいずれも boundary を設定していないため、この制約の対象になる。\n\n放置すると影響は追加した機能に留まらない。terraform.yml の apply が CreateRole で失敗 → terraform plan が差分を返し続ける → deploy.yml の precheck（差分ゼロを要求）が停止 → api / outbox-worker を含むデプロイ全体が止まる。\n\nしたがって新規 IAM ロールを含む変更は、マージ後に一度だけ人の AWS 認証情報でローカル apply する。\n\n```bash\nmake tf/init\n# -target にはルートから見た完全なリソースアドレスを渡す（モジュール内のリソースは module.\u003cモジュール名\u003e. を前置する）\nterraform -chdir=terraform/environments/dev apply -target=module.\u003cモジュール名\u003e.aws_iam_role.\u003c新規ロール\u003e\n# 以降は CI の apply が通常どおり流れる\n```\n\n適用されるのは環境が構築済みの場合だけ。 state が空（未構築 or destroy 済み）の状態では、そもそも CI が assume する OIDC provider と tf_plan / tf_apply ロール自体が存在せず CI は動かない。この場合は -target を使わず、初回のフル apply（terraform -chdir=terraform/environments/dev apply）を人手で回す。その中で全 IAM ロールがまとめて作られ、以降が本ルールの対象になる。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#運用ルール新規-iam-ロールを追加する変更は初回だけ人手で-apply-する@2",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "運用ルール新規-iam-ロールを追加する変更は初回だけ人手で-apply-する",
+      "title": "【運用ルール】新規 IAM ロールを追加する変更は初回だけ人手で apply する",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e CI/CD ワークフローの安全装置 \u003e 【運用ルール】新規 IAM ロールを追加する変更は初回だけ人手で apply する",
+      "text": "module. の前置を忘れて -target=aws_iam_role.\u003c新規ロール\u003e と書くと、ルートモジュールに該当リソースが無いため 何も作らずに正常終了する（Warning: Resource targeting is in effect と「変更なし」が出るだけでエラーにならない）。適用後は terraform plan で当該ロールの差分が消えたことを必ず確認する。アドレスは terraform -chdir=terraform/environments/dev state list | grep iam_role で確認できる。\n\nboundary ARN を compute_ecs へ引き回す案は採らない。 environments/dev/main.tf で module.iam_oidc が ecs_cluster_arn = module.compute_ecs.cluster_arn を受け取っており依存は compute_ecs → iam_oidc の向きなので、boundary ARN を逆向きに渡すとモジュール間で循環参照になる。解消するには boundary ポリシーを iam_oidc の外（環境ルートか専用モジュール）へ切り出す再編が要る。IAM ロールの追加頻度は低く、上記の1コマンドで足りるため、再編のコストに見合わないと判断した。追加頻度が上がったらこの判断を見直す。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#凡例",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "凡例",
+      "title": "凡例",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e 凡例",
+      "text": "- オレンジ系: AWS リソース\n- 青系: Terraform state（S3、ロックは use_lockfile）\n- 緑系: CI/CD（GitHub）\n- 点線: 認証・参照・依存\n- 破線枠（グレー）: 後続フェーズで追加予定（Phase 4: EKS / Phase 5: storage・S3 VPC Endpoint・packer ECR）"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#対象外意図的に実装しない",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "対象外意図的に実装しない",
+      "title": "対象外（意図的に実装しない）",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e 対象外（意図的に実装しない）",
+      "text": "- AWS WAF / Shield（GCP 参考構成の Cloud Armor に相当する層）: 本プロジェクトのエンドユーザーは k6（負荷試験ツール）であり、ALB 前段に WAF を置くとレートベースルール等が k6 リクエストを弾いてフェーズ3 の負荷試験結果が歪む。攻撃耐性の検証は k6 シナリオ側に寄せる方針のため、今後も導入しない。詳細は ROADMAP.md フェーズ2「対象外」を参照。\n- NAT Gateway の AZ 冗長化: 本プロジェクトは負荷試験用のテストサービスであり、本番相当の高可用性運用は目的としない。コスト優先のため NAT Gateway は 1 台に集約し（azs[0] の public subnet に配置）、AZ 障害時の egress 冗長性は捨てる。そのため azs[0] が障害を起こすと、生存 AZ の ECS タスクも外向き通信（ECR pull 等）ができなくなる。本番想定では NAT を AZ ごとに 1 台ずつ配置し、各 private route table を同一 AZ の NAT に紐付けて完全冗長にすること。なお Subnet / ALB / ECS / Aurora は 2 AZ に分散済みで SPOF を排除した設計自体は維持しており、負荷試験トラフィックは ALB → ECS → Aurora/Redis の VPC 内で完結し NAT を経由しないため、この割り切りが負荷試験結果に影響することはない。"
+    },
+    {
+      "id": "terraform/ARCHITECTURE.md#関連ドキュメント",
+      "file": "terraform/ARCHITECTURE.md",
+      "anchor": "関連ドキュメント",
+      "title": "関連ドキュメント",
+      "trail": "terraform/ARCHITECTURE.md \u003e AWS インフラ構成図（Phase 2 完了時点） \u003e 関連ドキュメント",
+      "text": "- ROADMAP.md — プロジェクト全体ロードマップ\n- AGENTS.md — コーディング規約"
+    }
+  ]
+}

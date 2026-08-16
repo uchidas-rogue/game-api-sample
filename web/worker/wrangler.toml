@@ -1,0 +1,17 @@
+# チャット中継の Cloudflare Workers 設定。
+#
+# デプロイ手順は README.md を参照。KV の id と ALLOWED_ORIGINS は各自の値に置き換える
+# （このファイルは公開リポジトリに入るため、API キーは絶対に書かない。secret で入れる）。
+
+name = "game-api-sample-chat"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+
+[vars]
+# GitHub Pages のオリジン。カンマ区切りで複数指定できる。
+ALLOWED_ORIGINS = "https://uchidas-rogue.github.io"
+
+[[kv_namespaces]]
+binding = "CHAT_KV"
+# `npx wrangler kv namespace create CHAT_KV` が出力した id を入れる。
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
