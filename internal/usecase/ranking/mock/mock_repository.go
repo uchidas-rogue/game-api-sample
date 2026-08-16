@@ -406,6 +406,35 @@ func (mr *MockRankingStoreMockRecorder) GetUserTotalCount(ctx any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetUserTotalCount", reflect.TypeOf((*MockRankingStore)(nil).GetUserTotalCount), ctx)
 }
 
+// IsInitialized mocks base method.
+func (m *MockRankingStore) IsInitialized(ctx context.Context) (bool, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "IsInitialized", ctx)
+	ret0, _ := ret[0].(bool)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// IsInitialized indicates an expected call of IsInitialized.
+func (mr *MockRankingStoreMockRecorder) IsInitialized(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "IsInitialized", reflect.TypeOf((*MockRankingStore)(nil).IsInitialized), ctx)
+}
+
+// MarkInitialized mocks base method.
+func (m *MockRankingStore) MarkInitialized(ctx context.Context) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "MarkInitialized", ctx)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// MarkInitialized indicates an expected call of MarkInitialized.
+func (mr *MockRankingStoreMockRecorder) MarkInitialized(ctx any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MarkInitialized", reflect.TypeOf((*MockRankingStore)(nil).MarkInitialized), ctx)
+}
+
 // SetGuildScore mocks base method.
 func (m *MockRankingStore) SetGuildScore(ctx context.Context, guildID, score int64) error {
 	m.ctrl.T.Helper()

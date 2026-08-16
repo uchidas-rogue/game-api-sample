@@ -25,6 +25,31 @@ func NewRankingStore(client *redis.Client) *RankingStore {
 	return &RankingStore{client: client}
 }
 
+// initializedValue はセンチネルキーに格納する値。
+// 判定に使うのはキーの存在だけなので、値そのものに意味は無い。
+const initializedValue = "1"
+
+// IsInitialized はランキングが構築済みかを返す。
+func (r *RankingStore) IsInitialized(ctx context.Context) (bool, error) {
+	n, err := r.client.Exists(ctx, rankingdomain.RankingInitializedKey).Result()
+	if err != nil {
+		return false, fmt.Errorf("exists ranking initialized failed: %w", err)
+	}
+	return n > 0, nil
+}
+
+// MarkInitialized はランキングを構築済みとしてマークする。
+//
+// TTL は付けない（第3引数の 0）。期限切れは「揮発していないのに未初期化と判定する」
+// 偽陽性になり、読み取りが 503 のまま復帰しなくなる。
+// 揮発時はキーごと消えるため、期限による失効は不要。
+func (r *RankingStore) MarkInitialized(ctx context.Context) error {
+	if err := r.client.Set(ctx, rankingdomain.RankingInitializedKey, initializedValue, 0).Err(); err != nil {
+		return fmt.Errorf("set ranking initialized failed: %w", err)
+	}
+	return nil
+}
+
 // SetGuildScore はギルドのスコアを上書きする（バッチ同期用）。
 func (r *RankingStore) SetGuildScore(ctx context.Context, guildID int64, score int64) error {
 	member := strconv.FormatInt(guildID, 10)

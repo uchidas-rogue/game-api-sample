@@ -384,6 +384,65 @@ func TestRankingStore_ApplyScoreDeltas_エラー伝播(t *testing.T) {
 	assert.Contains(t, err.Error(), "users=1, guilds=1")
 }
 
+// ---------------------------------------------------------------------------
+// センチネルキー（揮発検知）
+// 設計の意図は docs/testing/ranking.md §0。
+// ---------------------------------------------------------------------------
+
+func TestRankingStore_IsInitialized_マーク前はfalse(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+
+	ok, err := store.IsInitialized(context.Background())
+	require.NoError(t, err)
+	assert.False(t, ok, "マークしていなければ未初期化")
+}
+
+func TestRankingStore_MarkInitialized_マーク後はtrue(t *testing.T) {
+	t.Parallel()
+
+	store, _ := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.MarkInitialized(ctx))
+
+	ok, err := store.IsInitialized(ctx)
+	require.NoError(t, err)
+	assert.True(t, ok)
+}
+
+// センチネルキーに TTL を付けると、揮発していないのに期限切れで 503 を返す偽陽性になる。
+// 「TTL が無いこと」は実装を見ないと分からない不変条件なのでテストで固定する。
+func TestRankingStore_MarkInitialized_TTLを付けない(t *testing.T) {
+	t.Parallel()
+
+	store, s := newTestStore(t)
+
+	require.NoError(t, store.MarkInitialized(context.Background()))
+
+	require.True(t, s.Exists(rankingdomain.RankingInitializedKey))
+	assert.Zero(t, s.TTL(rankingdomain.RankingInitializedKey), "センチネルキーに TTL を付けてはならない")
+}
+
+// 揮発（Redis のデータが丸ごと消える）を FlushAll で模す。
+// ZSet と一緒にセンチネルキーも消えることが、この方式が偽陰性を出さない根拠。
+func TestRankingStore_IsInitialized_揮発後はfalse(t *testing.T) {
+	t.Parallel()
+
+	store, s := newTestStore(t)
+	ctx := context.Background()
+
+	require.NoError(t, store.SetUserPoints(ctx, 1, 100))
+	require.NoError(t, store.MarkInitialized(ctx))
+
+	s.FlushAll()
+
+	ok, err := store.IsInitialized(ctx)
+	require.NoError(t, err)
+	assert.False(t, ok, "揮発したらセンチネルキーも消える")
+}
+
 // TestRankingStore_エラー伝播 は各操作が Redis コマンド失敗をどうラップするかを検証する。
 // (操作名, 操作を呼ぶ関数, 期待するエラーメッセージ断片) のテーブル。
 // 期待メッセージは操作ごとに異なる固有の文字列であり、これが唯一の取り違え検出手段
@@ -414,6 +473,21 @@ func TestRankingStore_エラー伝播(t *testing.T) {
 				return err
 			},
 			wantMsg: "zcard guild failed",
+		},
+		{
+			name: "IsInitialized",
+			call: func(store *infraRedis.RankingStore, ctx context.Context) error {
+				_, err := store.IsInitialized(ctx)
+				return err
+			},
+			wantMsg: "exists ranking initialized failed",
+		},
+		{
+			name: "MarkInitialized",
+			call: func(store *infraRedis.RankingStore, ctx context.Context) error {
+				return store.MarkInitialized(ctx)
+			},
+			wantMsg: "set ranking initialized failed",
 		},
 		{
 			name: "SetUserPoints",

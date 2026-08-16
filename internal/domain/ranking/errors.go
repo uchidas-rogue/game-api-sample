@@ -17,4 +17,8 @@ var (
 	ErrScoreNotFound = errors.New("score not found for guild")
 	// ErrPointsNotFound はユーザーのポイントが未登録であることを表す。
 	ErrPointsNotFound = errors.New("points not found for user")
+	// ErrRankingUnavailable はランキングが未構築（Redis 揮発を含む）であることを表す。
+	// 「対象が未登録」を表す ErrScoreNotFound / ErrPointsNotFound とは区別する。
+	// あちらは 404 だが、こちらは再構築すれば解消する一時的な状態なので 503 に対応する。
+	ErrRankingUnavailable = errors.New("ranking is unavailable")
 )

@@ -61,6 +61,16 @@ type Repository interface {
 
 // RankingStore は Redis 操作のインターフェース。
 type RankingStore interface {
+	// IsInitialized はランキングが構築済みかを返す。
+	// Redis 揮発時に「空だが正常」と「揮発して空」を区別するためのセンチネル判定であり、
+	// 読み取り系ユースケースが処理の先頭で呼ぶ。false のときは ErrRankingUnavailable になる。
+	IsInitialized(ctx context.Context) (bool, error)
+
+	// MarkInitialized はランキングを構築済みとしてマークする（バッチ同期用）。
+	// 全件の反映に成功したときだけ呼ぶこと。部分的にしか復旧していない状態でマークすると、
+	// 読み取り経路が欠けたランキングを正常なものとして返し始める。
+	MarkInitialized(ctx context.Context) error
+
 	// SetGuildScore はギルドのスコアを上書きする（バッチ同期用）。
 	SetGuildScore(ctx context.Context, guildID int64, score int64) error
 

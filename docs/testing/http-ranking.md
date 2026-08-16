@@ -57,8 +57,9 @@ flowchart TD
 | 3 | `offset` が数値でない | `A→B→C→E2`（`P3→PE1`） | 400 `invalid offset` | 同上 |
 | 4 | `offset` が負数 | `A→B→C→E2`（`P4→PE2`） | 400 `invalid offset` | 同上 |
 | 5 | usecase が予期せぬエラー | `…→C→D→X→R8` | 500 `internal server error` | — |
-| 6 | 正常系: クエリ未指定 | `…→D→F→Z`（`P1→P2`） | 200 | **usecase に `Limit=0` / `Offset=0` が渡る**（正規化しない） |
-| 7 | 正常系: `limit` / `offset` 指定 | `…→D→F→Z`（`P1→P3→P4→P5`） | 200。`rankings` と `total_count` が Result と一致 | usecase に指定値がそのまま渡る |
+| 6 | usecase が `ErrRankingUnavailable` | `…→C→D→X→R9` | 503 `ranking is unavailable` | **`Retry-After` ヘッダが付く** |
+| 7 | 正常系: クエリ未指定 | `…→D→F→Z`（`P1→P2`） | 200 | **usecase に `Limit=0` / `Offset=0` が渡る**（正規化しない） |
+| 8 | 正常系: `limit` / `offset` 指定 | `…→D→F→Z`（`P1→P3→P4→P5`） | 200。`rankings` と `total_count` が Result と一致 | usecase に指定値がそのまま渡る |
 
 **ケース 1〜4 を 2 件に減らさない理由**: サブフローの失敗分岐は 2 つ（`PE1` / `PE2`）だが、
 `parseNonNegativeIntQuery` は `limit` と `offset` で**2 回別々に呼ばれる**。
@@ -90,7 +91,8 @@ flowchart TD
 | 3 | エンティティ未存在 | `A→B→C→X→R1` / `R2` | 404 `guild not found` / `user not found` | usecase に ID がそのまま渡る |
 | 4 | スコア/ポイント未登録 | `…→C→X→R6` / `R7` | 404 `score not found` / `points not found` | — |
 | 5 | 予期せぬエラー | `…→X→R8` | 500 `internal server error` | — |
-| 6 | 正常系 | `…→C→D→Z` | 200。全フィールドが Result の値と一致 | — |
+| 6 | usecase が `ErrRankingUnavailable` | `…→X→R9` | 503 `ranking is unavailable` | **`Retry-After` ヘッダが付く** |
+| 7 | 正常系 | `…→C→D→Z` | 200。全フィールドが Result の値と一致 | — |
 
 **ケース 1 と 2 を統合しない理由**: パスは同一だが、判定は `err != nil || id <= 0` の 2 条件。
 `id <= 0` 側を落とす実装ミスはケース 1 では検出できない。
@@ -150,8 +152,20 @@ flowchart TD
     X1 -- ErrInvalidPoints --> R5((400 invalid points))
     X1 -- ErrScoreNotFound --> R6((404 score not found))
     X1 -- ErrPointsNotFound --> R7((404 points not found))
+    X1 -- ErrRankingUnavailable --> R9((503 ranking is unavailable<br/>Retry-After ヘッダを付ける<br/>ログは出さない))
     X1 -- その他 --> R8((500 internal server error<br/>ERROR ログ・詳細は返さない))
 ```
+
+**`R9` について**: Redis の ZSet が揮発したことを usecase 層が検知して返す
+（[ranking.md](ranking.md) §0）。`ErrPointsNotFound`（`R7`）との違いは
+**「その個人が未登録」か「ランキング全体が消えている」か**で、前者は 404、後者は 503。
+`Retry-After` を付けるのは、クライアントに再試行が有効であること（永続的な失敗ではないこと）を
+伝えるため。**503 を返すのは読み取り系 4 ハンドラのみ**で、`AddUserPoints` は
+揮発中でも成功させる（理由は [ranking.md](ranking.md) §3）。
+
+`R8` と違い**ログを出さない**のは、この状態が再構築するまで継続するため。
+リクエストごとに記録すると 1 件の障害が毎秒数千行の同一ログになり、他のエラーを埋める。
+503 を返した事実はアクセスログに残るので、観測点は失われない。
 
 各終端をどのケースが通すかの対応。**空欄を作らないことがこの表の目的**。
 
@@ -165,6 +179,7 @@ flowchart TD
 | `R6` | `ErrScoreNotFound` | §2 ケース 4（guild） |
 | `R7` | `ErrPointsNotFound` | §2 ケース 4（user） |
 | `R8` | その他 | §1 ケース 5／§2 ケース 5／§3 ケース 8 |
+| `R9` | `ErrRankingUnavailable` | §1 ケース 6／§2 ケース 6 |
 
 ### 【要対応】`R4`（`ErrInvalidScore`）は到達不可能
 

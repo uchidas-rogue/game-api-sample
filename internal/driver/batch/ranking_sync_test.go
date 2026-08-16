@@ -62,6 +62,8 @@ const (
 	// syncStepRedisSet は COMMIT 後の Redis 反映が一部失敗する経路。
 	// ループは継続する（残り全件を反映する）が、最後にエラーを返す。
 	syncStepRedisSet
+	// syncStepMarkInitialized は全件反映後のセンチネルキー設定が失敗する経路。
+	syncStepMarkInitialized
 )
 
 // syncCase は SyncAll のテストケース1件。データのみを持つ。
@@ -114,19 +116,30 @@ func TestRankingSyncer_SyncAll(t *testing.T) {
 			wantErrIs: errDB,
 		},
 		{
-			// #4 …→D→E→F→H→Z（対象0件）
+			// #4 …→D→E→F→H→I→E5
+			name:        "MarkInitialized が失敗: SET は全件済みでもエラーを返す",
+			guildScores: guildScores,
+			userPoints:  userPoints,
+			failAt:      syncStepMarkInitialized,
+			wantErrIs:   errRedis,
+		},
+		{
+			// #5 …→D→E→F→H→I→Z（対象0件）
 			name:        "正常系: 空テーブルでも完了する",
 			guildScores: []rankingdomain.GuildScore{},
 			userPoints:  []rankingdomain.UserPoint{},
 		},
 		{
-			// #5 …→E→F→H→Z
+			// #6 …→E→F→H→I→Z
 			name:        "正常系: スナップショットが Redis に反映される",
 			guildScores: guildScores,
 			userPoints:  userPoints,
 		},
 		{
-			// #6 …→F→G→F→H→E4（Redis SET の一部が失敗）
+			// #7 …→F→G→F→H→E4（Redis SET の一部が失敗）
+			// 部分復旧のままセンチネルキーを立てると、読み取りが欠けたランキングを
+			// 正常なものとして返し始める。MarkInitialized を EXPECT に登録しないことで
+			// 「呼ばれないこと」を gomock に検証させている。
 			name:        "Redis SET の一部が失敗: 残り全件を反映したうえでエラーを返す",
 			guildScores: guildScores,
 			userPoints:  userPoints,
@@ -199,4 +212,14 @@ func expectSyncCalls(d syncerDeps, tc syncCase, errDB, errRedis error) {
 		}
 		call.Return(nil)
 	}
+
+	// H / I: 全件成功したときだけセンチネルキーを立てる。
+	if tc.failAt == syncStepRedisSet {
+		return
+	}
+	if tc.failAt == syncStepMarkInitialized {
+		d.store.EXPECT().MarkInitialized(gomock.Any()).Return(errRedis)
+		return
+	}
+	d.store.EXPECT().MarkInitialized(gomock.Any()).Return(nil)
 }

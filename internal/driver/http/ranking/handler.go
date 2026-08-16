@@ -21,6 +21,10 @@ const (
 	queryOffset  = "offset"
 )
 
+// retryAfterSeconds はランキング未構築時に返す Retry-After（秒）。
+// 復旧は再構築バッチの手動実行を伴うため、即時の再試行が実る値にはしない。
+const retryAfterSeconds = "30"
+
 // Handler はランキング機能の HTTP ハンドラ。
 type Handler struct {
 	usecase rankingusecase.Usecase
@@ -253,6 +257,16 @@ func (h *Handler) handleError(c echo.Context, err error) error {
 		return c.JSON(http.StatusNotFound, errorResponse{Message: "score not found"})
 	case errors.Is(err, rankingdomain.ErrPointsNotFound):
 		return c.JSON(http.StatusNotFound, errorResponse{Message: "points not found"})
+	case errors.Is(err, rankingdomain.ErrRankingUnavailable):
+		// ランキングが未構築（Redis 揮発を含む）。再構築すれば解消する一時的な状態なので、
+		// 「対象が未登録」を表す 404 ではなく 503 を返し、再試行が有効であることを
+		// Retry-After で伝える。原因の詳細はレスポンスに載せない（500 と同じ方針）。
+		//
+		// 500 と違い、ここではログを出さない。この状態は再構築するまで継続するため、
+		// リクエストごとに記録すると 1 件の障害が毎秒数千行の同一ログになり、
+		// 他のエラーを埋めてしまう。503 を返した事実はアクセスログに残る。
+		c.Response().Header().Set(echo.HeaderRetryAfter, retryAfterSeconds)
+		return c.JSON(http.StatusServiceUnavailable, errorResponse{Message: "ranking is unavailable"})
 	default:
 		h.logger.ErrorContext(ctx, "ranking operation failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse{Message: "internal server error"})
