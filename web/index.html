@@ -21,6 +21,7 @@
   <nav class="hero-links">
     <a class="btn primary" href="https://github.com/uchidas-rogue/game-api-sample">GitHub リポジトリ</a>
     <a class="btn" href="#chat">このリポジトリに質問する</a>
+    <a class="btn" href="https://deepwiki.com/uchidas-rogue/game-api-sample" rel="noopener">コードの自動生成 Wiki</a>
   </nav>
 </header>
 
@@ -171,6 +172,24 @@
         <p>
           検査を足すときの原則は「その検査が捕捉する<strong>既知の実例</strong>を必ず書く」。
           実例を伴わない検査は誤検出源になり、いずれ無効化されるためです。
+        </p>
+      </article>
+
+      <article class="card">
+        <h3>「AI が読める構造か」を外から確かめる</h3>
+        <p>
+          外部サービスの DeepWiki にリポジトリを読ませたところ、層ごとの解説と依存フロー図を持つ
+          8 セクションのドキュメントが自動生成されました。<strong>自分で書いた指示書を自分の AI に読ませて
+          うまくいった、で終わらせない</strong>ための外形的な確認として置いています。
+        </p>
+        <p>
+          役割は下のチャットと補完関係です。DeepWiki が答えるのは「コードがどうなっているか」、
+          チャットが答えるのは「なぜそうしたか」。<strong>正本は文書側に置いたまま</strong>で、
+          DeepWiki は特定コミット時点の自動生成物なので参考扱いです。
+        </p>
+        <!-- ssot-assert: present-grep 'deepwiki.com/uchidas-rogue/game-api-sample' README.md -->
+        <p class="cite">
+          <a href="https://deepwiki.com/uchidas-rogue/game-api-sample" rel="noopener">DeepWiki で読む</a>
         </p>
       </article>
     </div>

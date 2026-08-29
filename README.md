@@ -6,6 +6,8 @@ Terraform でデプロイする。設計の判断根拠と、規約を CI の判
 
 📄 **ポートフォリオサイト（このリポジトリについて質問できます）: <https://uchidas-rogue.github.io/game-api-sample/>**
 
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/uchidas-rogue/game-api-sample)
+
 ---
 
 ## 構成
@@ -186,3 +188,16 @@ make test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md 
 | AWS 構成・Terraform モジュール分割・CI/CD の安全装置 | [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md) |
 | テスト設計の原則と、機能ごとのフロー図・テスト仕様表 | [docs/testing/](docs/testing/) |
 | 負荷試験シナリオ | [loadtest/README.md](loadtest/README.md) |
+| コードの構造を追う（**外部・自動生成**） | [DeepWiki](https://deepwiki.com/uchidas-rogue/game-api-sample) |
+
+上の表のうち **DeepWiki だけは外部サービスが本リポジトリから自動生成したもの**で、正本ではない。
+層ごとの解説から GitHub の該当行へリンクが張られるのでコードを追うのには向くが、内容は
+**特定コミット時点のスナップショット**であり `make docs/check` の検証対象外。記述が食い違う場合は
+本リポジトリの文書を優先する。
+
+役割はサイトのチャットと補完関係にある。DeepWiki が答えるのは「**コードがどうなっているか**」で、
+サイトのチャットが答えるのは「**なぜそうしたか**」（`AGENTS.md` / `docs/**` の設計判断を根拠にする）。
+このリポジトリが重視しているのは後者なので、正本は文書側に置いたままにしてある。
+
+なお、外部の AI がリポジトリを読んで一貫した構成図と層ごとの解説を組み立てられること自体が、
+「AI が読める構造になっているか」の外形的な確認になっている（→ [この設計の出発点](#この設計の出発点) の記事2）。
