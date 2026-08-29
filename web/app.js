@@ -209,9 +209,15 @@ async function ask(question) {
     });
 
     if (!response.ok) {
+      // 回答が得られなくても、検索でヒットした本文は手元にある。エラーだけ出して終わるより
+      // 抜粋を見せたほうが読み手の役に立つので、ネットワーク断のとき（下の catch）と同じ扱いにする。
+      //
+      // 理由は必ず本文に残す。とくに「参照する文書を特定できませんでした」は、サイトの索引を
+      // 更新したあと Worker の再デプロイを忘れた状態で出る。デプロイが手動である以上、
+      // この表示が運用側の唯一の気づく手がかりになるので、黙って抜粋へ落とさない。
       const detail = await response.json().catch(() => ({}));
-      answer.className = "msg error";
-      answer.textContent = detail.message ?? `チャットが応答しませんでした（${response.status}）。`;
+      const reason = detail.message ?? `チャットが応答しませんでした（${response.status}）。`;
+      showExcerpts(answer, hits, `${reason} 関連する文書の抜粋を表示します。`);
       finish();
       return;
     }

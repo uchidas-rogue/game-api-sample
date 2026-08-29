@@ -118,7 +118,10 @@ export default {
       .map((id) => chunkById.get(id))
       .filter((chunk): chunk is Chunk => chunk !== undefined);
     if (chunks.length === 0) {
-      return problem(400, "参照する文書を特定できませんでした。", cors);
+      // 実際にこれが返るのは、サイトの索引を更新したあと Worker を再デプロイしていないとき
+      // （ブラウザが送る ID と、ここにバンドルされた索引の ID が食い違う）。
+      // デプロイが手動なので、原因が推測できる文面にしておく。
+      return problem(400, "参照する文書を特定できませんでした（索引が更新された可能性があります）。", cors);
     }
 
     const limited = await checkLimits(env, request);
