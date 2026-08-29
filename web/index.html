@@ -25,6 +25,44 @@
 </header>
 
 <main>
+  <section id="origin">
+    <h2>この設計の出発点</h2>
+    <p class="section-lead">
+      実務で書いた次の2本の記事を出発点に、<strong>別の技術スタックでゼロから作り直し、
+      記事の時点で残していた課題に手を入れた</strong>ものです。
+    </p>
+
+    <div class="cards">
+      <article class="card">
+        <h3>大規模向けリアルタイム数値反映の仕組み</h3>
+        <p>
+          シャード横断の集計が DB を圧迫する問題に、CQRS と二段キャッシュ（Memcached + 集計テーブル）を
+          定期バッチで更新する設計で対処した記録。本リポジトリでは<strong>定期バッチをやめ、outbox による
+          イベント駆動に置き換えました</strong>。記事で課題として残したキャッシュの揮発リスクも、
+          センチネルキーによる検知まで実装しています。
+        </p>
+        <!-- ssot-assert: present-grep 'items/56437f88ebdabcd10254' README.md -->
+        <p class="cite">
+          <a href="https://qiita.com/sho417sho/items/56437f88ebdabcd10254" rel="noopener">Qiita で読む</a>
+        </p>
+      </article>
+
+      <article class="card">
+        <h3>AI が安全に自走する基盤を型なしレガシー Perl で作った</h3>
+        <p>
+          「決定論的な解析・検証の利点を最大化すれば、AI 活用も最大化できる」という前提のもと、
+          基底クラス・Mock 自動生成・use チェッカーを自作した記録。本リポジトリはこの前提を引き継ぎ、
+          <strong>静的型のある Go で同じことをやるとどこまで判定を増やせるか</strong>を試しています
+          （use チェッカー → depguard、テスト契約表 → 仕様表とテストコードの機械突合）。
+        </p>
+        <!-- ssot-assert: present-grep 'items/a0d9ce5c46370254be52' README.md -->
+        <p class="cite">
+          <a href="https://qiita.com/sho417sho/items/a0d9ce5c46370254be52" rel="noopener">Qiita で読む</a>
+        </p>
+      </article>
+    </div>
+  </section>
+
   <section id="decisions">
     <h2>設計判断とその理由</h2>
     <p class="section-lead">
