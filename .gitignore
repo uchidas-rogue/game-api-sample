@@ -23,6 +23,10 @@
 /web/worker/.dev.vars
 /web/worker/.wrangler/
 
+# サイトのブラウザ側テスト（jsdom）のローカル依存。
+# package-lock.json はバージョンを固定したいのでコミットする
+/web/tests/node_modules/
+
 # macOS
 .DS_Store
 

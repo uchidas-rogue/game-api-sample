@@ -252,7 +252,7 @@
       "anchor": "品質ゲート",
       "title": "品質ゲート",
       "trail": "README.md \u003e game-api-sample \u003e 品質ゲート",
-      "text": "PR と main への push で .github/workflows/ci.yml が次を順に実行する。\n\n```bash\nmake lint             # golangci-lint（バージョンは .golangci-version で固定）\nmake docs/check       # 指示書の SSoT / 実態との乖離\nmake site/check       # ポートフォリオサイトの索引の再生成漏れ\nmake db/gen/check     # sqlc / schema.sql の drift\nmake gen/check        # mockgen の drift\nmake test/race        # race 検出 + カバレッジ計測\nmake test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md §3）\n```\n\nこの一覧と ci.yml が食い違っていないことは make docs/check が判定する\n（片方だけ足すと「CI で見ていない」と読まれる嘘の一覧になるため）。"
+      "text": "PR と main への push で .github/workflows/ci.yml が次を順に実行する。\n\n```bash\nmake lint             # golangci-lint（バージョンは .golangci-version で固定）\nmake docs/check       # 指示書の SSoT / 実態との乖離\nmake site/check       # ポートフォリオサイトの索引の再生成漏れ\nmake site/test        # サイトのブラウザ側（web/app.js）を jsdom でテスト\nmake db/gen/check     # sqlc / schema.sql の drift\nmake gen/check        # mockgen の drift\nmake test/race        # race 検出 + カバレッジ計測\nmake test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md §3）\n```\n\nこの一覧と ci.yml が食い違っていないことは make docs/check が判定する\n（片方だけ足すと「CI で見ていない」と読まれる嘘の一覧になるため）。"
     },
     {
       "id": "README.md#ドキュメント",

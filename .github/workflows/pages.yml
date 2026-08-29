@@ -50,12 +50,22 @@ jobs:
       - name: Check site index is up to date
         run: make site/check
 
-      # worker/ はチャット中継のソースで、静的サイトとしては配信しない
-      # （node_modules や wrangler.toml を公開してしまわないよう、明示的に除外する）。
+      # 配信するものを「列挙する」（除外を列挙する形にしない）。
+      #
+      # 以前は rsync --exclude 'worker' で除外側を列挙していたが、その形だと
+      # web/ にファイルを足すたびに除外の書き足しが要り、**書き忘れた瞬間に黙って公開される**。
+      # 実際 web/tests/（jsdom テストと node_modules）を足したときに、除外を書かなければ
+      # そのまま Pages へ出ていた。リポジトリの他の判定（depguard 等）と同じホワイトリスト方式に揃える。
+      #
+      # サイトにファイルを足したらここも更新する。忘れるとサイトが壊れて即座に分かるので、
+      # 失敗の仕方が「黙って公開」から「目に見えて欠落」へ変わる。
       - name: Stage site
         run: |
           mkdir -p _site
-          rsync -a --exclude 'worker' web/ _site/
+          cp web/index.html web/styles.css web/app.js _site/
+          cp -r web/data _site/
+          echo "--- 配信するファイル ---"
+          find _site -type f | sort
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
