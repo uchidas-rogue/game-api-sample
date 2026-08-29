@@ -46,6 +46,17 @@ export type Env = {
 const MODEL = "claude-haiku-4-5";
 /** 1回の回答の上限。長い回答は読まれないうえ、そのままコストになる。 */
 const MAX_TOKENS = 1024;
+/**
+ * リクエストボディの上限（バイト）。
+ *
+ * 正規のリクエストは質問文（最大 500 文字 = UTF-8 で 1.5KB 程度）とチャンク ID 6 件だけなので
+ * 2.5KB あれば足りる。余白を見て 8KB。
+ *
+ * これが無いと、body を読み捨てるだけの巨大なリクエストで Worker の実行回数と CPU を削られる
+ * （余計なフィールドはコードが読まないので Anthropic のコストには乗らないが、
+ * リクエスト数の無料枠は消費される）。JSON のパースはこの検査の後に行う。
+ */
+const MAX_BODY_BYTES = 8 * 1024;
 /** 1 IP あたりの毎分リクエスト上限。 */
 const RATE_PER_MINUTE = 10;
 /** サイト全体の1日あたり呼び出し上限（想定コストの天井を決める値）。 */
@@ -98,6 +109,13 @@ export default {
     }
     if (origin !== "" && !allowed.includes(origin)) {
       return problem(403, "このオリジンからの利用は許可されていません。", cors);
+    }
+
+    // ボディを読む前に大きさで弾く。Content-Length が無い（chunked 等）ものも通さない:
+    // 正規のクライアントは fetch に文字列を渡すので必ず付くため、fail closed にしておく。
+    const declaredSize = Number(request.headers.get("Content-Length"));
+    if (!Number.isFinite(declaredSize) || declaredSize <= 0 || declaredSize > MAX_BODY_BYTES) {
+      return problem(413, "リクエストが大きすぎます。", cors);
     }
 
     let body: ChatRequest;
