@@ -113,6 +113,10 @@
   - ERROR は実態と矛盾している記述（必ず直す）。WARN は将来腐る形をしている記述（放置するなら、なぜ機械照合できないかを該当箇所に残す）
 - 静的解析は `make lint`（golangci-lint、全件）。`make lint/diff` は `origin/main` からの差分のみ、`make lint/fix` は自動修正可能な指摘の修正。golangci-lint のバージョンは `.golangci-version` の1箇所で管理し、`make lint` が同じ版を `./bin` へ導入する（ローカルと CI で同一の判定になるようにするため。この2つを別々に指定しない）
 - AWS インフラの初回構築は `make tf/bootstrap`（state 保管先の S3/DynamoDB 作成）→ `make tf/init` → `terraform plan`/`apply` の順。詳細は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md)
+- ポートフォリオサイト（`web/`）の知識源は `make site/gen` で文書から生成する。取り込み対象の正本は `scripts/sitegen` の `rootDocs()` と `docs/**` で、ここに一覧を写さない（写すと片方だけ古くなる。実際 `CLAUDE.md` が取り込み対象なのに一覧から漏れていた）。対象の文書を変更したら再生成が要る（サイト専用の写しを作らないための仕組み）。再生成漏れは `make site/check` が検知し、CI と `.github/workflows/pages.yml` が公開前に実行する
+  - サイトのトップページ（`web/index.html`）が `README.md` の実測値を引用している箇所は、`ssot-assert: present-grep` ディレクティブで正本と照合している（`make docs/check` が html も走査する）。数値を引用するときは同じ形でディレクティブを添える。付け忘れは検知できないので、これが唯一の担保になる。カード本文の散文は手書きで機械判定の対象外——線引きの正本は [web/README.md](web/README.md)
+  - ブラウザとプロキシが共有する上限値（参照チャンク数・質問文の長さ）は `scripts/sitegen` の const が正本で、索引に載せて両方に読ませる。2つのランタイムのどちらかに数字を直接書かない
+  - チャットの中継（`web/worker/`）は Cloudflare Workers へ**手動デプロイ**する。索引は Worker にもバンドルされるため、文書を変えたら「`make site/gen` → 再デプロイ」までやらないとサイトと Worker で ID がずれる。手順は [web/worker/README.md](web/worker/README.md)
 - 利用可能なコマンドは `make help` で確認する（Makefile の `##` コメントが説明として表示される）
 - マイグレーションの DSN は `MIGRATE_DSN` 環境変数で上書き可能。ローカル以外の環境では明示的に指定する
 - `make test` / `make test/race` は `.testignore` に列挙されたパッケージを除外対象とする。除外理由はファイル内のコメントを参照すること。新規にテスト対象外としたいパッケージが出た場合は、**除外理由をコメントで明記したうえで** `.testignore` にパターンを追加する。逆に interface 定義のみのパッケージへ実装を足す等で除外を解除する場合は、`.testignore` から該当行を削除し §3 のカバレッジ目標に従ってテストを整備する

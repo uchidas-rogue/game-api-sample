@@ -91,6 +91,8 @@
     - 汎用キャッシュ用途（GET/SET/TTL）の追加。現状 Redis は ZSet（ランキング）と Pub/Sub（outbox 通知）のみで key/value キャッシュは未実装
   - GoのGoroutine/Channelを用いた並行処理のチューニング
 * **成果のアウトプット:** ビフォーアフターの数値と設計判断をまとめ、技術記事（Qiita等）として発信する
+* **見せ方（完了）:** 採用担当・レビュアー向けの [README.md](README.md) と、GitHub Pages のポートフォリオサイト（[web/](web/)）。サイトには「このリポジトリについて質問できるチャット」を置き、知識源は `make site/gen` が `AGENTS.md` / `ROADMAP.md` / `docs/**` / `terraform/ARCHITECTURE.md` 等から生成する（サイト専用の写しを作らず、文書を直せば追随する形にした）。チャットの中継は Cloudflare Workers に置く——AWS 環境はコスト削減で destroy する運用なので、そこに載せるとポートフォリオまで一緒に落ちるため
+  <!-- ssot-assert: path-exists web/data/index.json scripts/sitegen/main.go -->
 
 ---
 

@@ -17,6 +17,12 @@
 # 負荷試験の計測出力（make load/watch の生成物。ルート直下に出力される）
 /*.csv
 
+# チャット中継（Cloudflare Workers）のローカル依存とローカル秘密情報。
+# .dev.vars は API キーを含むので絶対にコミットしない（雛形の .dev.vars.example のみ管理）
+/web/worker/node_modules/
+/web/worker/.dev.vars
+/web/worker/.wrangler/
+
 # macOS
 .DS_Store
 

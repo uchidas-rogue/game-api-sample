@@ -91,6 +91,14 @@ head_() { printf "\n\033[1m%s\033[0m\n" "$*"; }
 #                    一方、閾値の二重管理は計画文書でも起きた（ROADMAP.md が domain 90% /
 #                    usecase 85% と書いていた）ので、計画文書は対象に含める。
 #
+#   ASSERT_SCOPE     ALL_DOCS + web/index.html
+#                    → 検査3a（ssot-assert の評価）だけに使う
+#                    ポートフォリオサイトのカード本文は md ではないが、README.md / docs の
+#                    実測値を手写ししている（サイトは「文書から生成する」方針なのに、
+#                    索引だけが生成物で、人が読むトップページは写しのままだった）。
+#                    リンク切れ・チェックリスト・時点依存 WARN といった md 前提の検査には
+#                    掛けない。html には相対リンクの解決規則も見出し構造も無いため。
+#
 #   INSTRUCTION_DOCS ALL_DOCS - docs/testing/principles/ - ROADMAP.md - docs/plans/
 #                    → 検査3の時点依存 WARN・検査4（チェックリスト写し）
 #                    計画文書は「まだ無いもの」を書くのが仕事なので時点依存マーカーは正常で、
@@ -103,6 +111,7 @@ ALL_DOCS=$(git ls-files '*.md' | grep -Ev '^(logs|terraform)/' | sort)
 INSTRUCTION_DOCS=$(printf '%s\n' "$ALL_DOCS" \
   | grep -Ev '^docs/testing/principles/|^ROADMAP\.md$|^docs/plans/')
 THRESHOLD_SCOPE=$(printf '%s\n' "$ALL_DOCS" | grep -Ev '^docs/testing/principles/')
+ASSERT_SCOPE=$(printf '%s\nweb/index.html\n' "$ALL_DOCS")
 
 # ---- 正本表 -------------------------------------------------------------------
 #
@@ -347,7 +356,11 @@ eval_assert() {
 # 【意図的に除外しないもの】
 # HTML コメントとして正しく切り出せた場合は、コード表記の判定に入る前に評価する。
 # 書き損じた実ディレクティブ（`<!--` を付け忘れた等）は従来どおり ERROR になる。
-for f in $ALL_DOCS; do
+#
+# 走査対象が ALL_DOCS ではなく ASSERT_SCOPE なのは、web/index.html のカード本文が
+# README.md の実測値の写しになっているため（集合定義のコメントを参照）。
+# ディレクティブは HTML コメントの形なので、html でもそのまま書ける。
+for f in $ASSERT_SCOPE; do
   # コードブロック内の行は最初から候補にしない（フェンス行自体も対象外）
   hits=$(awk '
     /^[[:space:]]*(```|~~~)/ { fence = !fence; next }
@@ -591,6 +604,43 @@ done <<EOF
 $targets
 EOF
 echo "  索引表 ${rows} 行 / 参照先 $(printf '%s\n' "$targets" | grep -c . || true) 件"
+[ "$ERRORS" -eq "$before" ] && echo "  OK"
+
+# ---- 7. README.md の品質ゲート一覧 ⇄ ci.yml -----------------------------------
+#
+# README.md の「品質ゲート」節は CI が実行する make ターゲットを列挙している。
+# これは ci.yml の写しなので、CI へ判定を足したときに README を直し忘れると
+# 「この一覧に無い＝CI では見ていない」と読まれる嘘の一覧になる。
+# 読み手が採用担当・レビュアーなので、ここが嘘だと「判定へ移した」という主張自体が崩れる。
+#
+# 捕捉する実例:
+#   - ポートフォリオサイトの追加時、ci.yml へ make site/check を足したのに
+#     README.md の品質ゲート一覧に入れ忘れ、同じ PR の中で乖離していた
+#
+# 突合は集合どうしで行う（検査2a と同じ理由）。片側だけを走査して「相手にあるか」を
+# 見る形にすると、README にしか無い架空のターゲットを取りこぼす。
+#
+# 順序は見ない。CI の実行順には意味があるが、README 側は説明の都合で並べ替えたくなる場所で、
+# 順序まで固定すると誤検出のほうが多くなるため。
+#
+# 既知の検出漏れ: ci.yml が make を経由せず（インラインの run: 等で）判定を足した場合。
+# make を通さない判定は AGENTS.md §5「日常的な開発操作は make 経由」に反するので、
+# そうなった時点で拾うべきは README の一覧ではなく規約側の見直し。
+head_ "7. README.md の品質ゲート一覧 ⇄ ci.yml"
+before=$ERRORS
+readme_gates=$(awk '
+  /^## 品質ゲート/ { inSec = 1; next }
+  inSec && /^## /  { inSec = 0 }
+  inSec && /^```/  { fence = !fence; next }
+  inSec && fence && /^make / { print $2 }
+' README.md | sort -u)
+ci_gates=$({ grep -oE 'run: make [A-Za-z0-9/_-]+' .github/workflows/ci.yml || true; } \
+  | sed 's/^run: make //' | sort -u)
+if [ "$readme_gates" != "$ci_gates" ]; then
+  err "README.md の品質ゲート一覧と .github/workflows/ci.yml の make ターゲットが一致しない"
+  printf "          README.md : %s\n" "$(printf '%s\n' "$readme_gates" | tr '\n' ' ')"
+  printf "          ci.yml    : %s\n" "$(printf '%s\n' "$ci_gates" | tr '\n' ' ')"
+fi
 [ "$ERRORS" -eq "$before" ] && echo "  OK"
 
 # ---- 結果 ---------------------------------------------------------------------

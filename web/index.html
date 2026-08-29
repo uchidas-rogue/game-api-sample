@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>game-api-sample — Go × AWS ゲームバックエンド</title>
+<meta name="description" content="負荷試験とチューニングを前提に組んだ Go 製ゲームバックエンド API。設計判断の理由と、規約を CI 判定へ移す取り組みを公開しています。">
+<!-- チャットの中継先。Cloudflare Workers へデプロイした URL を入れる（web/README.md 参照）。
+     未設定・到達不能なら、サイトは関連文書の抜粋表示にフォールバックする。 -->
+<meta name="chat-endpoint" content="">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="hero">
+  <p class="eyebrow">ポートフォリオ / バックエンド</p>
+  <h1>game-api-sample</h1>
+  <p class="lead">
+    負荷試験とチューニングを前提に組んだ、Go 製のゲームバックエンド API。<br>
+    ガチャ・スコア送信・ランキングを Clean Architecture で実装し、AWS へ Terraform でデプロイしています。
+  </p>
+  <nav class="hero-links">
+    <a class="btn primary" href="https://github.com/uchidas-rogue/game-api-sample">GitHub リポジトリ</a>
+    <a class="btn" href="#chat">このリポジトリに質問する</a>
+    <a class="btn" href="https://deepwiki.com/uchidas-rogue/game-api-sample" rel="noopener">コードの自動生成 Wiki</a>
+  </nav>
+</header>
+
+<main>
+  <section id="origin">
+    <h2>この設計の出発点</h2>
+    <p class="section-lead">
+      実務で書いた次の2本の記事を出発点に、<strong>別の技術スタックでゼロから作り直し、
+      記事の時点で残していた課題に手を入れた</strong>ものです。
+    </p>
+
+    <div class="cards">
+      <article class="card">
+        <h3>大規模向けリアルタイム数値反映の仕組み</h3>
+        <p>
+          シャード横断の集計が DB を圧迫する問題に、CQRS と二段キャッシュ（Memcached + 集計テーブル）を
+          定期バッチで更新する設計で対処した記録。本リポジトリでは<strong>定期バッチをやめ、outbox による
+          イベント駆動に置き換えました</strong>。記事で課題として残したキャッシュの揮発リスクも、
+          センチネルキーによる検知まで実装しています。
+        </p>
+        <!-- ssot-assert: present-grep 'items/56437f88ebdabcd10254' README.md -->
+        <p class="cite">
+          <a href="https://qiita.com/sho417sho/items/56437f88ebdabcd10254" rel="noopener">Qiita で読む</a>
+        </p>
+      </article>
+
+      <article class="card">
+        <h3>AI が安全に自走する基盤を型なしレガシー Perl で作った</h3>
+        <p>
+          「決定論的な解析・検証の利点を最大化すれば、AI 活用も最大化できる」という前提のもと、
+          基底クラス・Mock 自動生成・use チェッカーを自作した記録。本リポジトリはこの前提を引き継ぎ、
+          <strong>静的型のある Go で同じことをやるとどこまで判定を増やせるか</strong>を試しています
+          （use チェッカー → depguard、テスト契約表 → 仕様表とテストコードの機械突合）。
+        </p>
+        <!-- ssot-assert: present-grep 'items/a0d9ce5c46370254be52' README.md -->
+        <p class="cite">
+          <a href="https://qiita.com/sho417sho/items/a0d9ce5c46370254be52" rel="noopener">Qiita で読む</a>
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section id="decisions">
+    <h2>設計判断とその理由</h2>
+    <p class="section-lead">
+      「何を作ったか」より「なぜそうしたか」を残すことを重視しています。以下は主要な判断と、その根拠になった実測値です。
+    </p>
+
+    <div class="cards">
+      <article class="card">
+        <h3>書き込みと参照を分ける（CQRS + outbox）</h3>
+        <p>
+          スコア加算は MySQL のトランザクションで確定させ、同じトランザクション内で outbox イベントを INSERT。
+          ギルドへの合算と Redis 反映は worker が非同期に行います。ランキング参照は Redis の Sorted Set だけを見るため、
+          参照負荷が書き込み DB を圧迫しません。
+        </p>
+        <p class="cite">根拠: docs/plans/guild-score-async.md / docs/testing/outbox-worker.md</p>
+      </article>
+
+      <article class="card">
+        <h3>イベント単位 tx → バッチ tx（COMMIT 回数を 1/batchSize に）</h3>
+        <p>
+          負荷試験で「API のレイテンシは基準内なのに worker が生産レートに追いつかない」ことが判明。
+          1件ごとの COMMIT（fsync）が上限を決めていたため、バッチ単位の適用へ変更しました。
+          <!-- ssot-assert: present-grep '約 33/sec' README.md -->
+          <!-- ssot-assert: present-grep '270〜315/sec（ピーク 543）' README.md -->
+          消化レートは <strong>約 33/sec → 270〜315/sec（ピーク 543）</strong>、
+          <!-- ssot-assert: present-grep '111,613 件' README.md -->
+          <!-- ssot-assert: present-grep '35〜45 件' README.md -->
+          ピーク pending は 111,613 件 → 35〜45 件。
+        </p>
+        <p>
+          ただしバッチは1件の恒久失敗で全体が止まるため、失敗時だけイベント単位経路へ退避する二段構えにしています。
+        </p>
+        <!-- ssot-assert: present-grep '407 req/sec' README.md -->
+        <p class="cite">根拠: 負荷試験 make load/points（約 407 req/sec × 100 秒）</p>
+      </article>
+
+      <article class="card">
+        <h3>worker のトランザクションを READ COMMITTED にする</h3>
+        <p>
+          worker の <code>SELECT ... FOR UPDATE</code> が REPEATABLE READ でギャップロックを取り、
+          API 側の outbox INSERT を <code>INSERT_INTENTION</code> 待ちでブロックしていました
+          <!-- ssot-assert: present-grep 'p95 が 108ms → 4.6s' README.md -->
+          （<strong>API の p95 が 108ms → 4.6s</strong>）。worker は同一 tx 内の読み取り一貫性に依存しないため、
+          分離レベルを下げて解消しています。
+        </p>
+        <p class="cite">根拠: docs/testing/transaction-boundary.md「分離レベルの使い分け」</p>
+      </article>
+
+      <article class="card">
+        <h3>ランキングの「空」と「未初期化」を区別する</h3>
+        <p>
+          Redis が揮発すると <code>ZREVRANGE</code> はエラーではなく空配列を返します。「誰も加点していない」と
+          「ランキングが消えている」を取り違えないよう、センチネルキーで初期化済みかを判定し、
+          未初期化なら 503 と <code>Retry-After</code> を返します。
+        </p>
+        <p class="cite">根拠: docs/testing/ranking.md §0</p>
+      </article>
+
+      <article class="card">
+        <h3>意図的にやらないことを書き残す</h3>
+        <p>
+          WAF は導入しません（エンドユーザーが k6 なので、レートベースルールが負荷試験結果を歪めるため）。
+          NAT Gateway も AZ 冗長化せずコストを優先しています。判断の理由とトレードオフを
+          <code>terraform/ARCHITECTURE.md</code> の「対象外」節に明記しています。
+        </p>
+        <p class="cite">根拠: terraform/ARCHITECTURE.md / ROADMAP.md フェーズ2</p>
+      </article>
+    </div>
+  </section>
+
+  <section id="ai">
+    <h2>AI エージェントとの開発体制</h2>
+    <p class="section-lead">
+      実装は Claude Code 主体で進めています。人が毎回同じ指摘をしなくて済むよう、
+      <strong>規約を「AI が読む助言」から「CI で落ちる判定」へ移し続ける</strong>ことをプロジェクトの横断施策に据えました。
+    </p>
+
+    <div class="cards">
+      <article class="card">
+        <h3>規約の正本を1箇所に置く</h3>
+        <p>
+          規約の正本は <code>AGENTS.md</code> と <code>docs/</code>。Claude 専用の <code>CLAUDE.md</code> /
+          <code>.claude/**</code> には正本を置きません（他のエージェントから読めないため）。
+          この制約自体を <code>make docs/check</code> が判定し、正本の重複や実態との乖離を CI で落とします。
+        </p>
+      </article>
+
+      <article class="card">
+        <h3>図 → 失敗するテスト → 実装</h3>
+        <p>
+          <code>usecase</code> / <code>driver</code> の変更は、実装より先に mermaid のフローチャートと
+          テスト仕様表を書きます。Go には分岐カバレッジを出す標準手段が無いため、
+          <strong>図のパスカバレッジで分岐の網羅を代替</strong>する設計です。
+        </p>
+      </article>
+
+      <article class="card">
+        <h3>判定へ移した規約（Phase 0〜8）</h3>
+        <ul class="tight">
+          <li>層間 import → <code>depguard</code></li>
+          <li>ログ・ミドルウェア順序・テストの共有状態 → ruleguard の自前 AST ルール</li>
+          <li><code>var _ Iface = (*T)(nil)</code> の配置 → <code>scripts/archcheck</code></li>
+          <li>仕様表とテストの対応（件数・順序・図の終端網羅） → <code>scripts/doccheck</code></li>
+          <li>生成物の drift・層別カバレッジ・指示書の SSoT → 各 make ターゲット</li>
+        </ul>
+        <p>
+          検査を足すときの原則は「その検査が捕捉する<strong>既知の実例</strong>を必ず書く」。
+          実例を伴わない検査は誤検出源になり、いずれ無効化されるためです。
+        </p>
+      </article>
+
+      <article class="card">
+        <h3>「AI が読める構造か」を外から確かめる</h3>
+        <p>
+          外部サービスの DeepWiki にリポジトリを読ませたところ、層ごとの解説と依存フロー図を持つ
+          8 セクションのドキュメントが自動生成されました。<strong>自分で書いた指示書を自分の AI に読ませて
+          うまくいった、で終わらせない</strong>ための外形的な確認として置いています。
+        </p>
+        <p>
+          役割は下のチャットと補完関係です。DeepWiki が答えるのは「コードがどうなっているか」、
+          チャットが答えるのは「なぜそうしたか」。<strong>正本は文書側に置いたまま</strong>で、
+          DeepWiki は特定コミット時点の自動生成物なので参考扱いです。
+        </p>
+        <!-- ssot-assert: present-grep 'deepwiki.com/uchidas-rogue/game-api-sample' README.md -->
+        <p class="cite">
+          <a href="https://deepwiki.com/uchidas-rogue/game-api-sample" rel="noopener">DeepWiki で読む</a>
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section id="chat">
+    <h2>このリポジトリについて質問する</h2>
+    <p class="section-lead">
+      リポジトリ内の文書（AGENTS.md / ROADMAP.md / docs/** / terraform/ARCHITECTURE.md ほか）を検索し、
+      該当箇所を根拠に回答します。回答には必ず出典を添えます。
+    </p>
+
+    <div class="chips" id="chips" role="group" aria-label="質問例">
+      <button type="button" class="chip">なぜ Clean Architecture を選んだ？</button>
+      <button type="button" class="chip">outbox のスループットはどう改善した？</button>
+      <button type="button" class="chip">CI の品質ゲートには何がある？</button>
+      <button type="button" class="chip">テストの設計方針は？</button>
+      <button type="button" class="chip">AWS 構成とデプロイの流れは？</button>
+    </div>
+
+    <div class="chat" id="log" aria-live="polite"></div>
+
+    <form class="composer" id="composer" autocomplete="off">
+      <!-- maxlength と送信ボタンの有効化は app.js が索引の limits から設定する
+           （上限値の正本は scripts/sitegen。ここに数字を書くと写しになる）。 -->
+      <input id="question" type="text" placeholder="例: outbox worker が失敗したイベントはどうなる？" aria-label="質問">
+      <button type="submit" id="send" disabled>送信</button>
+    </form>
+    <p class="note" id="status">索引を読み込んでいます…</p>
+  </section>
+</main>
+
+<footer>
+  <p>
+    <a href="https://github.com/uchidas-rogue/game-api-sample">uchidas-rogue/game-api-sample</a> ・
+    このページの回答はリポジトリの文書のみを根拠にしています（索引は文書から自動生成）。
+  </p>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -59,6 +59,12 @@ jobs:
       - name: Check instruction docs (SSoT)
         run: make docs/check
 
+      # ポートフォリオサイトの索引（web/data/index.json）の再生成忘れを検知する。
+      # 索引は文書から生成する成果物で、文書だけ直すとサイトの回答が古いまま固定される。
+      # Pages のデプロイ時にも同じ検査を通すが、PR の時点で気づけるようここでも実行する。
+      - name: Check site index is up to date
+        run: make site/check
+
       # DB 生成物（schema.sql / sqlc）の再生成忘れを検知する。
       # migrations を足して db/schema/dump を忘れた場合や、queries を変えて
       # db/sqlc/gen を忘れた場合に落ちる。
