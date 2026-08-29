@@ -170,6 +170,7 @@ PR と main への push で [.github/workflows/ci.yml](.github/workflows/ci.yml)
 make lint             # golangci-lint（バージョンは .golangci-version で固定）
 make docs/check       # 指示書の SSoT / 実態との乖離
 make site/check       # ポートフォリオサイトの索引の再生成漏れ
+make site/test        # サイトのブラウザ側（web/app.js）を jsdom でテスト
 make db/gen/check     # sqlc / schema.sql の drift
 make gen/check        # mockgen の drift
 make test/race        # race 検出 + カバレッジ計測

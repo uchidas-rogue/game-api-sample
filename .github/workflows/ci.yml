@@ -65,6 +65,20 @@ jobs:
       - name: Check site index is up to date
         run: make site/check
 
+      # サイトのブラウザ側（web/app.js）を jsdom 上でテストする。
+      # app.js はブラウザで動くので Go のテストからは触れず、ここが無いと
+      # 「レビューと目視でしか担保されていないコード」がリポジトリに残る。
+      # とくに「中継へ本文を送らない」ことの担保は、壊れると設計の前提ごと崩れる。
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/tests/package-lock.json
+
+      - name: Test site client (jsdom)
+        run: make site/test
+
       # DB 生成物（schema.sql / sqlc）の再生成忘れを検知する。
       # migrations を足して db/schema/dump を忘れた場合や、queries を変えて
       # db/sqlc/gen を忘れた場合に落ちる。
