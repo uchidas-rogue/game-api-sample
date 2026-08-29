@@ -22,15 +22,31 @@ const indexJson = JSON.parse(read("data/index.json"));
 /** 検索が必ず当たる質問（索引の実データに対して閾値を超えるもの）。 */
 const HIT_QUESTION = "outbox のスループットはどう改善した？";
 
+/** ENDPOINT_META は index.html の chat-endpoint。content の中身に依存させない。
+ *  デプロイ後の実 URL が入っても、テストが指定した endpoint で上書きできるようにするため。 */
+const ENDPOINT_META = /name="chat-endpoint" content="[^"]*"/;
+
+/**
+ * withEndpoint は index.html の中継先を endpoint に差し替える。
+ * 差し替えられなければ投げる。空振りすると index.html の実 URL のまま起動してしまい、
+ * 「未設定なら呼ばない」の検証が意味を失うため。
+ */
+function withEndpoint(endpoint) {
+  if (!ENDPOINT_META.test(html)) {
+    throw new Error("index.html に chat-endpoint の meta が見つからない");
+  }
+  return html.replace(ENDPOINT_META, `name="chat-endpoint" content="${endpoint}"`);
+}
+
 /**
  * boot はサイトを jsdom 上で起動する。
  * chat は中継への fetch が返す応答を組み立てる関数。sent には送信されたボディが溜まる。
  */
 function boot({ endpoint = "", chat } = {}) {
-  const dom = new JSDOM(
-    html.replace('name="chat-endpoint" content=""', `name="chat-endpoint" content="${endpoint}"`),
-    { runScripts: "dangerously", url: "http://localhost:8000/" },
-  );
+  const dom = new JSDOM(withEndpoint(endpoint), {
+    runScripts: "dangerously",
+    url: "http://localhost:8000/",
+  });
   const { window } = dom;
   // jsdom は未実装。app.js が新着メッセージへスクロールするだけなので握り潰す。
   window.Element.prototype.scrollIntoView = () => {};
