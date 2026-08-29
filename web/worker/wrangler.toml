@@ -14,4 +14,4 @@ ALLOWED_ORIGINS = "https://uchidas-rogue.github.io"
 [[kv_namespaces]]
 binding = "CHAT_KV"
 # `npx wrangler kv namespace create CHAT_KV` が出力した id を入れる。
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
+id = "1d3f49b050564e2695dd3c56dbc5ca54"
