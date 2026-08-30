@@ -27,6 +27,20 @@
 # package-lock.json はバージョンを固定したいのでコミットする
 /web/tests/node_modules/
 
+# Unity クライアント（clients/unity/）。
+# 生成済み C# と link.xml・サンプルはコミットするが、次は追跡しない:
+#   - Unity プロジェクトのローカル生成物（Assets/ 配下へコピーして使う想定のため本来ここには出ないが、
+#     試しに Unity プロジェクトを掘った場合に紛れ込む）
+#   - NuGet / UPM で入れる DLL。ライセンス表記とサイズの管理コストに見合わないため、
+#     README の手順で各自が導入する方針（clients/unity/README.md）
+/clients/unity/**/Library/
+/clients/unity/**/Temp/
+/clients/unity/**/obj/
+/clients/unity/**/Logs/
+/clients/unity/**/*.csproj
+/clients/unity/**/*.sln
+/clients/unity/**/*.dll
+
 # macOS
 .DS_Store
 

@@ -16,14 +16,20 @@ Terraform でデプロイする。設計の判断根拠と、規約を CI の判
 flowchart LR
     U["エンドユーザー / k6"] -->|HTTP| ALB[ALB]
     ALB --> API["ECS: api<br/>Echo + Clean Architecture"]
+    C["Unity クライアント"] -->|gRPC| G["grpc<br/>unary + server streaming"]
 
     API -->|"書き込み（tx）"| DB[("Aurora MySQL")]
     API -->|"参照（ZSet）"| R[("ElastiCache Redis")]
     API -->|"同一 tx で outbox INSERT"| DB
 
+    G -->|"api と同じ usecase を共有"| DB
+    G -->|"参照（ZSet）"| R
+
     DB -.->|"未処理イベントを取得"| W["ECS: outbox-worker<br/>ギルド集計 + Redis 反映"]
     W --> DB
     W --> R
+    W -.->|"反映完了を publish"| R
+    R -.->|"ranking:updated を購読して push"| G
 
     B["ECS: batch<br/>DB → Redis 再同期 / GC"] --> DB
     B --> R
@@ -32,12 +38,18 @@ flowchart LR
 書き込み（個人スコア加算・ギルド集計）と読み取り（ランキング参照）を分離し、参照負荷が書き込み DB を
 圧迫しない構成にしている。ギルドへの合算は **outbox パターン**で非同期に流し、API のトランザクションを短く保つ。
 
+gRPC サーバ（`grpc`）は Unity クライアント向けの 2 つ目の delivery で、`api` と**同じユースケース**を
+共有する。outbox worker が Redis へ反映を終えた直後の通知を購読しており、ランキングの変化を
+そのままクライアントへ push できる。**ローカルと Docker まで対応しており、ECS へのデプロイは未対応**
+（[ROADMAP.md](ROADMAP.md) 参照）。
+
 インフラ構成・モジュール分割・CI/CD の安全装置は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md) を参照。
 
 ## この設計の出発点
 
 本リポジトリは、筆者が実務で書いた次の2本の記事を出発点に、**別の技術スタックでゼロから作り直し、
-記事の時点で残していた課題に手を入れたもの**。「見どころ」の 1 が前者、2〜3 が後者に対応する。
+記事の時点で残していた課題に手を入れたもの**。「見どころ」の 1 が前者、2〜3 が後者に対応する
+（4 は記事には無く、作り直したあとに足した拡張）。
 
 - [【備忘録】大規模向けリアルタイム数値反映の仕組みを考えて実装した](https://qiita.com/sho417sho/items/56437f88ebdabcd10254)
 - [TDD→Clean Architecture→動的言語の制御 ── AIが安全に自走する基盤を型なしレガシーPerlで作った](https://qiita.com/sho417sho/items/a0d9ce5c46370254be52)
@@ -125,11 +137,35 @@ Claude 固有のファイル（`CLAUDE.md` / `.claude/**`）には正本を置�
 テストは「図 → 失敗するテスト → 実装」の順で作り、フローチャートのパスカバレッジで
 Go では計測できない分岐カバレッジを代替している（[docs/testing/README.md](docs/testing/README.md)）。
 
+### 4. 同じユースケースを HTTP と gRPC の 2 経路で配る
+
+Unity クライアント向けに gRPC delivery を足した。狙いは「Clean Architecture が実際に効いているか」を
+2 つ目の delivery で検証すること。
+
+- **`internal/usecase/ranking` を 1 行も変えずに済んだ。** `cmd/api` と `cmd/grpc` は
+  [同じ usecase インスタンス](internal/di/container.go)を共有する。この境界は文章の申し合わせではなく
+  depguard が保証していて、`driver` から `infrastructure` を import した時点で `make lint` が落ちる
+- **outbox の非同期基盤がそのままリアルタイム push の土台になった。** worker が Redis ZSet へ反映を
+  終えた直後に `ranking:updated` を publish し、gRPC の server streaming がそれを購読する。
+  既存の `outbox:events` は反映**前**の worker 起床通知なので転用できない（購読すると反映前の
+  古い値を配ることになる）という判別が、この設計でいちばん間違えやすい箇所だった
+- **接続ごとに Redis を購読しない。** クライアント N 台 = Redis 接続 N 本になり、コネクション数を
+  有限化した設計と矛盾する。購読は 1 本にまとめ、プロセス内のハブから配る
+- **`GracefulStop()` は進行中のストリームが終わるまでブロックする。** server streaming がある以上、
+  HTTP 側と同じ形で書くと SIGTERM でシャットダウンが完了しない。「配信を止める →
+  タイムアウト付きで待つ → 超過したら強制切断」の三段構えにしてある
+- 規約も配信形式をまたいで効かせた。インターセプタの登録順は HTTP のミドルウェア順序規約と
+  同じ判定（AST テスト）で守り、`grpc.UnaryInterceptor`（単数形）による迂回は ruleguard で塞いだ
+
+クライアント側の詰まりどころ（`Grpc.Core` の非推奨、Unity のランタイムが HTTP/2 を喋れないこと、
+IL2CPP の code stripping）は [clients/unity/README.md](clients/unity/README.md) にまとめてある。
+
 ## 技術スタック
 
 | 領域 | 採用 | 補足 |
 |---|---|---|
 | 言語 / HTTP | Go 1.25 / Echo v4 | |
+| gRPC | grpc-go / Protocol Buffers | 契約は [proto/](proto/)、生成は **buf**（`buf lint` / `buf breaking` を CI ゲートに） |
 | アーキテクチャ | Clean Architecture（`driver` → `usecase` → `domain`） | `infrastructure` は `usecase` の interface を実装 |
 | DB | MySQL 8.0（本番: Aurora MySQL Serverless v2） | クエリは **sqlc**、マイグレーションは **golang-migrate**。ORM は使わない |
 | キャッシュ / ランキング | Redis（本番: ElastiCache） | Sorted Set と Pub/Sub |
@@ -159,6 +195,24 @@ curl localhost:8080/rankings/guilds
 | `GET /rankings/{users,guilds}` | ランキング一覧（Redis ZSet） |
 | `GET /{users,guilds}/:id/ranking` | 順位取得 |
 
+gRPC（Unity クライアント向け）は別プロセスで、`api` と同時に起動できる。
+
+```bash
+make run/grpc   # gRPC 起動（:9090、平文 h2c）
+
+# サーバリフレクションは有効にしていないので .proto を渡して叩く
+grpcurl -plaintext -import-path proto -proto game/ranking/v1/ranking.proto \
+  -d '{"limit":10}' localhost:9090 game.ranking.v1.RankingService/GetUserRankings
+```
+
+| gRPC メソッド | 内容 |
+|---|---|
+| `GetUserRankings` / `GetGuildRankings` | ランキング一覧 |
+| `GetUserRank` / `GetGuildRank` | 順位取得 |
+| `AddUserPoints` | スコア加算 |
+| `WatchUserRankings` | **ランキング更新の push（server streaming）** |
+
+Unity からの繋ぎ方は [clients/unity/README.md](clients/unity/README.md)。
 非同期集計まで動かすなら `make run/outbox-worker` を併走させる。負荷試験の手順は [loadtest/README.md](loadtest/README.md)。
 利用できるコマンドは `make help` で一覧できる。
 
@@ -168,11 +222,14 @@ PR と main への push で [.github/workflows/ci.yml](.github/workflows/ci.yml)
 
 ```bash
 make lint             # golangci-lint（バージョンは .golangci-version で固定）
+make proto/lint       # proto の命名規約（buf lint）
 make docs/check       # 指示書の SSoT / 実態との乖離
 make site/check       # ポートフォリオサイトの索引の再生成漏れ
 make site/test        # サイトのブラウザ側（web/app.js）を jsdom でテスト
 make db/gen/check     # sqlc / schema.sql の drift
 make gen/check        # mockgen の drift
+make proto/gen/check  # protoc 生成物の drift
+make proto/breaking   # proto の後方互換（buf breaking）
 make test/race        # race 検出 + カバレッジ計測
 make test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md §3）
 ```
@@ -189,6 +246,7 @@ make test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md 
 | AWS 構成・Terraform モジュール分割・CI/CD の安全装置 | [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md) |
 | テスト設計の原則と、機能ごとのフロー図・テスト仕様表 | [docs/testing/](docs/testing/) |
 | 負荷試験シナリオ | [loadtest/README.md](loadtest/README.md) |
+| Unity から gRPC で繋ぐ手順と、その詰まりどころ | [clients/unity/README.md](clients/unity/README.md) |
 | コードの構造を追う（**外部・自動生成**） | [DeepWiki](https://deepwiki.com/uchidas-rogue/game-api-sample) |
 
 上の表のうち **DeepWiki だけは外部サービスが本リポジトリから自動生成したもの**で、正本ではない。

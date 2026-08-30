@@ -204,7 +204,7 @@
       "anchor": "構成",
       "title": "構成",
       "trail": "README.md \u003e game-api-sample \u003e 構成",
-      "text": "書き込み（個人スコア加算・ギルド集計）と読み取り（ランキング参照）を分離し、参照負荷が書き込み DB を\n圧迫しない構成にしている。ギルドへの合算は outbox パターンで非同期に流し、API のトランザクションを短く保つ。\n\nインフラ構成・モジュール分割・CI/CD の安全装置は terraform/ARCHITECTURE.md を参照。"
+      "text": "書き込み（個人スコア加算・ギルド集計）と読み取り（ランキング参照）を分離し、参照負荷が書き込み DB を\n圧迫しない構成にしている。ギルドへの合算は outbox パターンで非同期に流し、API のトランザクションを短く保つ。\n\ngRPC サーバ（grpc）は Unity クライアント向けの 2 つ目の delivery で、api と同じユースケースを\n共有する。outbox worker が Redis へ反映を終えた直後の通知を購読しており、ランキングの変化を\nそのままクライアントへ push できる。ローカルと Docker まで対応しており、ECS へのデプロイは未対応\n（ROADMAP.md 参照）。\n\nインフラ構成・モジュール分割・CI/CD の安全装置は terraform/ARCHITECTURE.md を参照。"
     },
     {
       "id": "README.md#この設計の出発点",
@@ -212,7 +212,7 @@
       "anchor": "この設計の出発点",
       "title": "この設計の出発点",
       "trail": "README.md \u003e game-api-sample \u003e この設計の出発点",
-      "text": "本リポジトリは、筆者が実務で書いた次の2本の記事を出発点に、別の技術スタックでゼロから作り直し、\n記事の時点で残していた課題に手を入れたもの。「見どころ」の 1 が前者、2〜3 が後者に対応する。\n\n- 【備忘録】大規模向けリアルタイム数値反映の仕組みを考えて実装した\n- TDD→Clean Architecture→動的言語の制御 ── AIが安全に自走する基盤を型なしレガシーPerlで作った"
+      "text": "本リポジトリは、筆者が実務で書いた次の2本の記事を出発点に、別の技術スタックでゼロから作り直し、\n記事の時点で残していた課題に手を入れたもの。「見どころ」の 1 が前者、2〜3 が後者に対応する\n（4 は記事には無く、作り直したあとに足した拡張）。\n\n- 【備忘録】大規模向けリアルタイム数値反映の仕組みを考えて実装した\n- TDD→Clean Architecture→動的言語の制御 ── AIが安全に自走する基盤を型なしレガシーPerlで作った"
     },
     {
       "id": "README.md#リアルタイム数値反映記事1-→-本リポジトリ",
@@ -255,12 +255,20 @@
       "text": "実装は Claude Code 主体で進めている。そのために、規約の正本を AGENTS.md と docs/ に集約し、\nClaude 固有のファイル（CLAUDE.md / .claude/）には正本を置かないという制約を敷いた\n（他のエージェントから読めないため）。この制約自体も make docs/check が判定する。\n\nテストは「図 → 失敗するテスト → 実装」の順で作り、フローチャートのパスカバレッジで\nGo では計測できない分岐カバレッジを代替している（docs/testing/README.md）。"
     },
     {
+      "id": "README.md#4-同じユースケースを-http-と-grpc-の-2-経路で配る",
+      "file": "README.md",
+      "anchor": "4-同じユースケースを-http-と-grpc-の-2-経路で配る",
+      "title": "4. 同じユースケースを HTTP と gRPC の 2 経路で配る",
+      "trail": "README.md \u003e game-api-sample \u003e 見どころ \u003e 4. 同じユースケースを HTTP と gRPC の 2 経路で配る",
+      "text": "Unity クライアント向けに gRPC delivery を足した。狙いは「Clean Architecture が実際に効いているか」を\n2 つ目の delivery で検証すること。\n\n- internal/usecase/ranking を 1 行も変えずに済んだ。 cmd/api と cmd/grpc は\n  同じ usecase インスタンスを共有する。この境界は文章の申し合わせではなく\n  depguard が保証していて、driver から infrastructure を import した時点で make lint が落ちる\n- outbox の非同期基盤がそのままリアルタイム push の土台になった。 worker が Redis ZSet へ反映を\n  終えた直後に ranking:updated を publish し、gRPC の server streaming がそれを購読する。\n  既存の outbox:events は反映前の worker 起床通知なので転用できない（購読すると反映前の\n  古い値を配ることになる）という判別が、この設計でいちばん間違えやすい箇所だった\n- 接続ごとに Redis を購読しない。 クライアント N 台 = Redis 接続 N 本になり、コネクション数を\n  有限化した設計と矛盾する。購読は 1 本にまとめ、プロセス内のハブから配る\n- GracefulStop() は進行中のストリームが終わるまでブロックする。 server streaming がある以上、\n  HTTP 側と同じ形で書くと SIGTERM でシャットダウンが完了しない。「配信を止める →\n  タイムアウト付きで待つ → 超過したら強制切断」の三段構えにしてある\n- 規約も配信形式をまたいで効かせた。インターセプタの登録順は HTTP のミドルウェア順序規約と\n  同じ判定（AST テスト）で守り、grpc.UnaryInterceptor（単数形）による迂回は ruleguard で塞いだ\n\nクライアント側の詰まりどころ（Grpc.Core の非推奨、Unity のランタイムが HTTP/2 を喋れないこと、\nIL2CPP の code stripping）は clients/unity/README.md にまとめてある。"
+    },
+    {
       "id": "README.md#技術スタック",
       "file": "README.md",
       "anchor": "技術スタック",
       "title": "技術スタック",
       "trail": "README.md \u003e game-api-sample \u003e 技術スタック",
-      "text": "| 領域 | 採用 | 補足 |\n|---|---|---|\n| 言語 / HTTP | Go 1.25 / Echo v4 | |\n| アーキテクチャ | Clean Architecture（driver → usecase → domain） | infrastructure は usecase の interface を実装 |\n| DB | MySQL 8.0（本番: Aurora MySQL Serverless v2） | クエリは sqlc、マイグレーションは golang-migrate。ORM は使わない |\n| キャッシュ / ランキング | Redis（本番: ElastiCache） | Sorted Set と Pub/Sub |\n| テスト | 標準 testing + testify + uber-go/mock + go-sqlmock + miniredis | |\n| 負荷試験 | k6 | loadtest/ |\n| IaC | Terraform（ECS Fargate / arm64） | GitHub Actions ↔ AWS は OIDC AssumeRole |"
+      "text": "| 領域 | 採用 | 補足 |\n|---|---|---|\n| 言語 / HTTP | Go 1.25 / Echo v4 | |\n| gRPC | grpc-go / Protocol Buffers | 契約は proto/、生成は buf（buf lint / buf breaking を CI ゲートに） |\n| アーキテクチャ | Clean Architecture（driver → usecase → domain） | infrastructure は usecase の interface を実装 |\n| DB | MySQL 8.0（本番: Aurora MySQL Serverless v2） | クエリは sqlc、マイグレーションは golang-migrate。ORM は使わない |\n| キャッシュ / ランキング | Redis（本番: ElastiCache） | Sorted Set と Pub/Sub |\n| テスト | 標準 testing + testify + uber-go/mock + go-sqlmock + miniredis | |\n| 負荷試験 | k6 | loadtest/ |\n| IaC | Terraform（ECS Fargate / arm64） | GitHub Actions ↔ AWS は OIDC AssumeRole |"
     },
     {
       "id": "README.md#動かす",
@@ -268,7 +276,15 @@
       "anchor": "動かす",
       "title": "動かす",
       "trail": "README.md \u003e game-api-sample \u003e 動かす",
-      "text": "```bash\ndocker compose -f deployments/docker-compose.yml up -d   # MySQL + Redis\nmake db/migrate/up                                        # マイグレーション\nmake run                                                  # API 起動（:8080）\n```\n\n```bash\ncurl localhost:8080/healthz\ncurl -XPOST localhost:8080/users/1/gacha/multi -d '{\"pull_count\":10}' -H 'Content-Type: application/json'\ncurl localhost:8080/rankings/guilds\n```\n\n| エンドポイント | 内容 |\n|---|---|\n| GET /healthz | ヘルスチェック |\n| POST /users/:userID/gacha/multi | 複数回ガチャ（トランザクション + 行ロック） |\n| POST /users/:userID/points | スコア加算（個人 + ギルドへ非同期合算） |\n| GET /rankings/{users,guilds} | ランキング一覧（Redis ZSet） |\n| GET /{users,guilds}/:id/ranking | 順位取得 |\n\n非同期集計まで動かすなら make run/outbox-worker を併走させる。負荷試験の手順は loadtest/README.md。\n利用できるコマンドは make help で一覧できる。"
+      "text": "```bash\ndocker compose -f deployments/docker-compose.yml up -d   # MySQL + Redis\nmake db/migrate/up                                        # マイグレーション\nmake run                                                  # API 起動（:8080）\n```\n\n```bash\ncurl localhost:8080/healthz\ncurl -XPOST localhost:8080/users/1/gacha/multi -d '{\"pull_count\":10}' -H 'Content-Type: application/json'\ncurl localhost:8080/rankings/guilds\n```\n\n| エンドポイント | 内容 |\n|---|---|\n| GET /healthz | ヘルスチェック |\n| POST /users/:userID/gacha/multi | 複数回ガチャ（トランザクション + 行ロック） |\n| POST /users/:userID/points | スコア加算（個人 + ギルドへ非同期合算） |\n| GET /rankings/{users,guilds} | ランキング一覧（Redis ZSet） |\n| GET /{users,guilds}/:id/ranking | 順位取得 |\n\ngRPC（Unity クライアント向け）は別プロセスで、api と同時に起動できる。\n\n```bash\nmake run/grpc   # gRPC 起動（:9090、平文 h2c）\n\n# サーバリフレクションは有効にしていないので .proto を渡して叩く\ngrpcurl -plaintext -import-path proto -proto game/ranking/v1/ranking.proto \\\n  -d '{\"limit\":10}' localhost:9090 game.ranking.v1.RankingService/GetUserRankings\n```\n\n| gRPC メソッド | 内容 |\n|---|---|\n| GetUserRankings / GetGuildRankings | ランキング一覧 |\n| GetUserRank / GetGuildRank | 順位取得 |\n| AddUserPoints | スコア加算 |\n| WatchUserRankings | ランキング更新の push（server streaming） |"
+    },
+    {
+      "id": "README.md#動かす@2",
+      "file": "README.md",
+      "anchor": "動かす",
+      "title": "動かす",
+      "trail": "README.md \u003e game-api-sample \u003e 動かす",
+      "text": "Unity からの繋ぎ方は clients/unity/README.md。\n非同期集計まで動かすなら make run/outbox-worker を併走させる。負荷試験の手順は loadtest/README.md。\n利用できるコマンドは make help で一覧できる。"
     },
     {
       "id": "README.md#品質ゲート",
@@ -276,7 +292,7 @@
       "anchor": "品質ゲート",
       "title": "品質ゲート",
       "trail": "README.md \u003e game-api-sample \u003e 品質ゲート",
-      "text": "PR と main への push で .github/workflows/ci.yml が次を順に実行する。\n\n```bash\nmake lint             # golangci-lint（バージョンは .golangci-version で固定）\nmake docs/check       # 指示書の SSoT / 実態との乖離\nmake site/check       # ポートフォリオサイトの索引の再生成漏れ\nmake site/test        # サイトのブラウザ側（web/app.js）を jsdom でテスト\nmake db/gen/check     # sqlc / schema.sql の drift\nmake gen/check        # mockgen の drift\nmake test/race        # race 検出 + カバレッジ計測\nmake test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md §3）\n```\n\nこの一覧と ci.yml が食い違っていないことは make docs/check が判定する\n（片方だけ足すと「CI で見ていない」と読まれる嘘の一覧になるため）。"
+      "text": "PR と main への push で .github/workflows/ci.yml が次を順に実行する。\n\n```bash\nmake lint             # golangci-lint（バージョンは .golangci-version で固定）\nmake proto/lint       # proto の命名規約（buf lint）\nmake docs/check       # 指示書の SSoT / 実態との乖離\nmake site/check       # ポートフォリオサイトの索引の再生成漏れ\nmake site/test        # サイトのブラウザ側（web/app.js）を jsdom でテスト\nmake db/gen/check     # sqlc / schema.sql の drift\nmake gen/check        # mockgen の drift\nmake proto/gen/check  # protoc 生成物の drift\nmake proto/breaking   # proto の後方互換（buf breaking）\nmake test/race        # race 検出 + カバレッジ計測\nmake test/cover/check # 層別カバレッジ閾値（値の正本は AGENTS.md §3）\n```\n\nこの一覧と ci.yml が食い違っていないことは make docs/check が判定する\n（片方だけ足すと「CI で見ていない」と読まれる嘘の一覧になるため）。"
     },
     {
       "id": "README.md#ドキュメント",
@@ -284,7 +300,7 @@
       "anchor": "ドキュメント",
       "title": "ドキュメント",
       "trail": "README.md \u003e game-api-sample \u003e ドキュメント",
-      "text": "| 読みたいこと | ファイル |\n|---|---|\n| コーディング規約・アーキテクチャ規約（全エージェント共通の入口） | AGENTS.md |\n| 3ヶ月のロードマップと、各フェーズで何を意図的にやらなかったか | ROADMAP.md |\n| AWS 構成・Terraform モジュール分割・CI/CD の安全装置 | terraform/ARCHITECTURE.md |\n| テスト設計の原則と、機能ごとのフロー図・テスト仕様表 | docs/testing/ |\n| 負荷試験シナリオ | loadtest/README.md |\n| コードの構造を追う（外部・自動生成） | DeepWiki |\n\n上の表のうち DeepWiki だけは外部サービスが本リポジトリから自動生成したもので、正本ではない。\n層ごとの解説から GitHub の該当行へリンクが張られるのでコードを追うのには向くが、内容は\n特定コミット時点のスナップショットであり make docs/check の検証対象外。記述が食い違う場合は\n本リポジトリの文書を優先する。\n\n役割はサイトのチャットと補完関係にある。DeepWiki が答えるのは「コードがどうなっているか」で、\nサイトのチャットが答えるのは「なぜそうしたか」（AGENTS.md / docs/ の設計判断を根拠にする）。\nこのリポジトリが重視しているのは後者なので、正本は文書側に置いたままにしてある。\n\nなお、外部の AI がリポジトリを読んで一貫した構成図と層ごとの解説を組み立てられること自体が、\n「AI が読める構造になっているか」の外形的な確認になっている（→ この設計の出発点 の記事2）。"
+      "text": "| 読みたいこと | ファイル |\n|---|---|\n| コーディング規約・アーキテクチャ規約（全エージェント共通の入口） | AGENTS.md |\n| 3ヶ月のロードマップと、各フェーズで何を意図的にやらなかったか | ROADMAP.md |\n| AWS 構成・Terraform モジュール分割・CI/CD の安全装置 | terraform/ARCHITECTURE.md |\n| テスト設計の原則と、機能ごとのフロー図・テスト仕様表 | docs/testing/ |\n| 負荷試験シナリオ | loadtest/README.md |\n| Unity から gRPC で繋ぐ手順と、その詰まりどころ | clients/unity/README.md |\n| コードの構造を追う（外部・自動生成） | DeepWiki |\n\n上の表のうち DeepWiki だけは外部サービスが本リポジトリから自動生成したもので、正本ではない。\n層ごとの解説から GitHub の該当行へリンクが張られるのでコードを追うのには向くが、内容は\n特定コミット時点のスナップショットであり make docs/check の検証対象外。記述が食い違う場合は\n本リポジトリの文書を優先する。\n\n役割はサイトのチャットと補完関係にある。DeepWiki が答えるのは「コードがどうなっているか」で、\nサイトのチャットが答えるのは「なぜそうしたか」（AGENTS.md / docs/ の設計判断を根拠にする）。\nこのリポジトリが重視しているのは後者なので、正本は文書側に置いたままにしてある。\n\nなお、外部の AI がリポジトリを読んで一貫した構成図と層ごとの解説を組み立てられること自体が、\n「AI が読める構造になっているか」の外形的な確認になっている（→ この設計の出発点 の記事2）。"
     },
     {
       "id": "ROADMAP.md#プロジェクト概要",
@@ -316,7 +332,7 @@
       "anchor": "横断施策決定論的検証基盤フェーズをまたぐ--随時",
       "title": "横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
       "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e 横断施策：決定論的検証基盤（フェーズをまたぐ / 随時）",
-      "text": "* 次の候補: 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に .golangci.yml / scripts/ へ移す（docs/testing/principles/deterministic-verification.md §1）。現在の候補は §6 の残り——「ケースがパスが短い順に並んでいる」で、表の省略記号（…→G→E6）を図から復元できれば判定できる（復元を誤ると誤検出になるため Phase 8 では見送った）。AGENTS.md §2「DI 対象のコンストラクタは logger を必須引数とし、nil チェック・slog.Default() フォールバックを実装しない」は見送る: slog.Default() の呼び出し自体は forbidigo が禁止済みで、残る「必須引数になっているか」「nil チェックを書いていないか」は現行コードに違反実例がゼロ。実例を伴わない検査は誤検出源になりいずれ無効化される（AGENTS.md §5）ため、違反が1件でも現れてから入れる\n\n---"
+      "text": "* Phase 9（完了）: gRPC の契約検証を CI 判定へ。.proto 自体がレスポンス契約の正本なので、HTTP 側の internal/driver/http/testdata/contracts/*.json に相当する写しは作らず、make proto/lint（命名規約）・make proto/breaking（フィールド番号の再利用・型変更・削除を wire 互換の観点で検出）・make proto/gen/check（生成物の drift）の3点で担保する。加えて pb メッセージと domain / usecase の構造体のフィールド集合を protoreflect で突合するテストを置き、「domain に足したフィールドを proto へ写し忘れた」（およびその逆）を検出する——これは HTTP 側に無い保証で、JSON の契約ファイルが「構造だけ」を見るのに対し proto 側は互換性まで見る。C# 生成物だけは remote plugin（要ネットワーク）のため CI で再生成せず、.proto の FileDescriptorSet ダイジェストの突合に留めた。必須ゲートに外部サービスへの到達性を持ち込まないため\n* 次の候補: 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に .golangci.yml / scripts/ へ移す（docs/testing/principles/deterministic-verification.md §1）。現在の候補は §6 の残り——「ケースがパスが短い順に並んでいる」で、表の省略記号（…→G→E6）を図から復元できれば判定できる（復元を誤ると誤検出になるため Phase 8 では見送った）。AGENTS.md §2「DI 対象のコンストラクタは logger を必須引数とし、nil チェック・slog.Default() フォールバックを実装しない」は見送る: slog.Default() の呼び出し自体は forbidigo が禁止済みで、残る「必須引数になっているか」「nil チェックを書いていないか」は現行コードに違反実例がゼロ。実例を伴わない検査は誤検出源になりいずれ無効化される（AGENTS.md §5）ため、違反が1件でも現れてから入れる\n\n---"
     },
     {
       "id": "ROADMAP.md#フェーズ1goによるモダンなゲームapiの実装1ヶ月目--ローカル完結",
@@ -372,7 +388,23 @@
       "anchor": "フェーズ5マスタデータ配信フローの構築発展課題--フェーズ13-完了後に着手",
       "title": "フェーズ5：マスタデータ配信フローの構築（発展課題 / フェーズ1〜3 完了後に着手）",
       "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ5：マスタデータ配信フローの構築（発展課題 / フェーズ1〜3 完了後に着手）",
-      "text": "目標: ゲーム設定値（マスタデータ）を「DB → 配信用ファイル → クライアント/サーバ」へ流すパイプラインを AWS 上に構築する。admin ツールは本プロジェクトでは実装しないため、パッキング処理は専用バッチで代替する。\n\n* データフロー（admin 抜きの簡易版）:\n  - パッキング用バッチ（ECS ScheduledTask または RunTask）が Aurora MySQL のマスタデータを読み取り、gob（サーバ向け）/ SQLite（クライアント向け）ファイルを生成して S3 にアップロード\n  - api（Cloud Run 相当の ECS Service）は起動時/更新時に S3 から gob を取得してインメモリキャッシュ\n  - クライアント向け SQLite は CloudFront 経由で配信（クライアントはローカルキャッシュ）\n* インフラ追加（Terraform）:\n  - storage モジュール新設: S3 バケット ×2（server master / client master）+ CloudFront ディストリビューション（OAC で S3 を保護）\n  - S3 VPC Gateway Endpoint を network モジュールに追加（無料）— ECS タスクの S3 アクセスを NAT 経由から AWS 内部経路へ切り替え、NAT データ処理料を削減。※このタスクと同じ PR で必ず一緒に入れる\n  - パッキング用 ECR リポジトリ追加（または migrate イメージに同梱）\n  - IAM: api の task role に S3 read、パッカー task role に S3 write + Aurora read を追加\n* アプリ追加:\n  - パッカー: Aurora → gob/SQLite 生成のバッチコマンド（internal/driver/batch 配下）\n  - ローダー: S3 から gob を取得しインメモリキャッシュする infrastructure 層 repository + DI 配線\n* 想定コスト: S3 ~$1/月、CloudFront 実トラフィック比例（ポートフォリオ規模なら実質無料枠内）、パッキングタスク \u003c $1/月、Gateway Endpoint $0"
+      "text": "目標: ゲーム設定値（マスタデータ）を「DB → 配信用ファイル → クライアント/サーバ」へ流すパイプラインを AWS 上に構築する。admin ツールは本プロジェクトでは実装しないため、パッキング処理は専用バッチで代替する。\n\n* データフロー（admin 抜きの簡易版）:\n  - パッキング用バッチ（ECS ScheduledTask または RunTask）が Aurora MySQL のマスタデータを読み取り、gob（サーバ向け）/ SQLite（クライアント向け）ファイルを生成して S3 にアップロード\n  - api（Cloud Run 相当の ECS Service）は起動時/更新時に S3 から gob を取得してインメモリキャッシュ\n  - クライアント向け SQLite は CloudFront 経由で配信（クライアントはローカルキャッシュ）\n* インフラ追加（Terraform）:\n  - storage モジュール新設: S3 バケット ×2（server master / client master）+ CloudFront ディストリビューション（OAC で S3 を保護）\n  - S3 VPC Gateway Endpoint を network モジュールに追加（無料）— ECS タスクの S3 アクセスを NAT 経由から AWS 内部経路へ切り替え、NAT データ処理料を削減。※このタスクと同じ PR で必ず一緒に入れる\n  - パッキング用 ECR リポジトリ追加（または migrate イメージに同梱）\n  - IAM: api の task role に S3 read、パッカー task role に S3 write + Aurora read を追加\n* アプリ追加:\n  - パッカー: Aurora → gob/SQLite 生成のバッチコマンド（internal/driver/batch 配下）\n  - ローダー: S3 から gob を取得しインメモリキャッシュする infrastructure 層 repository + DI 配線\n* 想定コスト: S3 ~$1/月、CloudFront 実トラフィック比例（ポートフォリオ規模なら実質無料枠内）、パッキングタスク \u003c $1/月、Gateway Endpoint $0\n\n---"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ6grpc-delivery-と-unity-クライアント連携実装済み--インフラは未対応",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ6grpc-delivery-と-unity-クライアント連携実装済み--インフラは未対応",
+      "title": "フェーズ6：gRPC delivery と Unity クライアント連携（実装済み / インフラは未対応）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ6：gRPC delivery と Unity クライアント連携（実装済み / インフラは未対応）",
+      "text": "目標: ゲームクライアント（Unity / C#）から扱いやすい API を用意し、あわせて「Clean Architecture が実際に効いているか」を 2 つ目の delivery で検証する。\n\n* 狙い（なぜ 2 つ目の delivery を足したか）: internal/driver/ は配信形式ごとにディレクトリを切る構造にしてあったが、「同じ usecase を複数の delivery が共有する」ことは実証されていなかった。層分離が機能しているなら、usecase を 1 行も変えずに gRPC を足せるはずで、実際にそうなった（cmd/api と cmd/grpc は同じ usecase インスタンスを共有する）\n* 実装:\n  - proto/game/ranking/v1/ranking.proto を契約の正本に、unary 5 本（ランキング一覧 ×2 / 順位取得 ×2 / スコア加算）と server streaming 1 本（WatchUserRankings）\n  - リアルタイム配信は既存の outbox 基盤に接続した。 outbox-worker が Redis ZSet への反映に成功した直後だけ ranking:updated へ publish し、gRPC 側がそれを購読してクライアントへ push する。既存の outbox:events は ZSet 反映前の worker 起床通知なので転用できない\n  - Redis の購読は接続ごとに張らず、プロセス内のハブで 1 本にまとめて配る（クライアント N 台 = Redis 接続 N 本になると、コネクション数を有限化した設計と矛盾する）\n  - GracefulStop() が進行中のストリームを待ってブロックする問題に対し、「配信停止 → タイムアウト付きで待つ → 超過したら強制切断」の三段構えでシャットダウンを実装\n  - Unity 側は生成済み C# と疎通サンプル、link.xml、導入手順を clients/unity/ に置いた。Grpc.Core の非推奨・Unity のランタイムが HTTP/2 を喋れない制約・IL2CPP の code stripping という 3 つの詰まりどころを README に残してある\n  - k6 の gRPC シナリオを HTTP 版と同じ負荷形状・同じ呼び出し比率で用意し、プロトコル差を同条件で比較できるようにした\n* 対象外（意図的に実装しない / 未対応）:"
+    },
+    {
+      "id": "ROADMAP.md#フェーズ6grpc-delivery-と-unity-クライアント連携実装済み--インフラは未対応@2",
+      "file": "ROADMAP.md",
+      "anchor": "フェーズ6grpc-delivery-と-unity-クライアント連携実装済み--インフラは未対応",
+      "title": "フェーズ6：gRPC delivery と Unity クライアント連携（実装済み / インフラは未対応）",
+      "trail": "ROADMAP.md \u003e Project Roadmap: Go × AWS Game API (3 Months) \u003e フェーズ6：gRPC delivery と Unity クライアント連携（実装済み / インフラは未対応）",
+      "text": "  - ECS へのデプロイ（Terraform）: 本フェーズはローカルと Docker まで。ALB で gRPC を通すには TLS + HTTP/2 が要り、証明書・リスナー・ターゲットグループ（protocol_version = GRPC）・deploy.yml・ARCHITECTURE.md まで一括で触ることになる（AGENTS.md の Infrastructure Change Rules）。負荷試験の実測と併せて別タスクにする\n  - TLS: 上と同じ理由で未対応。ローカルは平文 h2c\n  - 認証・認可: 未実装。メタデータでのトークン付与も未整備\n  - サーバリフレクション: 有効にしていない。有効にすると本番で API 構造を公開してよいかの判断と環境ごとの分岐が要るため。grpcurl は .proto を渡して叩く\n* 次のアクション: ECS デプロイと TLS 対応、make load/grpc による HTTP との実測比較（ここまで来ると README の「見どころ」に数値を足せる）"
     },
     {
       "id": "docs/plans/guild-score-async.md#ギルドスコア更新の非同期化",
@@ -604,7 +636,7 @@
       "anchor": "7-ファイルの置き方",
       "title": "7. ファイルの置き方",
       "trail": "docs/testing/README.md \u003e テスト設計文書の運用ルール \u003e 7. ファイルの置き方",
-      "text": "- 機能単位で1ファイル（例: gacha.md）\n- 1ファイル内に、対象メソッドごとの「フロー図 + テスト仕様表」を並べる\n- 未解決の穴（図にはあるがテストが無いパス）は 未対応 として表に残す。消さない"
+      "text": "- 機能単位で1ファイル（例: gacha.md）\n- 対象の層をファイル名の接頭辞で表す。usecase は接頭辞なし（ranking.md）、\n  driver は配信形式を付ける（http-ranking.md / grpc-ranking.md）。\n  同じ機能でも層が違えば検証する観点が変わる（usecase はビジネスルール、driver は変換とエラー経路）ため、\n  1ファイルに混ぜない\n- 1ファイル内に、対象メソッドごとの「フロー図 + テスト仕様表」を並べる\n- 未解決の穴（図にはあるがテストが無いパス）は 未対応 として表に残す。消さない"
     },
     {
       "id": "docs/testing/gacha.md#ガチャ機能のテスト設計",

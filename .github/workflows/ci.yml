@@ -19,6 +19,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # buf breaking は `.git#branch=main` を比較対象にするため、既定の shallow clone
+          # （fetch-depth: 1）だと main を解決できず失敗する。
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -44,6 +48,24 @@ jobs:
           path: bin/sqlc
           key: sqlc-${{ runner.os }}-${{ hashFiles('.sqlc-version') }}
 
+      # buf も同じくバージョン固定 + キャッシュ。protoc プラグインは
+      # protoc-gen-go が go.mod の google.golang.org/protobuf から、
+      # protoc-gen-go-grpc が .protoc-gen-go-grpc-version から決まるため、
+      # 両方をキーに含める。
+      - name: Cache buf binary
+        uses: actions/cache@v4
+        with:
+          path: bin/buf
+          key: buf-${{ runner.os }}-${{ hashFiles('.buf-version') }}
+
+      - name: Cache protoc plugins
+        uses: actions/cache@v4
+        with:
+          path: |
+            bin/protoc-gen-go
+            bin/protoc-gen-go-grpc
+          key: protoc-plugins-${{ runner.os }}-${{ hashFiles('go.mod', '.protoc-gen-go-grpc-version') }}
+
       # 差分駆動（--new-from-rev）ではなく全件スキャンにしている。
       # 差分駆動は CI 時間が問題になる規模で初めて意味を持つが、本リポジトリは全件でも数秒で、
       # 全件のほうが「違反が一件も存在しない」ことを悉皆的に保証できるため。
@@ -52,6 +74,10 @@ jobs:
       # ローカルでの高速確認用に `make lint/diff` を用意してある。
       - name: Lint (golangci-lint)
         run: make lint
+
+      # proto の命名規約。Go のビルドに依存しないので lint と並べて早い段階で落とす。
+      - name: Lint protobuf definitions
+        run: make proto/lint
 
       # 指示書（AGENTS.md / docs/** / .claude/**）の SSoT 崩れと実態との乖離を検知する。
       # lint がコードの規約違反を見るのに対し、こちらは「規約そのものが食い違っていないか」を見る。
@@ -100,6 +126,18 @@ jobs:
       # ローカルと CI で同じ生成結果になる。
       - name: Check generated code is up to date
         run: make gen/check
+
+      # proto 生成物の drift。Go 側は再生成 + git diff、C# 側は .proto の
+      # FileDescriptorSet ダイジェストの突合で見る（C# は remote plugin を使うため
+      # CI では再生成しない。詳細は make/proto.mk のコメント）。
+      - name: Check proto generated code is up to date
+        run: make proto/gen/check
+
+      # proto の後方互換。フィールド番号の再利用・型変更・削除を wire 互換の観点で検出する。
+      # gRPC では .proto 自体がレスポンス契約の正本なので、これが HTTP 側の
+      # testdata/contracts/*.json に相当する判定になる。
+      - name: Check proto backward compatibility
+        run: make proto/breaking
 
       - name: Test with -race and coverage
         run: make test/race
