@@ -137,6 +137,7 @@ make run/grpc     # 既定 :9090
 
 **サーバは平文 h2c（TLS 無し）で listen する。** したがってクライアント側のアドレスは
 `https://` ではなく **`http://localhost:9090`**。TLS 対応は未実装で ROADMAP 側の課題。
+<!-- ssot-assert: absent-grep 'credentials' internal/infrastructure/server/grpc.go -->
 
 ランキングを返すには Redis にランキングが構築されている必要がある。
 未構築だと `codes.Unavailable`（HTTP 版の 503 に相当）が返るので、
@@ -218,6 +219,9 @@ RPC 名・フィールドを知りたいときは `.proto` を読むこと。
 ## 現状の制約
 
 - **TLS 未対応。** サーバは平文 h2c のみ。実機・本番で使うには TLS 対応が要る（ROADMAP 側の課題）
+  <!-- ssot-assert: absent-grep 'credentials' internal/infrastructure/server/grpc.go -->
 - 認証・認可は未実装（メタデータでのトークン付与も未整備）
+  <!-- ssot-assert: manual '認証インターセプタの「不在」は字面で照合できない。インターセプタの命名規約が無く、absent-grep で書くと将来どんな名前を付けても検知漏れになるため。認証を入れるときは interceptor.go・NewGRPC の登録・本項を同時に更新する' -->
 - リトライ / デッドライン既定値のポリシーは未整備。サンプルでは unary に個別に deadline を入れている
+  <!-- ssot-assert: manual '「ポリシーが未整備」は不在の宣言ではなく整備状況の記述なので字面で照合できない。サンプルが個別 deadline を持つことは present-grep で照合できるが、それはこの項の主張ではない。gRPC の service config やリトライポリシーを導入するときに本項を更新する' -->
 - 動作確認はリポジトリオーナーが Unity エディタ上で別途行う。ここにあるのはコードと手順のみ

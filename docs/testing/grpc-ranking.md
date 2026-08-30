@@ -1,10 +1,12 @@
 # ランキング gRPC ハンドラのテスト設計
 
 対象: [internal/driver/grpc/ranking/handler.go](../../internal/driver/grpc/ranking/handler.go)
+／[watch.go](../../internal/driver/grpc/ranking/watch.go)
 ／[errors.go](../../internal/driver/grpc/ranking/errors.go)
 ／[convert.go](../../internal/driver/grpc/ranking/convert.go)
 ／[server/register.go](../../internal/driver/grpc/server/register.go)
 テスト: [handler_test.go](../../internal/driver/grpc/ranking/handler_test.go)
+／[watch_test.go](../../internal/driver/grpc/ranking/watch_test.go)
 ／[errors_test.go](../../internal/driver/grpc/ranking/errors_test.go)
 ／[contract_test.go](../../internal/driver/grpc/ranking/contract_test.go)
 ／[server/register_test.go](../../internal/driver/grpc/server/register_test.go)
@@ -25,8 +27,8 @@ HTTP 版との差分（gRPC 固有の判断）:
   （§4）。gRPC にヘッダで再試行を伝える標準が無いため
 - **ctx キャンセルはハンドラで扱わない。** gRPC ランタイムが `codes.Canceled` /
   `codes.DeadlineExceeded` を付けるため、ハンドラが重ねて判定すると二重管理になる
-- **`WatchUserRankings` は本ハンドラで実装していない。** `UnimplementedRankingServiceServer`
-  を埋め込んでいるので `codes.Unimplemented` が返る（§5 で追記予定）
+- **`WatchUserRankings` だけが server streaming**（§5）。1 リクエストに対して応答が
+  複数回流れるため、図の終端が「レスポンスを返す」ではなく「送信ループを抜ける」になる
 
 エラー → status code の分類は unary 5 メソッドすべてが `handleError` を共有する。
 図では `[[handleError]]` として畳み、分岐の実体は **§4** に置く。
@@ -215,10 +217,90 @@ details の欠落でステータス自体を落とすと「揮発中に `Interna
 
 ## 5. ストリーミング: `WatchUserRankings`
 
-**本節は未記載。** `WatchUserRankings` は本ハンドラでは実装しておらず、
-`UnimplementedRankingServiceServer` の埋め込みにより `codes.Unimplemented` を返す。
-実装時に、購読フロー（初回スナップショット送信・更新検知・遅いクライアントの
-中間状態破棄・ctx キャンセル）の図とテスト仕様表をここへ追記すること。
+対象: [watch.go](../../internal/driver/grpc/ranking/watch.go)
+／テスト: [watch_test.go](../../internal/driver/grpc/ranking/watch_test.go)
+
+唯一の server streaming RPC。更新の検知・差分判定・遅い購読者の扱いはすべて
+usecase 側のハブ（[ranking-watch.md](ranking-watch.md)）の責務で、この層が持つのは
+**購読の開始と、ハブが流すチャネルを pb メッセージへ変換して送り続けること**だけ。
+
+### 5-1. フローチャート
+
+**ループは 1 回だけ展開して描いてある。** 実装は `WU`→`WS2` をチャネルが閉じるまで
+繰り返すが、閉路のまま描くと仕様表の「図のパス」列が読めなくなるため。
+
+```mermaid
+flowchart TD
+    WA[WatchUserRankings 開始<br/>ctx は stream.Context] --> WB{limit が負値か}
+    WB -- Yes --> WE1((InvalidArgument<br/>limit must not be negative))
+    WB -- No --> WC[watcher.WatchUserRankings<br/>生値の limit で購読開始]
+    WC -- ErrWatcherStopped --> WE2((Unavailable<br/>ranking watch is unavailable<br/>RetryInfo は載せない))
+    WC -- その他の err --> WX[[handleError]]
+    WC -- ok --> WD[初回スナップショットを受信]
+    WD --> WS1[stream.Send<br/>RankingsResult → WatchUserRankingsResponse]
+    WS1 -- err --> WE3((Send のエラーをそのまま返す<br/>包まない・ログも出さない))
+    WS1 -- ok --> WU[更新通知を受信]
+    WU --> WS2[stream.Send<br/>2 件目以降]
+    WS2 -- err --> WE3
+    WS2 -- ok --> WK{チャネルが閉じたか}
+    WK -- No --> WU
+    WK -- Yes --> WZ([nil を返して終了])
+```
+
+### 5-2. 設計上の要点（テストで守る不変条件）
+
+- **`stream.Context()` をそのまま渡す。** 購読の登録解除はハブの `context.AfterFunc` が
+  この ctx を見て行う（[ranking-watch.md](ranking-watch.md) §0-7）。別の ctx を渡すと
+  クライアントが切断しても購読者がハブに残り続ける
+- **`limit` は負値だけ弾き、正規化しない**（§1 と同じ設計意図）。既定値の適用と上限の
+  丸めは `NormalizeLimit` を呼ぶハブの責務。proto3 で未設定と区別できない `0` もそのまま渡す
+- **`Send` は単一 goroutine からだけ呼ぶ。** `grpc.ServerStream` の `SendMsg` は並行呼び出しが
+  許されていない。受信と送信を別 goroutine へ分けて「送信を並行化する」最適化をしないこと
+  （テストのフェイクが Send の重なりを検出して落とす）
+- **`Send` のエラーはそのまま返す**（`WE3`）。クライアント切断はストリームでは日常的に起き、
+  サーバ側の異常ではない。gRPC ランタイムが status を付けて扱うので、ここで包み直すと
+  code が二重に決まる。同じ理由でログも出さない
+- **`ErrWatcherStopped` は `handleError` に通さない**（`WE2`）。§4 の写像は domain の
+  sentinel を unary 5 メソッドで共有するためのもので、これは「常駐ハブが停止済み」という
+  **ストリーム固有のライフサイクル事由**。unary からは到達しないため §4 の表に到達不能な
+  行を増やさず、分岐を本節のフローに置く
+- **`WE2` に `RetryInfo` を載せない。** §4 の `R9`（ZSet 揮発）が 30 秒待ちを提示するのは
+  復旧が再構築バッチを伴うためで、こちらは**プロセスが停止処理に入っている**状態。
+  即座に再接続すれば別インスタンスで繋がりうるので、待ち時間を指定しない方が正しい
+- **初回 fetch の失敗はハブがエラーで返す**（[ranking-watch.md](ranking-watch.md) §0-5）ので、
+  `ErrRankingUnavailable` は購読開始時に `WX` 経由で `R9` へ落ちる。
+  ストリームが開いた後の fetch 失敗はハブが握るため、この層には来ない
+- **チャネルのクローズは正常終了**（`WZ`）。ctx キャンセル（クライアント切断）でも
+  ハブ停止でも起きる。ハンドラからは区別できず、区別する必要も無い
+
+### 5-3. テスト仕様表
+
+<!-- testcases: internal/driver/grpc/ranking/watch_test.go#TestHandler_WatchUserRankings -->
+
+| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |
+| --- | --- | --- | --- | --- |
+| 1 | `limit` が負値 | `WA→WB→WE1` | `InvalidArgument` `limit must not be negative` | **watcher が呼ばれない**（`Send` も 0 回） |
+| 2 | 購読開始が `ErrWatcherStopped` | `WA→WB→WC→WE2` | `Unavailable` `ranking watch is unavailable` | **`RetryInfo` が載らない**（`R9` と取り違えていない）・`Send` は 0 回 |
+| 3 | 購読開始が予期せぬエラー | `WA→WB→WC→WX→R8` | `Internal` `internal server error` | `Send` は 0 回 |
+| 4 | 購読開始が `ErrRankingUnavailable` | `…→WC→WX→R9` | `Unavailable` `ranking is unavailable` | **`RetryInfo` が details に載る**（§4 の写像に委譲している） |
+| 5 | 初回の `Send` が失敗（クライアント切断） | `…→WC→WD→WS1→WE3` | Send のエラーが**包まれずそのまま**返る | `Send` は 1 回で止まる（残りを送らない） |
+| 6 | 2 件目の `Send` が失敗 | `…→WS1→WU→WS2→WE3` | 同上 | `Send` は 2 回で止まる |
+| 7 | 正常系: push が順に送られ、クローズで終わる | `…→WU→WS2→WK→WZ` | `nil`。push した順に `Send` される | watcher に **stream の ctx と生値の `limit`** が渡る |
+
+**ケース 7 を 2 件に展開している理由**: 「未設定（= 0）」と「明示指定」は同じコードパスだが、
+`0` を既定値へ差し替える実装ミスは明示指定のケースでは検出できない（§1 のケース 5 と同じ）。
+同一パスなので表は 1 行のままにし、テスト側で入力違いの 2 要素へ広げる。
+
+手続きが異なるため別テスト関数に切り出しているもの:
+
+| 条件 | 図のパス | 期待結果 | テスト関数 |
+| --- | --- | --- | --- |
+| ハブが 1 件ずつ push する（バッファ無しチャネル） | `WS1→WU→WS2→WK→WZ` | 受信のたびに送り、クローズで `nil` を返す | `TestHandler_WatchUserRankings_逐次push_受信のたびに送る` |
+
+表のケース 7 はチャネルへ値を詰めてから閉じる構成なので、「受け取った端から送る」ことまでは
+固定できない（全件受信してから送る実装でも通る）。バッファ無しのチャネルで 1 件ずつ渡す
+この関数がそれを固定する。`Send` の並行呼び出し検出（5-2）も、ハンドラを別 goroutine で
+走らせるこの構成が実効的に効く場所になる。
 
 ---
 
@@ -247,15 +329,19 @@ details の欠落でステータス自体を落とすと「揮発中に `Interna
 | 4 | `AddUserPointsResponse` | `domain/ranking.UserPointAddResult` |
 | 5 | `AddUserPointsRequest` | `usecase/ranking.AddUserPointsInput` |
 | 6 | `GetUserRankingsRequest` / `GetGuildRankingsRequest` | `usecase/ranking.GetRankingsInput` |
-| 7 | `GetUserRankingsResponse` / `GetGuildRankingsResponse` | `usecase/ranking.RankingsResult` |
+| 7 | `GetUserRankingsResponse` / `GetGuildRankingsResponse` / `WatchUserRankingsResponse` | `usecase/ranking.RankingsResult` |
 
-**`GetUserRankRequest` / `GetGuildRankRequest` が表に無い理由**: 対応する Go の型が無く
-（usecase は ID を素の `int64` で受ける）、突合の相手が存在しないため。
-ID の受け渡しは §2 の「usecase に ID がそのまま渡る」で担保する。
-`WatchUserRankings*` は §5 とセットで追加する。
+**`GetUserRankRequest` / `GetGuildRankRequest` / `WatchUserRankingsRequest` が表に無い理由**:
+対応する Go の型が無く、突合の相手が存在しないため。前 2 つは usecase が ID を素の `int64` で
+受け取り、`WatchUserRankingsRequest` も `Watcher.WatchUserRankings(ctx, limit int)` が
+`limit` を素の `int` で受け取る（`GetRankingsInput` は `offset` を持つので集合が一致せず、
+突合の相手にはできない）。
+ID と limit の受け渡しは §2・§5 の「usecase にそのまま渡る」ケースで担保する。
 
-ケース 6・7 が 2 つの pb メッセージを並べているのは、ユーザー版とギルド版で
-**同じ Go 型**に対応するため。表は 1 行のまま、テスト側で 2 要素へ広げる。
+ケース 6・7 が複数の pb メッセージを並べているのは、いずれも**同じ Go 型**に対応するため。
+表は 1 行のまま、テスト側で複数要素へ広げる。ケース 7 に `WatchUserRankingsResponse` を
+含めているのは、streaming が配る 1 フレームと unary の一覧が同じ構造であることを
+固定するため（取得経路によって形が変わると、クライアントが 2 通りの解釈を持つことになる）。
 
 ---
 
@@ -305,4 +391,5 @@ flowchart TD
 | §2 | `E1` `X` `Z` | すべて通過 |
 | §3 | `E1` `E2` `X` `Z` | すべて通過 |
 | §4 | `R1`〜`R9`（9 個） | すべて通過 |
+| §5 | `WE1` `WE2` `WE3` `WX` `WZ` | すべて通過 |
 | §7 | `SE1` `SZ` | すべて通過 |

@@ -111,6 +111,6 @@ func newServices(t *testing.T) server.Services {
 	logger := slogtest.NewLogger(t, nil)
 
 	return server.Services{
-		Ranking: rankinghandler.NewHandler(mockranking.NewMockUsecase(ctrl), logger),
+		Ranking: rankinghandler.NewHandler(mockranking.NewMockUsecase(ctrl), mockranking.NewMockWatcher(ctrl), logger),
 	}
 }

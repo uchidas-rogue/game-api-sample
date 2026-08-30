@@ -36,7 +36,15 @@
       "anchor": "1-architecture--design-rules-clean-architecture",
       "title": "1. Architecture \u0026 Design Rules (Clean Architecture)",
       "trail": "AGENTS.md \u003e 1. Architecture \u0026 Design Rules (Clean Architecture)",
-      "text": "- 本節と §2 の規約のうち機械判定できるものは .golangci.yml で強制している（make lint）。規約を追加・変更したら、同ファイルの判定も併せて更新する。新しい外部ライブラリを使う場合は depguard の該当層の allow に理由付きで追加する（//nolint で個別に抜け道を作らない）\n- 層構成: driver(interface adapters; HTTP handler / batch / worker 等の delivery) → usecase → domain の順に内側へ依存し、逆方向の import は禁止\n- driver 配下は配信形式ごとにサブディレクトリを切る（internal/driver/http, internal/driver/batch, internal/driver/worker）。新規 driver（gRPC, SQS consumer 等）を追加する際もこの配下に配置する\n- infrastructure 層は usecase が定義する interface を実装する。usecase/domain から infrastructure を直接 import してはならない（DI は internal/di で行う）\n- domain 層: ビジネスルールとエンティティのみ。Echo・sqlc・MySQL 等の外部技術および sqlc 生成型に依存しない\n- usecase 層: ユースケース実装とトランザクション境界制御。リポジトリ等の interface もこの層で定義する\n- driver/http 層: HTTP の request/response DTO を定義し、domain 型へ変換してから usecase に渡す。driver/batch / driver/worker も同様に外部入力（cron 起動・outbox イベント等）を usecase 呼び出しに変換する責務を持つ"
+      "text": "- 本節と §2 の規約のうち機械判定できるものは .golangci.yml で強制している（make lint）。規約を追加・変更したら、同ファイルの判定も併せて更新する。新しい外部ライブラリを使う場合は depguard の該当層の allow に理由付きで追加する（//nolint で個別に抜け道を作らない）\n- 層構成: driver(interface adapters; HTTP handler / batch / worker 等の delivery) → usecase → domain の順に内側へ依存し、逆方向の import は禁止\n- driver 配下は配信形式ごとにサブディレクトリを切る（internal/driver/http, internal/driver/grpc, internal/driver/batch, internal/driver/worker）。新規 driver（SQS consumer 等）を追加する際もこの配下に配置する\n  - 配信形式のディレクトリ直下には .go を置かず、必ずさらにサブディレクトリを切る（internal/driver/grpc/ranking 等）。internal/driver/grpc 直下に置くとパッケージ名 grpc が google.golang.org/grpc と衝突する\n  - protoc の生成物は internal/driver/grpc/gen/ に置く。生成物は lint 対象外（.golangci.yml の exclusions.paths）かつテスト対象外（.testignore）で、この2つと make/proto.mk の PROTO_ARTIFACT_PATHS は3点セットで更新する（片方だけ直すと、カバレッジ分母に生成物が混ざるか drift 検知が効かなくなる）\n- infrastructure 層は usecase が定義する interface を実装する。usecase/domain から infrastructure を直接 import してはならない（DI は internal/di で行う）\n- domain 層: ビジネスルールとエンティティのみ。Echo・sqlc・MySQL 等の外部技術および sqlc 生成型に依存しない\n- usecase 層: ユースケース実装とトランザクション境界制御。リポジトリ等の interface もこの層で定義する"
+    },
+    {
+      "id": "AGENTS.md#1-architecture--design-rules-clean-architecture@2",
+      "file": "AGENTS.md",
+      "anchor": "1-architecture--design-rules-clean-architecture",
+      "title": "1. Architecture \u0026 Design Rules (Clean Architecture)",
+      "trail": "AGENTS.md \u003e 1. Architecture \u0026 Design Rules (Clean Architecture)",
+      "text": "- driver/http 層: HTTP の request/response DTO を定義し、domain 型へ変換してから usecase に渡す。driver/batch / driver/worker も同様に外部入力（cron 起動・outbox イベント等）を usecase 呼び出しに変換する責務を持つ"
     },
     {
       "id": "AGENTS.md#2-go-coding-standards",
@@ -52,7 +60,15 @@
       "anchor": "2-go-coding-standards",
       "title": "2. Go Coding Standards",
       "trail": "AGENTS.md \u003e 2. Go Coding Standards",
-      "text": "  - echo.Echo.Pre は使わない。Pre はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う\n  - 判定: 登録順は TestNew_MiddlewareOrder（New の AST を検査）、Pre の不使用は .golangci.yml の ruleguard が強制する\n- 時刻: 業務ロジックでは time.Now() を直接呼ばず、Clock インターフェースを DI してテスト可能にする\n  - 例外は観測用の経過時間計測（アクセスログの latency 等）で、infrastructure 層に限り直接呼んでよい。計測値そのものをテストで固定する必要が無く、Clock を通しても検証内容が変わらないため。.golangci.yml の forbidigo も同じ範囲（^internal/infrastructure/）を除外しており、下の照合はその範囲を除いた層を見ている\n  - 現時点で Clock インターフェースの実装は存在しない（時刻に依存する業務ロジックがまだ無いため）。時刻依存の機能を追加する際に、usecase 層へ interface を定義し infrastructure 層に実装を置いて DI する\n- 設定管理: 環境変数のパースは configs/config.go の Config に集約する。環境変数のキー名と既定値は同パッケージで const 定義し、各層には *Config を DI して渡す。新規の設定値追加時は Config 構造体・既定値・Load() の3箇所を更新する"
+      "text": "  - echo.Echo.Pre は使わない。Pre はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う\n  - 判定: 登録順は TestNew_MiddlewareOrder（New の AST を検査）、Pre の不使用は .golangci.yml の ruleguard が強制する\n- gRPC インターセプタの登録順: 上の HTTP ミドルウェアと同じ規約が適用される。grpc.ChainUnaryInterceptor / ChainStreamInterceptor は先に渡したものが最外側になるため、観測系（RequestID → アクセスログ）を先頭に置き、recover 等は後ろに置く。unary と stream で同じ並びにする\n  - 単数形の grpc.UnaryInterceptor / grpc.StreamInterceptor は使わない。Chain と併用すると片方が黙って無視されるうえ、AST 検査は Chain しか見ないため順序規約に穴が空く（echo.Echo.Pre を禁じているのと同じ理由）\n  - 判定: 登録順は TestNewGRPC_UnaryInterceptorOrder / TestNewGRPC_StreamInterceptorOrder（NewGRPC の AST を検査）、単数形の不使用は .golangci.yml の ruleguard が強制する\n- gRPC の graceful shutdown: grpc.Server.GracefulStop() は進行中のストリームが終わるまでブロックする。server streaming を持つ以上、これを単純に呼ぶと SIGTERM でシャットダウンが完了しない。「配信側へ停止を伝える → GracefulStop をタイムアウト付きで待つ → 超過したら Stop」の三段構えにする（実装は internal/infrastructure/server/grpc.go）\n- 時刻: 業務ロジックでは time.Now() を直接呼ばず、Clock インターフェースを DI してテスト可能にする\n  - 例外は観測用の経過時間計測（アクセスログの latency 等）で、infrastructure 層に限り直接呼んでよい。計測値そのものをテストで固定する必要が無く、Clock を通しても検証内容が変わらないため。.golangci.yml の forbidigo も同じ範囲（^internal/infrastructure/）を除外しており、下の照合はその範囲を除いた層を見ている"
+    },
+    {
+      "id": "AGENTS.md#2-go-coding-standards@3",
+      "file": "AGENTS.md",
+      "anchor": "2-go-coding-standards",
+      "title": "2. Go Coding Standards",
+      "trail": "AGENTS.md \u003e 2. Go Coding Standards",
+      "text": "  - 現時点で Clock インターフェースの実装は存在しない（時刻に依存する業務ロジックがまだ無いため）。時刻依存の機能を追加する際に、usecase 層へ interface を定義し infrastructure 層に実装を置いて DI する\n- 設定管理: 環境変数のパースは configs/config.go の Config に集約する。環境変数のキー名と既定値は同パッケージで const 定義し、各層には *Config を DI して渡す。新規の設定値追加時は Config 構造体・既定値・Load() の3箇所を更新する"
     },
     {
       "id": "AGENTS.md#3-testing-rules-規約",
@@ -68,7 +84,7 @@
       "anchor": "3-testing-rules-規約",
       "title": "3. Testing Rules (規約)",
       "trail": "AGENTS.md \u003e 3. Testing Rules (規約)",
-      "text": "- API レスポンス契約: driver/http のレスポンス構造は internal/driver/http/testdata/contracts/*.json を正本とし、internal/testutil/apicontract で構造のみを検証する（値の妥当性はハンドラのテストの責務）。json タグの追加・削除・リネームをしたら同じ PR で契約ファイルも更新する。これはレスポンスを解釈する側（k6 シナリオ等）の変更が必要になるサイン\n- アサーション: testify/assert/require（致命的失敗は require）\n- モック: uber-go/mock を使用。配置は対象 interface と同じ層の mock/ サブディレクトリ（例: internal/usecase/gacha/mock/）。//go:generate ディレクティブは interface 定義ファイルに記述する\n  - 生成物は手動編集しない。更新は make mock/gen の再実行のみ。再生成が必要かを事前に判断しなくてよい（判断を誤っても make gen/check が再生成 + 差分検知で捕まえる。CI 必須）。interface を触ったら迷わず make mock/gen を実行する\n  - mockgen のバージョンは go.mod の go.uber.org/mock から導出され、make mock/gen が ./bin へ同じ版を導入する。//go:generate は裸の mockgen を呼ぶため、PATH 上の別バージョンを使うと生成結果が変わる。go generate ./... を直接叩かず必ず make mock/gen を使うこと\n  - //go:generate の -destination / -package を変更した場合のみ、make/app.mk の GEN_ARTIFACT_PATHS と .golangci.yml の除外パス、.testignore も併せて更新する（この連動は gen/check では検知できない）\n- 層別カバレッジ・テスト方針:\n  - 指標は 文（statement）カバレッジ。閾値は make test/cover/check が判定し、CI で必須（未達なら失敗）。閾値の実体は scripts/coverage-check.sh にあり、本節がその正本。片方だけ変えない\n  - Go には分岐カバレッジを出す標準手段が無い。分岐の網羅は docs/testing/ の設計図に対するパスカバレッジで代替する（docs/testing/README.md §4）\n  - driver 層: 変換とエラー経路の網羅。カバレッジ 90% 以上"
+      "text": "- API レスポンス契約: driver/http のレスポンス構造は internal/driver/http/testdata/contracts/*.json を正本とし、internal/testutil/apicontract で構造のみを検証する（値の妥当性はハンドラのテストの責務）。json タグの追加・削除・リネームをしたら同じ PR で契約ファイルも更新する。これはレスポンスを解釈する側（k6 シナリオ等）の変更が必要になるサイン\n- gRPC の契約: driver/grpc のレスポンス構造は .proto 自体が正本なので、HTTP のような契約 JSON の写しは作らない。代わりに3点で担保する——命名は make proto/lint、wire 互換は make proto/breaking（フィールド番号の再利用・型変更・削除を検出）、pb と domain のフィールド集合の対応は internal/driver/grpc/ranking/contract_test.go（protoreflect で突合し、domain に足したフィールドを proto へ写し忘れると落ちる）\n- アサーション: testify/assert/require（致命的失敗は require）\n- モック: uber-go/mock を使用。配置は対象 interface と同じ層の mock/ サブディレクトリ（例: internal/usecase/gacha/mock/）。//go:generate ディレクティブは interface 定義ファイルに記述する\n  - 生成物は手動編集しない。更新は make mock/gen の再実行のみ。再生成が必要かを事前に判断しなくてよい（判断を誤っても make gen/check が再生成 + 差分検知で捕まえる。CI 必須）。interface を触ったら迷わず make mock/gen を実行する\n  - mockgen のバージョンは go.mod の go.uber.org/mock から導出され、make mock/gen が ./bin へ同じ版を導入する。//go:generate は裸の mockgen を呼ぶため、PATH 上の別バージョンを使うと生成結果が変わる。go generate ./... を直接叩かず必ず make mock/gen を使うこと\n  - //go:generate の -destination / -package を変更した場合のみ、make/app.mk の GEN_ARTIFACT_PATHS と .golangci.yml の除外パス、.testignore も併せて更新する（この連動は gen/check では検知できない）"
     },
     {
       "id": "AGENTS.md#3-testing-rules-規約@3",
@@ -76,7 +92,7 @@
       "anchor": "3-testing-rules-規約",
       "title": "3. Testing Rules (規約)",
       "trail": "AGENTS.md \u003e 3. Testing Rules (規約)",
-      "text": "  - domain 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ 100%（外部依存が無く達成可能なため。スラックが無いので、未カバーが出たらテストを足すか、テスト対象外である理由を明記して .testignore で除外する）\n  - usecase 層: 正常系・異常系・エッジケースを網羅。カバレッジ 90% 以上 を維持\n  - infrastructure 層: 実リソースを起動しない単体テストを基本方針とする。MySQL repository は sqlc 生成の Querier インターフェースのモックを export_test.go のテスト専用コンストラクタ経由で注入、Redis は miniredis、Transactor は go-sqlmock を使う。検証対象は sqlc 型 ⇄ domain 型の変換、エラー変換（sql.ErrNoRows → domain.ErrNotFound 等）、クエリ構築引数（FOR UPDATE の有無・絞り込み条件）、Transactor のコミット/ロールバック挙動。カバレッジ 80% 以上\n    - testcontainers-go による実 DB/Redis テストは未導入。導入する場合は依存追加を含めて別タスクとして扱い、実装前にユーザーへ確認する\n  - configs: 環境変数のパースのみで外部依存が無い。カバレッジ 90% 以上。設定値を追加したら、既定値・パース失敗・値域違反（0・負値）の各分岐にテストを足す。同型の検証ブロックが並ぶため、片方だけテストがある状態にしない（対称性チェック）\n    - 環境変数をクリアするリストは configs/config_test.go の clearConfigEnv 1箇所に集約してある。設定値を追加したらここにも追加する（漏れると実行環境の環境変数に結果が左右される）\n- Race / 競合テスト:\n  - 更新系の repository / usecase は t.Parallel() + 複数 goroutine による同時アクセスケースを最低1件持つ\n  - race 検出は make test/race で実行し CI で必須化（ローカル make test は race 無しで高速実行を維持）\n  - 単体テストは race 検出と最小同時実行に責務を絞り、規模負荷は k6 側に寄せる\n- Flaky 防止:"
+      "text": "- 層別カバレッジ・テスト方針:\n  - 指標は 文（statement）カバレッジ。閾値は make test/cover/check が判定し、CI で必須（未達なら失敗）。閾値の実体は scripts/coverage-check.sh にあり、本節がその正本。片方だけ変えない\n  - Go には分岐カバレッジを出す標準手段が無い。分岐の網羅は docs/testing/ の設計図に対するパスカバレッジで代替する（docs/testing/README.md §4）\n  - driver 層: 変換とエラー経路の網羅。カバレッジ 90% 以上\n  - domain 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ 100%（外部依存が無く達成可能なため。スラックが無いので、未カバーが出たらテストを足すか、テスト対象外である理由を明記して .testignore で除外する）\n  - usecase 層: 正常系・異常系・エッジケースを網羅。カバレッジ 90% 以上 を維持\n  - infrastructure 層: 実リソースを起動しない単体テストを基本方針とする。MySQL repository は sqlc 生成の Querier インターフェースのモックを export_test.go のテスト専用コンストラクタ経由で注入、Redis は miniredis、Transactor は go-sqlmock を使う。検証対象は sqlc 型 ⇄ domain 型の変換、エラー変換（sql.ErrNoRows → domain.ErrNotFound 等）、クエリ構築引数（FOR UPDATE の有無・絞り込み条件）、Transactor のコミット/ロールバック挙動。カバレッジ 80% 以上\n    - testcontainers-go による実 DB/Redis テストは未導入。導入する場合は依存追加を含めて別タスクとして扱い、実装前にユーザーへ確認する\n  - configs: 環境変数のパースのみで外部依存が無い。カバレッジ 90% 以上。設定値を追加したら、既定値・パース失敗・値域違反（0・負値）の各分岐にテストを足す。同型の検証ブロックが並ぶため、片方だけテストがある状態にしない（対称性チェック）\n    - 環境変数をクリアするリストは configs/config_test.go の clearConfigEnv 1箇所に集約してある。設定値を追加したらここにも追加する（漏れると実行環境の環境変数に結果が左右される）\n- Race / 競合テスト:"
     },
     {
       "id": "AGENTS.md#3-testing-rules-規約@4",
@@ -84,7 +100,7 @@
       "anchor": "3-testing-rules-規約",
       "title": "3. Testing Rules (規約)",
       "trail": "AGENTS.md \u003e 3. Testing Rules (規約)",
-      "text": "  - 時刻: SUT と test で time.Now() を二重呼出しない (Clock DI または SUT 記録値を export_test.go 経由参照)。日付/月境界を assertion に含めない\n  - 同期: time.Sleep ポーリングは最終手段。channel/sync・ライブラリ getter (内部ロック付き) 優先。time.After(N) は CI 高負荷時の余裕を考慮し N = ローカル想定 x 2~3\n  - 並行: テストコードでパッケージスコープの変数を書き換えない（要素への書込みを含む）。make lint の ruleguard が検出する。t.Parallel() の有無を条件にしていないのは、今は無くても後から付けた瞬間に競合が生まれるため。違反したら //nolint で抜けず、フィクスチャを関数化する／t.Setenv・t.Chdir を使う／serial に分離する のいずれかを取る。宣言そのものは対象外（読み取り専用フィクスチャは可）"
+      "text": "  - 更新系の repository / usecase は t.Parallel() + 複数 goroutine による同時アクセスケースを最低1件持つ\n  - race 検出は make test/race で実行し CI で必須化（ローカル make test は race 無しで高速実行を維持）\n  - 単体テストは race 検出と最小同時実行に責務を絞り、規模負荷は k6 側に寄せる\n- Flaky 防止:\n  - 時刻: SUT と test で time.Now() を二重呼出しない (Clock DI または SUT 記録値を export_test.go 経由参照)。日付/月境界を assertion に含めない\n  - 同期: time.Sleep ポーリングは最終手段。channel/sync・ライブラリ getter (内部ロック付き) 優先。time.After(N) は CI 高負荷時の余裕を考慮し N = ローカル想定 x 2~3\n  - 並行: テストコードでパッケージスコープの変数を書き換えない（要素への書込みを含む）。make lint の ruleguard が検出する。t.Parallel() の有無を条件にしていないのは、今は無くても後から付けた瞬間に競合が生まれるため。違反したら //nolint で抜けず、フィクスチャを関数化する／t.Setenv・t.Chdir を使う／serial に分離する のいずれかを取る。宣言そのものは対象外（読み取り専用フィクスチャは可）"
     },
     {
       "id": "AGENTS.md#4-database-rules-sqlc--golang-migrate",
@@ -108,7 +124,7 @@
       "anchor": "5-makefile-rules-開発コマンドの統一",
       "title": "5. Makefile Rules (開発コマンドの統一)",
       "trail": "AGENTS.md \u003e 5. Makefile Rules (開発コマンドの統一)",
-      "text": "- 日常的な開発操作は make 経由で実行する。デバッグ目的のピンポイント実行（go test -run 等）は許容\n- 指示書の整合チェックは make docs/check（CI 必須）。規約の正本が1箇所に保たれているか、記述が実態と乖離していないかを判定する。判定の実体は scripts/docs-ssot-check.sh。make docs/ssot で本ファイル §3 の正本表を一覧できる\n  - 検査を追加するときは、必ず「その検査が捕捉する既知の実例」をスクリプトのコメントに書く。実例を伴わない検査は誤検出源になり、いずれ無効化されるため\n  - 「現時点では〜が無い」のような時点依存の記述には、実態を照合する ssot-assert ディレクティブを同じ行か直後の行に添える（記法の正本は scripts/docs-ssot-check.sh 冒頭のコメント）。機械照合が原理的に不可能な場合は manual '\u003c理由\u003e' で理由を残す。添えないと make docs/check が WARN を出す\n  - ERROR は実態と矛盾している記述（必ず直す）。WARN は将来腐る形をしている記述（放置するなら、なぜ機械照合できないかを該当箇所に残す）\n- 静的解析は make lint（golangci-lint、全件）。make lint/diff は origin/main からの差分のみ、make lint/fix は自動修正可能な指摘の修正。golangci-lint のバージョンは .golangci-version の1箇所で管理し、make lint が同じ版を ./bin へ導入する（ローカルと CI で同一の判定になるようにするため。この2つを別々に指定しない）\n- AWS インフラの初回構築は make tf/bootstrap（state 保管先の S3/DynamoDB 作成）→ make tf/init → terraform plan/apply の順。詳細は terraform/ARCHITECTURE.md\n- ポートフォリオサイト（web/）の知識源は make site/gen で文書から生成する。取り込み対象の正本は scripts/sitegen の rootDocs() と docs/ で、ここに一覧を写さない（写すと片方だけ古くなる。実際 CLAUDE.md が取り込み対象なのに一覧から漏れていた）。対象の文書を変更したら再生成が要る（サイト専用の写しを作らないための仕組み）。再生成漏れは make site/check が検知し、CI と .github/workflows/pages.yml が公開前に実行する"
+      "text": "- 日常的な開発操作は make 経由で実行する。デバッグ目的のピンポイント実行（go test -run 等）は許容\n- 指示書の整合チェックは make docs/check（CI 必須）。規約の正本が1箇所に保たれているか、記述が実態と乖離していないかを判定する。判定の実体は scripts/docs-ssot-check.sh。make docs/ssot で本ファイル §3 の正本表を一覧できる\n  - 検査を追加するときは、必ず「その検査が捕捉する既知の実例」をスクリプトのコメントに書く。実例を伴わない検査は誤検出源になり、いずれ無効化されるため\n  - 「現時点では〜が無い」のような時点依存の記述には、実態を照合する ssot-assert ディレクティブを同じ行か直後の行に添える（記法の正本は scripts/docs-ssot-check.sh 冒頭のコメント）。機械照合が原理的に不可能な場合は manual '\u003c理由\u003e' で理由を残す。添えないと make docs/check が WARN を出す\n  - ERROR は実態と矛盾している記述（必ず直す）。WARN は将来腐る形をしている記述（放置するなら、なぜ機械照合できないかを該当箇所に残す）\n- Protocol Buffers の生成は make proto/gen（Go）と make proto/gen/csharp（Unity 向け C#）。buf を直接叩かない。buf のバージョンは .buf-version、protoc プラグインは go.mod（protoc-gen-go）と .protoc-gen-go-grpc-version で固定し、make proto/gen が同じ版を ./bin へ導入する\n  - C# 生成は buf の remote plugin を使うためネットワークが要る。CI の必須ゲートに外部サービスへの到達性を持ち込まないよう Go 生成と分離してあり、drift 検知（make proto/gen/check）は Go 生成物の差分と、.proto の FileDescriptorSet ダイジェストの突合で行う。既知の検出漏れは make/proto.mk のコメントを参照\n- 静的解析は make lint（golangci-lint、全件）。make lint/diff は origin/main からの差分のみ、make lint/fix は自動修正可能な指摘の修正。golangci-lint のバージョンは .golangci-version の1箇所で管理し、make lint が同じ版を ./bin へ導入する（ローカルと CI で同一の判定になるようにするため。この2つを別々に指定しない）"
     },
     {
       "id": "AGENTS.md#5-makefile-rules-開発コマンドの統一@2",
@@ -116,7 +132,15 @@
       "anchor": "5-makefile-rules-開発コマンドの統一",
       "title": "5. Makefile Rules (開発コマンドの統一)",
       "trail": "AGENTS.md \u003e 5. Makefile Rules (開発コマンドの統一)",
-      "text": "  - サイトのトップページ（web/index.html）が README.md の実測値を引用している箇所は、ssot-assert: present-grep ディレクティブで正本と照合している（make docs/check が html も走査する）。数値を引用するときは同じ形でディレクティブを添える。付け忘れは検知できないので、これが唯一の担保になる。カード本文の散文は手書きで機械判定の対象外——線引きの正本は web/README.md\n  - ブラウザとプロキシが共有する上限値（参照チャンク数・質問文の長さ）は scripts/sitegen の const が正本で、索引に載せて両方に読ませる。2つのランタイムのどちらかに数字を直接書かない\n  - チャットの中継（web/worker/）は Cloudflare Workers へ手動デプロイする。索引は Worker にもバンドルされるため、文書を変えたら「make site/gen → 再デプロイ」までやらないとサイトと Worker で ID がずれる。手順は web/worker/README.md\n- 利用可能なコマンドは make help で確認する（Makefile の ## コメントが説明として表示される）\n- マイグレーションの DSN は MIGRATE_DSN 環境変数で上書き可能。ローカル以外の環境では明示的に指定する\n- make test / make test/race は .testignore に列挙されたパッケージを除外対象とする。除外理由はファイル内のコメントを参照すること。新規にテスト対象外としたいパッケージが出た場合は、除外理由をコメントで明記したうえで .testignore にパターンを追加する。逆に interface 定義のみのパッケージへ実装を足す等で除外を解除する場合は、.testignore から該当行を削除し §3 のカバレッジ目標に従ってテストを整備する"
+      "text": "- AWS インフラの初回構築は make tf/bootstrap（state 保管先の S3/DynamoDB 作成）→ make tf/init → terraform plan/apply の順。詳細は terraform/ARCHITECTURE.md\n- ポートフォリオサイト（web/）の知識源は make site/gen で文書から生成する。取り込み対象の正本は scripts/sitegen の rootDocs() と docs/ で、ここに一覧を写さない（写すと片方だけ古くなる。実際 CLAUDE.md が取り込み対象なのに一覧から漏れていた）。対象の文書を変更したら再生成が要る（サイト専用の写しを作らないための仕組み）。再生成漏れは make site/check が検知し、CI と .github/workflows/pages.yml が公開前に実行する\n  - サイトのトップページ（web/index.html）が README.md の実測値を引用している箇所は、ssot-assert: present-grep ディレクティブで正本と照合している（make docs/check が html も走査する）。数値を引用するときは同じ形でディレクティブを添える。付け忘れは検知できないので、これが唯一の担保になる。カード本文の散文は手書きで機械判定の対象外——線引きの正本は web/README.md\n  - ブラウザとプロキシが共有する上限値（参照チャンク数・質問文の長さ）は scripts/sitegen の const が正本で、索引に載せて両方に読ませる。2つのランタイムのどちらかに数字を直接書かない\n  - チャットの中継（web/worker/）は Cloudflare Workers へ手動デプロイする。索引は Worker にもバンドルされるため、文書を変えたら「make site/gen → 再デプロイ」までやらないとサイトと Worker で ID がずれる。手順は web/worker/README.md\n- 利用可能なコマンドは make help で確認する（Makefile の ## コメントが説明として表示される）\n- マイグレーションの DSN は MIGRATE_DSN 環境変数で上書き可能。ローカル以外の環境では明示的に指定する"
+    },
+    {
+      "id": "AGENTS.md#5-makefile-rules-開発コマンドの統一@3",
+      "file": "AGENTS.md",
+      "anchor": "5-makefile-rules-開発コマンドの統一",
+      "title": "5. Makefile Rules (開発コマンドの統一)",
+      "trail": "AGENTS.md \u003e 5. Makefile Rules (開発コマンドの統一)",
+      "text": "- make test / make test/race は .testignore に列挙されたパッケージを除外対象とする。除外理由はファイル内のコメントを参照すること。新規にテスト対象外としたいパッケージが出た場合は、除外理由をコメントで明記したうえで .testignore にパターンを追加する。逆に interface 定義のみのパッケージへ実装を足す等で除外を解除する場合は、.testignore から該当行を削除し §3 のカバレッジ目標に従ってテストを整備する"
     },
     {
       "id": "AGENTS.md#6-agentic-behavior-自律実行のルール",
@@ -676,7 +700,7 @@
       "anchor": "ランキング-grpc-ハンドラのテスト設計",
       "title": "ランキング gRPC ハンドラのテスト設計",
       "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計",
-      "text": "対象: internal/driver/grpc/ranking/handler.go\n／errors.go\n／convert.go\n／server/register.go\nテスト: handler_test.go\n／errors_test.go\n／contract_test.go\n／server/register_test.go\n\n運用ルールは README.md。ユースケース側の設計は ranking.md。\n対になる HTTP delivery の設計は http-ranking.md で、同じ usecase を\n共有するため図の形も同じにしてある。片方だけにケースがある状態を作らない。\n\ndriver 層の責務は変換とエラー経路の網羅に限定される。\nlimit / offset の正規化、points の値域といった判定は下位層の責務なので重ねてテストしない。\n\nHTTP 版との差分（gRPC 固有の判断）:\n\n- ID とページング値のパースが無い。 proto で int64 / int32 に型付けされており、\n  数値でない入力はサーバに届く前に gRPC のデコードで落ちる。したがって\n  「数値でない ID」に相当するケースは存在せず、残る判定は値域（\u003c= 0・負値）だけ\n- Retry-After ヘッダの代わりに google.rpc.RetryInfo を error details に載せる\n  （§4）。gRPC にヘッダで再試行を伝える標準が無いため\n- ctx キャンセルはハンドラで扱わない。 gRPC ランタイムが codes.Canceled /\n  codes.DeadlineExceeded を付けるため、ハンドラが重ねて判定すると二重管理になる\n- WatchUserRankings は本ハンドラで実装していない。 UnimplementedRankingServiceServer\n  を埋め込んでいるので codes.Unimplemented が返る（§5 で追記予定）\n\nエラー → status code の分類は unary 5 メソッドすべてが handleError を共有する。\n図では [[handleError]] として畳み、分岐の実体は §4 に置く。\n\n---"
+      "text": "対象: internal/driver/grpc/ranking/handler.go\n／watch.go\n／errors.go\n／convert.go\n／server/register.go\nテスト: handler_test.go\n／watch_test.go\n／errors_test.go\n／contract_test.go\n／server/register_test.go\n\n運用ルールは README.md。ユースケース側の設計は ranking.md。\n対になる HTTP delivery の設計は http-ranking.md で、同じ usecase を\n共有するため図の形も同じにしてある。片方だけにケースがある状態を作らない。\n\ndriver 層の責務は変換とエラー経路の網羅に限定される。\nlimit / offset の正規化、points の値域といった判定は下位層の責務なので重ねてテストしない。\n\nHTTP 版との差分（gRPC 固有の判断）:\n\n- ID とページング値のパースが無い。 proto で int64 / int32 に型付けされており、\n  数値でない入力はサーバに届く前に gRPC のデコードで落ちる。したがって\n  「数値でない ID」に相当するケースは存在せず、残る判定は値域（\u003c= 0・負値）だけ\n- Retry-After ヘッダの代わりに google.rpc.RetryInfo を error details に載せる\n  （§4）。gRPC にヘッダで再試行を伝える標準が無いため\n- ctx キャンセルはハンドラで扱わない。 gRPC ランタイムが codes.Canceled /\n  codes.DeadlineExceeded を付けるため、ハンドラが重ねて判定すると二重管理になる\n- WatchUserRankings だけが server streaming（§5）。1 リクエストに対して応答が\n  複数回流れるため、図の終端が「レスポンスを返す」ではなく「送信ループを抜ける」になる\n\nエラー → status code の分類は unary 5 メソッドすべてが handleError を共有する。\n図では [[handleError]] として畳み、分岐の実体は §4 に置く。\n\n---"
     },
     {
       "id": "docs/testing/grpc-ranking.md#1-一覧系-getuserrankings--getguildrankings",
@@ -764,7 +788,39 @@
       "anchor": "5-ストリーミング-watchuserrankings",
       "title": "5. ストリーミング: WatchUserRankings",
       "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 5. ストリーミング: WatchUserRankings",
-      "text": "本節は未記載。 WatchUserRankings は本ハンドラでは実装しておらず、\nUnimplementedRankingServiceServer の埋め込みにより codes.Unimplemented を返す。\n実装時に、購読フロー（初回スナップショット送信・更新検知・遅いクライアントの\n中間状態破棄・ctx キャンセル）の図とテスト仕様表をここへ追記すること。\n\n---"
+      "text": "対象: watch.go\n／テスト: watch_test.go\n\n唯一の server streaming RPC。更新の検知・差分判定・遅い購読者の扱いはすべて\nusecase 側のハブ（ranking-watch.md）の責務で、この層が持つのは\n購読の開始と、ハブが流すチャネルを pb メッセージへ変換して送り続けることだけ。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#5-1-フローチャート",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "5-1-フローチャート",
+      "title": "5-1. フローチャート",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 5. ストリーミング: WatchUserRankings \u003e 5-1. フローチャート",
+      "text": "ループは 1 回だけ展開して描いてある。 実装は WU→WS2 をチャネルが閉じるまで\n繰り返すが、閉路のまま描くと仕様表の「図のパス」列が読めなくなるため。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#5-2-設計上の要点テストで守る不変条件",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "5-2-設計上の要点テストで守る不変条件",
+      "title": "5-2. 設計上の要点（テストで守る不変条件）",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 5. ストリーミング: WatchUserRankings \u003e 5-2. 設計上の要点（テストで守る不変条件）",
+      "text": "- stream.Context() をそのまま渡す。 購読の登録解除はハブの context.AfterFunc が\n  この ctx を見て行う（ranking-watch.md §0-7）。別の ctx を渡すと\n  クライアントが切断しても購読者がハブに残り続ける\n- limit は負値だけ弾き、正規化しない（§1 と同じ設計意図）。既定値の適用と上限の\n  丸めは NormalizeLimit を呼ぶハブの責務。proto3 で未設定と区別できない 0 もそのまま渡す\n- Send は単一 goroutine からだけ呼ぶ。 grpc.ServerStream の SendMsg は並行呼び出しが\n  許されていない。受信と送信を別 goroutine へ分けて「送信を並行化する」最適化をしないこと\n  （テストのフェイクが Send の重なりを検出して落とす）\n- Send のエラーはそのまま返す（WE3）。クライアント切断はストリームでは日常的に起き、\n  サーバ側の異常ではない。gRPC ランタイムが status を付けて扱うので、ここで包み直すと\n  code が二重に決まる。同じ理由でログも出さない\n- ErrWatcherStopped は handleError に通さない（WE2）。§4 の写像は domain の\n  sentinel を unary 5 メソッドで共有するためのもので、これは「常駐ハブが停止済み」という\n  ストリーム固有のライフサイクル事由。unary からは到達しないため §4 の表に到達不能な\n  行を増やさず、分岐を本節のフローに置く\n- WE2 に RetryInfo を載せない。 §4 の R9（ZSet 揮発）が 30 秒待ちを提示するのは\n  復旧が再構築バッチを伴うためで、こちらはプロセスが停止処理に入っている状態。\n  即座に再接続すれば別インスタンスで繋がりうるので、待ち時間を指定しない方が正しい\n- 初回 fetch の失敗はハブがエラーで返す（ranking-watch.md §0-5）ので、\n  ErrRankingUnavailable は購読開始時に WX 経由で R9 へ落ちる。\n  ストリームが開いた後の fetch 失敗はハブが握るため、この層には来ない\n- チャネルのクローズは正常終了（WZ）。ctx キャンセル（クライアント切断）でも\n  ハブ停止でも起きる。ハンドラからは区別できず、区別する必要も無い"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#5-3-テスト仕様表",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "5-3-テスト仕様表",
+      "title": "5-3. テスト仕様表",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 5. ストリーミング: WatchUserRankings \u003e 5-3. テスト仕様表",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | limit が負値 | WA→WB→WE1 | InvalidArgument limit must not be negative | watcher が呼ばれない（Send も 0 回） |\n| 2 | 購読開始が ErrWatcherStopped | WA→WB→WC→WE2 | Unavailable ranking watch is unavailable | RetryInfo が載らない（R9 と取り違えていない）・Send は 0 回 |\n| 3 | 購読開始が予期せぬエラー | WA→WB→WC→WX→R8 | Internal internal server error | Send は 0 回 |\n| 4 | 購読開始が ErrRankingUnavailable | …→WC→WX→R9 | Unavailable ranking is unavailable | RetryInfo が details に載る（§4 の写像に委譲している） |\n| 5 | 初回の Send が失敗（クライアント切断） | …→WC→WD→WS1→WE3 | Send のエラーが包まれずそのまま返る | Send は 1 回で止まる（残りを送らない） |\n| 6 | 2 件目の Send が失敗 | …→WS1→WU→WS2→WE3 | 同上 | Send は 2 回で止まる |\n| 7 | 正常系: push が順に送られ、クローズで終わる | …→WU→WS2→WK→WZ | nil。push した順に Send される | watcher に stream の ctx と生値の limit が渡る |\n\nケース 7 を 2 件に展開している理由: 「未設定（= 0）」と「明示指定」は同じコードパスだが、\n0 を既定値へ差し替える実装ミスは明示指定のケースでは検出できない（§1 のケース 5 と同じ）。\n同一パスなので表は 1 行のままにし、テスト側で入力違いの 2 要素へ広げる。\n\n手続きが異なるため別テスト関数に切り出しているもの:\n\n| 条件 | 図のパス | 期待結果 | テスト関数 |\n| --- | --- | --- | --- |\n| ハブが 1 件ずつ push する（バッファ無しチャネル） | WS1→WU→WS2→WK→WZ | 受信のたびに送り、クローズで nil を返す | TestHandler_WatchUserRankings_逐次push_受信のたびに送る |"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#5-3-テスト仕様表@2",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "5-3-テスト仕様表",
+      "title": "5-3. テスト仕様表",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 5. ストリーミング: WatchUserRankings \u003e 5-3. テスト仕様表",
+      "text": "表のケース 7 はチャネルへ値を詰めてから閉じる構成なので、「受け取った端から送る」ことまでは\n固定できない（全件受信してから送る実装でも通る）。バッファ無しのチャネルで 1 件ずつ渡す\nこの関数がそれを固定する。Send の並行呼び出し検出（5-2）も、ハンドラを別 goroutine で\n走らせるこの構成が実効的に効く場所になる。\n\n---"
     },
     {
       "id": "docs/testing/grpc-ranking.md#6-proto-⇄-domain-のフィールド対応",
@@ -772,7 +828,7 @@
       "anchor": "6-proto-⇄-domain-のフィールド対応",
       "title": "6. proto ⇄ domain のフィールド対応",
       "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 6. proto ⇄ domain のフィールド対応",
-      "text": "HTTP 側の契約テスト（testdata/contracts/*.json）に相当するもの。\nただし gRPC では proto ファイル自体が構造の正本なので、JSON の写しは作らない。\n代わりに contract_test.go が\npb メッセージのフィールド集合と、対応する Go 構造体のフィールド集合を突合する\n（Go 側のフィールド名を snake_case へ変換して集合比較し、過不足で落とす）。\n\nこれは HTTP 側に無い保証で、domain / usecase にフィールドを足して proto へ\n写し忘れたこと（およびその逆）を検出する。検出できるのはフィールド名の集合だけで、\n型・意味の対応は見ない（値の妥当性は §1〜§3 の責務）。\n\n意図的な非対称が必要になったら、ケースに理由付きの除外セットを足す。現時点で除外は 1 件も無い（対応表は下記のとおり完全一致）。\n\n| # | pb メッセージ | 対応する Go 型 |\n| --- | --- | --- |\n| 1 | RankEntry | domain/ranking.RankEntry |\n| 2 | GetUserRankResponse | domain/ranking.UserRankResult |\n| 3 | GetGuildRankResponse | domain/ranking.GuildRankResult |\n| 4 | AddUserPointsResponse | domain/ranking.UserPointAddResult |\n| 5 | AddUserPointsRequest | usecase/ranking.AddUserPointsInput |\n| 6 | GetUserRankingsRequest / GetGuildRankingsRequest | usecase/ranking.GetRankingsInput |\n| 7 | GetUserRankingsResponse / GetGuildRankingsResponse | usecase/ranking.RankingsResult |\n\nGetUserRankRequest / GetGuildRankRequest が表に無い理由: 対応する Go の型が無く\n（usecase は ID を素の int64 で受ける）、突合の相手が存在しないため。\nID の受け渡しは §2 の「usecase に ID がそのまま渡る」で担保する。\nWatchUserRankings* は §5 とセットで追加する。"
+      "text": "HTTP 側の契約テスト（testdata/contracts/*.json）に相当するもの。\nただし gRPC では proto ファイル自体が構造の正本なので、JSON の写しは作らない。\n代わりに contract_test.go が\npb メッセージのフィールド集合と、対応する Go 構造体のフィールド集合を突合する\n（Go 側のフィールド名を snake_case へ変換して集合比較し、過不足で落とす）。\n\nこれは HTTP 側に無い保証で、domain / usecase にフィールドを足して proto へ\n写し忘れたこと（およびその逆）を検出する。検出できるのはフィールド名の集合だけで、\n型・意味の対応は見ない（値の妥当性は §1〜§3 の責務）。\n\n意図的な非対称が必要になったら、ケースに理由付きの除外セットを足す。現時点で除外は 1 件も無い（対応表は下記のとおり完全一致）。\n\n| # | pb メッセージ | 対応する Go 型 |\n| --- | --- | --- |\n| 1 | RankEntry | domain/ranking.RankEntry |\n| 2 | GetUserRankResponse | domain/ranking.UserRankResult |\n| 3 | GetGuildRankResponse | domain/ranking.GuildRankResult |\n| 4 | AddUserPointsResponse | domain/ranking.UserPointAddResult |\n| 5 | AddUserPointsRequest | usecase/ranking.AddUserPointsInput |\n| 6 | GetUserRankingsRequest / GetGuildRankingsRequest | usecase/ranking.GetRankingsInput |\n| 7 | GetUserRankingsResponse / GetGuildRankingsResponse / WatchUserRankingsResponse | usecase/ranking.RankingsResult |"
     },
     {
       "id": "docs/testing/grpc-ranking.md#6-proto-⇄-domain-のフィールド対応@2",
@@ -780,7 +836,7 @@
       "anchor": "6-proto-⇄-domain-のフィールド対応",
       "title": "6. proto ⇄ domain のフィールド対応",
       "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 6. proto ⇄ domain のフィールド対応",
-      "text": "ケース 6・7 が 2 つの pb メッセージを並べているのは、ユーザー版とギルド版で\n同じ Go 型に対応するため。表は 1 行のまま、テスト側で 2 要素へ広げる。\n\n---"
+      "text": "GetUserRankRequest / GetGuildRankRequest / WatchUserRankingsRequest が表に無い理由:\n対応する Go の型が無く、突合の相手が存在しないため。前 2 つは usecase が ID を素の int64 で\n受け取り、WatchUserRankingsRequest も Watcher.WatchUserRankings(ctx, limit int) が\nlimit を素の int で受け取る（GetRankingsInput は offset を持つので集合が一致せず、\n突合の相手にはできない）。\nID と limit の受け渡しは §2・§5 の「usecase にそのまま渡る」ケースで担保する。\n\nケース 6・7 が複数の pb メッセージを並べているのは、いずれも同じ Go 型に対応するため。\n表は 1 行のまま、テスト側で複数要素へ広げる。ケース 7 に WatchUserRankingsResponse を\n含めているのは、streaming が配る 1 フレームと unary の一覧が同じ構造であることを\n固定するため（取得経路によって形が変わると、クライアントが 2 通りの解釈を持つことになる）。\n\n---"
     },
     {
       "id": "docs/testing/grpc-ranking.md#7-サービス登録-serverregister",
@@ -796,7 +852,7 @@
       "anchor": "パスの網羅状況",
       "title": "パスの網羅状況",
       "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e パスの網羅状況",
-      "text": "| 節 | 終端ノード | 状態 |\n| --- | --- | --- |\n| §1 | E1 E2 X Z | すべて通過 |\n| §2 | E1 X Z | すべて通過 |\n| §3 | E1 E2 X Z | すべて通過 |\n| §4 | R1〜R9（9 個） | すべて通過 |\n| §7 | SE1 SZ | すべて通過 |"
+      "text": "| 節 | 終端ノード | 状態 |\n| --- | --- | --- |\n| §1 | E1 E2 X Z | すべて通過 |\n| §2 | E1 X Z | すべて通過 |\n| §3 | E1 E2 X Z | すべて通過 |\n| §4 | R1〜R9（9 個） | すべて通過 |\n| §5 | WE1 WE2 WE3 WX WZ | すべて通過 |\n| §7 | SE1 SZ | すべて通過 |"
     },
     {
       "id": "docs/testing/grpc-server.md#grpc-サーバ起動とインターセプタのテスト設計",

@@ -20,5 +20,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 FROM gcr.io/distroless/static-debian12:nonroot
 USER nonroot:nonroot
 COPY --from=builder /out/app /app
-EXPOSE 8080
+# BIN によって使うポートが変わる（api=8080 / grpc=9090。batch と outbox-worker は listen しない）。
+# EXPOSE は宣言だけで実際の公開は docker run -p が決めるため、両方を挙げておく。
+EXPOSE 8080 9090
 ENTRYPOINT ["/app"]

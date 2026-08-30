@@ -22,18 +22,22 @@ var _ rankingv1.RankingServiceServer = (*Handler)(nil)
 // Handler はランキング機能の gRPC ハンドラ。
 //
 // UnimplementedRankingServiceServer を値で埋め込んでいるため、本ハンドラが実装して
-// いない RPC（WatchUserRankings）は codes.Unimplemented を返す。埋め込みを外すと
-// proto にメソッドを追加した瞬間にコンパイルが通らなくなるので、外さないこと。
+// いない RPC は codes.Unimplemented を返す（現時点では proto の 6 RPC すべてを実装済み）。
+// 埋め込みを外すと proto にメソッドを追加した瞬間にコンパイルが通らなくなるので、外さないこと。
+//
+// watcher は server streaming（WatchUserRankings / watch.go）だけが使う。unary の
+// 5 メソッドは usecase しか触らない。
 type Handler struct {
 	rankingv1.UnimplementedRankingServiceServer
 
 	usecase rankingusecase.Usecase
+	watcher rankingusecase.Watcher
 	logger  *slog.Logger
 }
 
 // NewHandler は Handler を生成する。
-func NewHandler(u rankingusecase.Usecase, logger *slog.Logger) *Handler {
-	return &Handler{usecase: u, logger: logger}
+func NewHandler(u rankingusecase.Usecase, w rankingusecase.Watcher, logger *slog.Logger) *Handler {
+	return &Handler{usecase: u, watcher: w, logger: logger}
 }
 
 // GetUserRankings はユーザーランキングを返す。

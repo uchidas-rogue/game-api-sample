@@ -39,9 +39,12 @@ const (
 const retryInfoName = "google.rpc.RetryInfo"
 
 // newHandler はモック化した usecase を持つ Handler を返す。
-func newHandler(t *testing.T, uc *mockranking.MockUsecase) *rankinghandler.Handler {
+//
+// watcher は EXPECT を持たないモックを渡す。unary の 5 メソッドは watcher を触らない
+// はずなので、触れば gomock が落とす（streaming の依存が unary へ漏れていないことの検証）。
+func newHandler(t *testing.T, ctrl *gomock.Controller, uc *mockranking.MockUsecase) *rankinghandler.Handler {
 	t.Helper()
-	return rankinghandler.NewHandler(uc, slogtest.NewLogger(t, nil))
+	return rankinghandler.NewHandler(uc, mockranking.NewMockWatcher(ctrl), slogtest.NewLogger(t, nil))
 }
 
 // assertStatus はエラーが期待どおりの code / message を持つことを検証する。
@@ -218,7 +221,7 @@ func runRankingsCase(t *testing.T, kind rankingKind, tc rankingsCase) {
 		}
 	}
 
-	h := newHandler(t, uc)
+	h := newHandler(t, ctrl, uc)
 	ctx := t.Context()
 
 	var (
@@ -362,7 +365,7 @@ func runSingleRankCase(t *testing.T, kind rankingKind, tc singleRankCase) {
 		expectSingleRankCall(kind, uc, id, tc.failAt)
 	}
 
-	h := newHandler(t, uc)
+	h := newHandler(t, ctrl, uc)
 	ctx := t.Context()
 
 	if kind == kindGuild {
@@ -614,7 +617,7 @@ func runAddPointsCase(t *testing.T, tc addPointsCase) {
 		}).Return(result, tc.ucErr)
 	}
 
-	h := newHandler(t, uc)
+	h := newHandler(t, ctrl, uc)
 
 	res, err := h.AddUserPoints(t.Context(), &rankingv1.AddUserPointsRequest{
 		UserId: userID,

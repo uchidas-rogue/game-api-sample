@@ -92,6 +92,14 @@ func TestProtoDomainFieldParity(t *testing.T) {
 			msg:    &rankingv1.GetGuildRankingsResponse{},
 			goType: reflect.TypeOf(rankingusecase.RankingsResult{}),
 		},
+		{
+			// streaming が配る 1 フレームは unary の一覧と同じ構造でなければならない。
+			// 片方にだけフィールドを足すと、同じランキングが取得経路によって違う形で
+			// 届くことになる。ここで同じ Go 型に紐付けて固定する。
+			name:   "WatchUserRankingsResponse ⇄ usecase.RankingsResult",
+			msg:    &rankingv1.WatchUserRankingsResponse{},
+			goType: reflect.TypeOf(rankingusecase.RankingsResult{}),
+		},
 	}
 
 	for _, tt := range tests {
