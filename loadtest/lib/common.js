@@ -13,6 +13,7 @@
 //   PRE_VUS    事前確保VU数
 //   MAX_VUS    最大VU数
 import { check } from 'k6';
+import { Counter } from 'k6/metrics';
 
 export const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
 export const USERS = parseInt(__ENV.USERS || '10000', 10);
@@ -32,6 +33,37 @@ export function randGuildID() {
 export const defaultThresholds = {
   http_req_failed: ['rate<0.01'], // エラー率 1% 未満
   http_req_duration: ['p(95)<200', 'p(99)<500'], // p95<200ms, p99<500ms
+};
+
+// gRPC 用の合否基準。HTTP 版と同じ水準（p95<200ms / p99<500ms、エラー率1%未満）を
+// gRPC のメトリクス名に読み替えたもの。
+//
+// defaultThresholds を gRPC シナリオに流用してはいけない。k6 の gRPC 呼び出しは
+// http_req_* を一切出さないため、閾値が「対象0件」で常に無条件パスし、
+// 遅延もエラーも検出しないまま緑になる。
+//
+// エラー率は grpc_req_failed に相当するメトリクスが無いので checks で見る
+// （各シナリオ側で invoke の status を check し、その成功率を判定する）。
+//
+// grpcCalls は「1件も測れていないのに緑になる」のを防ぐ番人。gRPC シナリオは invoke の結果を
+// 受け取るたびにこれを add する（status の成否は問わない。サーバへ到達できたかどうかを数える）。
+//
+// なぜ要るか（実測で再現した挙動）:
+//   サーバが落ちていると client.connect() が毎イテレーション例外を投げ、invoke まで到達しない。
+//   すると checks も grpc_req_duration も**サンプル0件**になる。k6 はサンプル0件の
+//   rate / p(95) 閾値を無条件パスさせるため、**全イテレーション失敗なのに exit code 0** になる。
+//   Counter の count>0 だけはサンプル0件で正しく落ちるので、これを最後の番人に使う。
+//   （grpc_req_duration に count>0 は付けられない。k6 の Trend が対応する集計は
+//     avg / min / max / med / p のみで、count を指定すると閾値の設定エラーになる）
+//
+// common.js を import した時点でメトリクスは登録されるが、HTTP シナリオの summary には出ない
+// （k6 がサンプル0件の行を出すのは閾値が付いているときだけ。実測で確認済み）。HTTP 側への影響は無い。
+export const grpcCalls = new Counter('grpc_calls');
+
+export const defaultGrpcThresholds = {
+  grpc_calls: ['count>0'], // 1件も到達していなければ失敗（サンプル0件での空パス防止）
+  checks: ['rate>0.99'], // check 成功率 99% 超 = エラー率 1% 未満
+  grpc_req_duration: ['p(95)<200', 'p(99)<500'], // p95<200ms, p99<500ms
 };
 
 // RPS駆動（ramping-arrival-rate）シナリオを環境変数で組み立てる。

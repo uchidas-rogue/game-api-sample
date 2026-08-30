@@ -28,6 +28,7 @@ import (
 //  2. ギルド単位にスコアを集約し、bulk upsert で一括加算（履歴はイベント単位のまま bulk INSERT）
 //  3. MarkProcessedByIDs で一括マーク → COMMIT
 //  4. COMMIT 後に Redis へパイプラインで一括反映（1往復）
+//  5. 反映に成功したときだけ ranking:updated へ publish（ランキング購読者への push 用）
 //
 // バッチ単位 tx にする理由: イベント単位 tx では1件ごとに COMMIT（fsync）が発生し、
 // これがスループットの上限を決めていた（実測 約27 events/sec、並列化しても約200 events/sec に対し
@@ -78,17 +79,18 @@ import (
 // 通知駆動がビジーループにならないよう、前進件数による打ち切り（runOnce）と滞留中の
 // 通知抑止（Run）も併せて必要。詳細は docs/testing/outbox-worker.md §0-2〜§0-4。
 type Worker struct {
-	repo         outboxusecase.Repository
-	rankingRepo  rankingusecase.Repository
-	rankingStore rankingusecase.RankingStore
-	tx           shared.Transactor
-	subscriber   outboxusecase.Subscriber
-	logger       *slog.Logger
-	pollInterval time.Duration
-	batchSize    int
-	concurrency  int
-	tickTimeout  time.Duration
-	maxRetry     uint32
+	repo            outboxusecase.Repository
+	rankingRepo     rankingusecase.Repository
+	rankingStore    rankingusecase.RankingStore
+	rankingNotifier rankingusecase.RankingUpdateNotifier
+	tx              shared.Transactor
+	subscriber      outboxusecase.Subscriber
+	logger          *slog.Logger
+	pollInterval    time.Duration
+	batchSize       int
+	concurrency     int
+	tickTimeout     time.Duration
+	maxRetry        uint32
 }
 
 // Config は Worker のコンストラクタ引数。
@@ -96,11 +98,14 @@ type Config struct {
 	Repo         outboxusecase.Repository
 	RankingRepo  rankingusecase.Repository
 	RankingStore rankingusecase.RankingStore
-	Tx           shared.Transactor
-	Subscriber   outboxusecase.Subscriber
-	Logger       *slog.Logger
-	PollInterval time.Duration
-	BatchSize    int
+	// RankingNotifier は Redis への反映完了をランキング購読者へ知らせる publisher。
+	// ApplyScoreDeltas が成功した直後にだけ呼ぶ（docs/testing/outbox-worker.md §2-1）。
+	RankingNotifier rankingusecase.RankingUpdateNotifier
+	Tx              shared.Transactor
+	Subscriber      outboxusecase.Subscriber
+	Logger          *slog.Logger
+	PollInterval    time.Duration
+	BatchSize       int
 	// Concurrency は1ティック内でイベントを並列処理する goroutine 数。
 	// 同時に張るトランザクション数と等しいため、DB 接続プールの上限以下にすること。
 	// 0 以下の場合は 1（逐次処理）に丸める。
@@ -126,17 +131,18 @@ func New(cfg Config) *Worker {
 		maxRetry = 1
 	}
 	return &Worker{
-		repo:         cfg.Repo,
-		rankingRepo:  cfg.RankingRepo,
-		rankingStore: cfg.RankingStore,
-		tx:           cfg.Tx,
-		subscriber:   cfg.Subscriber,
-		logger:       cfg.Logger,
-		pollInterval: cfg.PollInterval,
-		batchSize:    cfg.BatchSize,
-		concurrency:  concurrency,
-		tickTimeout:  cfg.TickTimeout,
-		maxRetry:     uint32(maxRetry),
+		repo:            cfg.Repo,
+		rankingRepo:     cfg.RankingRepo,
+		rankingStore:    cfg.RankingStore,
+		rankingNotifier: cfg.RankingNotifier,
+		tx:              cfg.Tx,
+		subscriber:      cfg.Subscriber,
+		logger:          cfg.Logger,
+		pollInterval:    cfg.PollInterval,
+		batchSize:       cfg.BatchSize,
+		concurrency:     concurrency,
+		tickTimeout:     cfg.TickTimeout,
+		maxRetry:        uint32(maxRetry),
 	}
 }
 
@@ -333,6 +339,10 @@ type batchWork struct {
 //
 // 失敗しても再試行させずログのみに留める。MySQL は確定済みでロールバックできず、
 // 再適用すると今度こそ二重加算になるため。欠落の復旧は RankingSyncer の焼き直しに委ねる。
+//
+// 反映に成功したときだけ、ランキング更新を購読者へ publish する。失敗パスで publish
+// しないのは、キャッシュが遅れている事実を push で嘘にしないため。取りこぼしても
+// 次のバッチの成功時に追いつく（購読側の設計は docs/testing/ranking-watch.md §0-1）。
 func (w *Worker) applyRedisAfterCommit(ctx context.Context, work redisWork, eventCount int) {
 	if len(work.users) == 0 && len(work.guilds) == 0 {
 		return
@@ -342,6 +352,15 @@ func (w *Worker) applyRedisAfterCommit(ctx context.Context, work redisWork, even
 			slog.Int("event_count", eventCount),
 			slog.Int("user_delta_count", len(work.users)),
 			slog.Int("guild_delta_count", len(work.guilds)),
+			slog.Any("error", err),
+		)
+		return
+	}
+
+	// publish の失敗はワーカーを止めない（outboxNotifier.Notify と同じ扱い）。
+	if err := w.rankingNotifier.NotifyUpdated(ctx); err != nil {
+		w.logger.WarnContext(ctx, "ranking update notify failed (watchers catch up on the next update)",
+			slog.Int("event_count", eventCount),
 			slog.Any("error", err),
 		)
 	}

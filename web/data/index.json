@@ -52,7 +52,7 @@
       "anchor": "2-go-coding-standards",
       "title": "2. Go Coding Standards",
       "trail": "AGENTS.md \u003e 2. Go Coding Standards",
-      "text": "  - echo.Echo.Pre は使わない。Pre はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う\n  - 判定: 登録順は TestNew_MiddlewareOrder（New の AST を検査）、Pre の不使用は .golangci.yml の ruleguard が強制する\n- 時刻: time.Now() を直接呼ばず、Clock インターフェースを DI してテスト可能にする\n  - 現時点で Clock インターフェースの実装は存在しない（time.Now() を使う機能がまだ無いため）。時刻依存の機能を追加する際に、usecase 層へ interface を定義し infrastructure 層に実装を置いて DI する\n- 設定管理: 環境変数のパースは configs/config.go の Config に集約する。環境変数のキー名と既定値は同パッケージで const 定義し、各層には *Config を DI して渡す。新規の設定値追加時は Config 構造体・既定値・Load() の3箇所を更新する"
+      "text": "  - echo.Echo.Pre は使わない。Pre はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う\n  - 判定: 登録順は TestNew_MiddlewareOrder（New の AST を検査）、Pre の不使用は .golangci.yml の ruleguard が強制する\n- 時刻: 業務ロジックでは time.Now() を直接呼ばず、Clock インターフェースを DI してテスト可能にする\n  - 例外は観測用の経過時間計測（アクセスログの latency 等）で、infrastructure 層に限り直接呼んでよい。計測値そのものをテストで固定する必要が無く、Clock を通しても検証内容が変わらないため。.golangci.yml の forbidigo も同じ範囲（^internal/infrastructure/）を除外しており、下の照合はその範囲を除いた層を見ている\n  - 現時点で Clock インターフェースの実装は存在しない（時刻に依存する業務ロジックがまだ無いため）。時刻依存の機能を追加する際に、usecase 層へ interface を定義し infrastructure 層に実装を置いて DI する\n- 設定管理: 環境変数のパースは configs/config.go の Config に集約する。環境変数のキー名と既定値は同パッケージで const 定義し、各層には *Config を DI して渡す。新規の設定値追加時は Config 構造体・既定値・Load() の3箇所を更新する"
     },
     {
       "id": "AGENTS.md#3-testing-rules-規約",
@@ -671,6 +671,214 @@
       "text": "この文書を作る過程で、既存テストとの突き合わせにより以下が判明した（make test/cover/check の\n文カバレッジでは usecase 層 97.6% と表示され、閾値 90% を満たしていたため検知されなかったもの）。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| パスの欠落 | ケース 1・2（pullCount 範囲外 → ErrInvalidPullCount）のテストが無かった。フローの最初の分岐が未検証 | 追加 |\n| パスの欠落 | ケース 14（Weight 0 のアイテムが混在し D4→D5 を通る）が無かった。「全部 0」のケースしか無く、一部だけ 0 の除外挙動が未検証 | 追加 |\n| パスの欠落 | ケース 16（ロック取得順序が item_id 昇順であること）が無かった。デッドロック回避の不変条件が未検証 | 追加 |\n| パスの欠落 | ケース 17（NewUsecase の rnd == nil フォールバック）が無かった | 追加 |\n| 境界値の欠落 | ケース 15（pullCount 下限）が無く、MaxPullCount でしか正常系を検証していなかった。抽選回数のハードコードを検出できない状態 | 追加 |\n| 同一パスの重複 | 「GetUserForUpdate がエラー」と「ユーザー不在（ErrUserNotFound）」は同じパス A→B→C→D→F→E3 を通る。戻り値のエラーが一般エラーか domain sentinel かの違いだけで、実行される命令列は同じ | ケース 4 に統合 |\n| テーブル駆動の形 | 各ケースが setup func(t, ctrl) (Usecase, context.Context) を持ち、モックの組み立て手順をテーブル側に書いていた。ケースごとに同じ EXPECT 列が繰り返され、テーブル駆動の形をした「無名テストの配列」になっていた | テーブルを入力・失敗地点・期待結果のデータのみにし、組み立てはランナー 1 本へ集約 |\n\nこの欠落は、いずれも文カバレッジの閾値判定をすり抜けていた（usecase 層 97.6% で閾値 90% を満たしていた）。\n図の終端ノードと表の突き合わせという手順が、閾値では見えない穴を可視化した実例として記録しておく。\n\nなお、この作業の結果 usecase 層の文カバレッジは 97.6% → 100% になった。\nただし目的は数値ではなくパスの網羅であり、100% は結果にすぎない。"
     },
     {
+      "id": "docs/testing/grpc-ranking.md#ランキング-grpc-ハンドラのテスト設計",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "ランキング-grpc-ハンドラのテスト設計",
+      "title": "ランキング gRPC ハンドラのテスト設計",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計",
+      "text": "対象: internal/driver/grpc/ranking/handler.go\n／errors.go\n／convert.go\n／server/register.go\nテスト: handler_test.go\n／errors_test.go\n／contract_test.go\n／server/register_test.go\n\n運用ルールは README.md。ユースケース側の設計は ranking.md。\n対になる HTTP delivery の設計は http-ranking.md で、同じ usecase を\n共有するため図の形も同じにしてある。片方だけにケースがある状態を作らない。\n\ndriver 層の責務は変換とエラー経路の網羅に限定される。\nlimit / offset の正規化、points の値域といった判定は下位層の責務なので重ねてテストしない。\n\nHTTP 版との差分（gRPC 固有の判断）:\n\n- ID とページング値のパースが無い。 proto で int64 / int32 に型付けされており、\n  数値でない入力はサーバに届く前に gRPC のデコードで落ちる。したがって\n  「数値でない ID」に相当するケースは存在せず、残る判定は値域（\u003c= 0・負値）だけ\n- Retry-After ヘッダの代わりに google.rpc.RetryInfo を error details に載せる\n  （§4）。gRPC にヘッダで再試行を伝える標準が無いため\n- ctx キャンセルはハンドラで扱わない。 gRPC ランタイムが codes.Canceled /\n  codes.DeadlineExceeded を付けるため、ハンドラが重ねて判定すると二重管理になる\n- WatchUserRankings は本ハンドラで実装していない。 UnimplementedRankingServiceServer\n  を埋め込んでいるので codes.Unimplemented が返る（§5 で追記予定）\n\nエラー → status code の分類は unary 5 メソッドすべてが handleError を共有する。\n図では [[handleError]] として畳み、分岐の実体は §4 に置く。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#1-一覧系-getuserrankings--getguildrankings",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "1-一覧系-getuserrankings--getguildrankings",
+      "title": "1. 一覧系: GetUserRankings / GetGuildRankings",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 1. 一覧系: GetUserRankings / GetGuildRankings",
+      "text": "2 メソッドは構造が同一（ユーザー版とギルド版）。同じ図・同じケース構成を持つ。\n片方にだけケースがある状態にしない（対称性）。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#1-1-フローチャート",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "1-1-フローチャート",
+      "title": "1-1. フローチャート",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 1. 一覧系: GetUserRankings / GetGuildRankings \u003e 1-1. フローチャート",
+      "text": "設計上の要点: 負値だけを弾き、既定値の適用と上限の丸めは usecase に委ねる。\nハンドラが既定値を持つと ranking.md の NormalizeLimit /\nNormalizeOffset と二重管理になる（HTTP 版 parseNonNegativeIntQuery と同じ設計意図）。\nlimit = 0（proto3 のスカラは未設定と 0 を区別しない）はそのまま 0 として渡す。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#1-2-テスト仕様表getuserrankings--getguildrankings-共通",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "1-2-テスト仕様表getuserrankings--getguildrankings-共通",
+      "title": "1-2. テスト仕様表（GetUserRankings / GetGuildRankings 共通）",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 1. 一覧系: GetUserRankings / GetGuildRankings \u003e 1-2. テスト仕様表（GetUserRankings / GetGuildRankings 共通）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | limit が負値 | A→B→E1 | InvalidArgument limit must not be negative | usecase が呼ばれない |\n| 2 | offset が負値 | A→B→C→E2 | InvalidArgument offset must not be negative | 同上 |\n| 3 | usecase が予期せぬエラー | …→C→D→X→R8 | Internal internal server error | — |\n| 4 | usecase が ErrRankingUnavailable | …→C→D→X→R9 | Unavailable ranking is unavailable | RetryInfo が details に載る |\n| 5 | 正常系: limit / offset が正規化されず渡り Result が変換される | …→D→F→Z | rankings と total_count が Result と一致 | usecase に生値がそのまま渡る（未設定 = 0 も含む） |\n\nケース 5 を 2 件に展開している理由: 「未設定（= 0）」と「明示指定」は同じコードパスだが、\n0 を既定値へ差し替える実装ミスは明示指定のケースでは検出できない。\n同一パスなので表は 1 行のままにし、テスト側で入力違いの 2 要素へ広げる\n（README.md §3「1 つのマーカーは次のマーカーまでの要素すべてを覆う」）。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#2-単一順位取得-getuserrank--getguildrank",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "2-単一順位取得-getuserrank--getguildrank",
+      "title": "2. 単一順位取得: GetUserRank / GetGuildRank",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 2. 単一順位取得: GetUserRank / GetGuildRank",
+      "text": "こちらも 2 メソッドで構造が同一。\n\nHTTP 版はここに「数値でない ID」のケースを持つが、gRPC には無い（proto の int64）。\n残るのは値域判定 id \u003c= 0 の 1 条件だけなので、ケースも 1 件に減る。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#テスト仕様表getuserrank--getguildrank-共通",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "テスト仕様表getuserrank--getguildrank-共通",
+      "title": "テスト仕様表（GetUserRank / GetGuildRank 共通）",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 2. 単一順位取得: GetUserRank / GetGuildRank \u003e テスト仕様表（GetUserRank / GetGuildRank 共通）",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | ID が 0 以下 | A→B→E1 | InvalidArgument invalid user_id / invalid guild_id | usecase が呼ばれない |\n| 2 | エンティティ未存在 | A→B→C→X→R1 / R2 | NotFound guild not found / user not found | usecase に ID がそのまま渡る |\n| 3 | スコア/ポイント未登録 | …→C→X→R6 / R7 | NotFound score not found / points not found | — |\n| 4 | 予期せぬエラー | …→X→R8 | Internal internal server error | — |\n| 5 | usecase が ErrRankingUnavailable | …→X→R9 | Unavailable ranking is unavailable | RetryInfo が details に載る |\n| 6 | 正常系 | …→C→D→Z | 全フィールドが Result の値と一致 | — |\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#3-adduserpoints",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "3-adduserpoints",
+      "title": "3. AddUserPoints",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 3. AddUserPoints",
+      "text": "設計上の要点: 順位は worker の Redis 反映後にしか確定しないため、\nこのレスポンスに順位フィールドを入れない（ranking.md 参照）。\nproto に順位フィールドを足すと常に未確定値を返すことになるので、\nメッセージが順位フィールドを持たないことを §6 の契約テストで固定する。\n\npoints の値域は検証しない。IsValidScore は domain の責務で、\nusecase が ErrInvalidPoints を返した場合のマッピングだけがこの層の責務。\nHTTP 版の「ボディを Bind できるか」に相当する分岐が無いのは、\nデコード失敗を gRPC ランタイムが codes.Internal として先に返すため。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#テスト仕様表",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 3. AddUserPoints \u003e テスト仕様表",
+      "text": "| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | user_id が 0 以下 | A→B→E1 | InvalidArgument invalid user_id | usecase が呼ばれない |\n| 2 | reason が空 | A→B→C→E2 | InvalidArgument reason is required | 同上 |\n| 3 | usecase が ErrUserNotFound | …→C→D→X→R2 | NotFound user not found | user_id / points / reason がそのまま渡る |\n| 4 | usecase が ErrUserNotInGuild | …→D→X→R3 | PermissionDenied user is not a member of the guild | — |\n| 5 | usecase が ErrInvalidPoints | …→X→R5 | InvalidArgument invalid points | — |\n| 6 | usecase が予期せぬエラー | …→X→R8 | Internal internal server error | — |\n| 7 | 正常系 | …→D→F→Z | 5 フィールドが Result と一致 | — |\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#4-共通のエラー分類-handleerror",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "4-共通のエラー分類-handleerror",
+      "title": "4. 共通のエラー分類: handleError",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 4. 共通のエラー分類: handleError",
+      "text": "unary 5 メソッドすべてが共有する。図の [[handleError]] の実体。\n\nR9 について: Redis の ZSet が揮発したことを usecase 層が検知して返す\n（ranking.md §0）。ErrPointsNotFound（R7）との違いは\n「その個人が未登録」か「ランキング全体が消えている」かで、前者は NotFound、\n後者は Unavailable。HTTP 版が Retry-After: 30 を返すのと同じ意図で、\ngoogle.rpc.RetryInfo を error details に載せて再試行が有効であることを伝える。\n\nR8 と違いログを出さないのは、この状態が再構築するまで継続するため。\nリクエストごとに記録すると 1 件の障害が毎秒数千行の同一ログになり、他のエラーを埋める。\nUnavailable を返した事実はアクセスログ（インターセプタ）に残るので、観測点は失われない。\n\nRetryInfo の付加に失敗した場合は details 無しの Unavailable にフォールバックする。\nstatus.WithDetails は detail の proto marshal に失敗したときだけエラーを返すため、\n固定値の RetryInfo を渡す本実装では到達しない防御的分岐で、パス表には載せない\n（無理にカバーしない / AGENTS.md §6）。エラーを握りつぶす代わりにフォールバックするのは、\ndetails の欠落でステータス自体を落とすと「揮発中に Internal が返る」という\nより悪い挙動になるため。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#テスト仕様表-1",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "テスト仕様表-1",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 4. 共通のエラー分類: handleError \u003e テスト仕様表",
+      "text": "handleError は分類だけを行う純粋な写像なので、5 メソッド経由で 9 分岐 × 5 を\nなぞらず、関数を直接呼ぶ 1 つの表で網羅する（同じコードパスを重ねても検出力は上がらない）。\n各ハンドラ側は「handleError に委譲していること」を §1〜§3 の代表ケースで確認する。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | ErrGuildNotFound | X→X1→R1 | NotFound guild not found | ログを出さない |\n| 2 | ErrUserNotFound | X→X1→R2 | NotFound user not found | 同上 |\n| 3 | ErrUserNotInGuild | X→X1→R3 | PermissionDenied user is not a member of the guild | 同上 |\n| 4 | ErrInvalidScore | X→X1→R4 | InvalidArgument invalid score | 同上 |\n| 5 | ErrInvalidPoints | X→X1→R5 | InvalidArgument invalid points | 同上 |\n| 6 | ErrScoreNotFound | X→X1→R6 | NotFound score not found | 同上 |\n| 7 | ErrPointsNotFound | X→X1→R7 | NotFound points not found | 同上 |\n| 8 | ErrRankingUnavailable | X→X1→R9 | Unavailable ranking is unavailable + RetryInfo | ログを出さない（障害中の同一ログ氾濫を避ける） |\n| 9 | ラップされた未知のエラー | X→X1→R8 | Internal internal server error（原因を返さない） | ERROR ログを 1 件出す |"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#テスト仕様表-1@2",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "テスト仕様表-1",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 4. 共通のエラー分類: handleError \u003e テスト仕様表",
+      "text": "R4（ErrInvalidScore）を HTTP 版と違ってカバーしている理由:\nhttp-ranking.md §4 のとおり ErrInvalidScore を返す実装は無く、\nハンドラ経由では到達不可能。ただし本節は写像関数を直接呼ぶため、到達させるのに\n不自然なモック（usecase に存在しないエラーを返させる）を要しない。分岐が 1 つだけ\n検証されない非対称を残すより、写像として素直に固定するほうがよいと判断した。\nErrInvalidScore 自体の仕様判断（削除するか、ギルドスコア直接更新 API で使うか）は\nhttp-ranking.md §4 の【要対応】が引き続き正本。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#5-ストリーミング-watchuserrankings",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "5-ストリーミング-watchuserrankings",
+      "title": "5. ストリーミング: WatchUserRankings",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 5. ストリーミング: WatchUserRankings",
+      "text": "本節は未記載。 WatchUserRankings は本ハンドラでは実装しておらず、\nUnimplementedRankingServiceServer の埋め込みにより codes.Unimplemented を返す。\n実装時に、購読フロー（初回スナップショット送信・更新検知・遅いクライアントの\n中間状態破棄・ctx キャンセル）の図とテスト仕様表をここへ追記すること。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#6-proto-⇄-domain-のフィールド対応",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "6-proto-⇄-domain-のフィールド対応",
+      "title": "6. proto ⇄ domain のフィールド対応",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 6. proto ⇄ domain のフィールド対応",
+      "text": "HTTP 側の契約テスト（testdata/contracts/*.json）に相当するもの。\nただし gRPC では proto ファイル自体が構造の正本なので、JSON の写しは作らない。\n代わりに contract_test.go が\npb メッセージのフィールド集合と、対応する Go 構造体のフィールド集合を突合する\n（Go 側のフィールド名を snake_case へ変換して集合比較し、過不足で落とす）。\n\nこれは HTTP 側に無い保証で、domain / usecase にフィールドを足して proto へ\n写し忘れたこと（およびその逆）を検出する。検出できるのはフィールド名の集合だけで、\n型・意味の対応は見ない（値の妥当性は §1〜§3 の責務）。\n\n意図的な非対称が必要になったら、ケースに理由付きの除外セットを足す。現時点で除外は 1 件も無い（対応表は下記のとおり完全一致）。\n\n| # | pb メッセージ | 対応する Go 型 |\n| --- | --- | --- |\n| 1 | RankEntry | domain/ranking.RankEntry |\n| 2 | GetUserRankResponse | domain/ranking.UserRankResult |\n| 3 | GetGuildRankResponse | domain/ranking.GuildRankResult |\n| 4 | AddUserPointsResponse | domain/ranking.UserPointAddResult |\n| 5 | AddUserPointsRequest | usecase/ranking.AddUserPointsInput |\n| 6 | GetUserRankingsRequest / GetGuildRankingsRequest | usecase/ranking.GetRankingsInput |\n| 7 | GetUserRankingsResponse / GetGuildRankingsResponse | usecase/ranking.RankingsResult |\n\nGetUserRankRequest / GetGuildRankRequest が表に無い理由: 対応する Go の型が無く\n（usecase は ID を素の int64 で受ける）、突合の相手が存在しないため。\nID の受け渡しは §2 の「usecase に ID がそのまま渡る」で担保する。\nWatchUserRankings* は §5 とセットで追加する。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#6-proto-⇄-domain-のフィールド対応@2",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "6-proto-⇄-domain-のフィールド対応",
+      "title": "6. proto ⇄ domain のフィールド対応",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 6. proto ⇄ domain のフィールド対応",
+      "text": "ケース 6・7 が 2 つの pb メッセージを並べているのは、ユーザー版とギルド版で\n同じ Go 型に対応するため。表は 1 行のまま、テスト側で 2 要素へ広げる。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#7-サービス登録-serverregister",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "7-サービス登録-serverregister",
+      "title": "7. サービス登録: server.Register",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e 7. サービス登録: server.Register",
+      "text": "対象: internal/driver/grpc/server/register.go。\nHTTP 側の http-router.md と対になる fail-fast。\n\n設計上の要点（テストで守る不変条件）:\n\n- nil チェックを外すと「どこが欠けているか」が分からなくなる。 型付き nil の *Handler を\n  そのまま RegisterRankingServiceServer へ渡すと、生成コードの埋め込み検査\n  （testEmbeddedByValue）で nil 参照の panic になる（検査を無効化して実測）。起動は止まるが、\n  出るのは runtime のスタックトレースだけで、組み立て漏れだとは読み取れない。しかもこの挙動は\n  生成コードの実装詳細（UnimplementedXxx を値で埋め込む形）に依存しており、形が変われば\n  「登録もサーバ起動も成功し、panic は最初の RPC まで遅延する」方へ倒れる\n  （登録は interface を満たすかしか見ない）。どちらに転んでも原因が見えないので自前で検査する\n- 欠けたフィールドを全部挙げる。 1 つずつ直して再起動する往復を避けるため\n- 検査に落ちたらサービスを1つも登録しない。 部分登録された Server が呼び出し元に残ると、\n  「起動を中止する」という意図と食い違う状態を作れてしまう\n- 引数は *grpc.Server ではなく grpc.ServiceRegistrar。登録先を差し替えられるほうが\n  テストしやすく、本番の配線（internal/di）も変わらない\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | Ranking が nil | S1→S2→SE1 | ErrMissingService、文言に Ranking | 登録が 0 件 |\n| 2 | 全て非 nil | S1→S2→S3→SZ | nil | game.ranking.v1.RankingService の 6 メソッドが登録される |\n\nケース 1 が 1 件だけなのは、Services のフィールドが現時点で 1 つだからである（http-router.md は 3 フィールド + 全欠落で 4 件）。フィールドを追加したら validate の fields と本表のケースを併せて増やすこと。この連動は静的検証で捕捉していない。"
+    },
+    {
+      "id": "docs/testing/grpc-ranking.md#パスの網羅状況",
+      "file": "docs/testing/grpc-ranking.md",
+      "anchor": "パスの網羅状況",
+      "title": "パスの網羅状況",
+      "trail": "docs/testing/grpc-ranking.md \u003e ランキング gRPC ハンドラのテスト設計 \u003e パスの網羅状況",
+      "text": "| 節 | 終端ノード | 状態 |\n| --- | --- | --- |\n| §1 | E1 E2 X Z | すべて通過 |\n| §2 | E1 X Z | すべて通過 |\n| §3 | E1 E2 X Z | すべて通過 |\n| §4 | R1〜R9（9 個） | すべて通過 |\n| §7 | SE1 SZ | すべて通過 |"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#grpc-サーバ起動とインターセプタのテスト設計",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "grpc-サーバ起動とインターセプタのテスト設計",
+      "title": "gRPC サーバ起動とインターセプタのテスト設計",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計",
+      "text": "対象: internal/infrastructure/server/grpc.go /\ninternal/infrastructure/server/interceptor.go\nテスト: internal/infrastructure/server/grpc_test.go\n\n運用ルールは README.md。HTTP 側の対になる設計は\ninternal/infrastructure/server/echo.go と\nhttp-router.md。\n\nこの文書が守る対象は3つ。\n\n1. インターセプタの登録順 — 観測系（RequestID → アクセスログ）を最外側に固定する（AGENTS.md §2）\n2. RPC 1本の処理チェーン — request_id の採番・アクセスログ・panic の変換\n3. graceful stop の三段構え — SIGTERM でシャットダウンが完了しなくなる事故の回帰テスト\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#1-インターセプタの登録順",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "1-インターセプタの登録順",
+      "title": "1. インターセプタの登録順",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 1. インターセプタの登録順",
+      "text": "grpc.ChainUnaryInterceptor(a, b, c) は a が最外側で、echo.Echo.Use と同じ\n「先に登録したものが外側」の並びになる。したがって HTTP と同じ規約をそのまま写せる。\n\n```\nUnaryRequestID  → UnaryAccessLog  → UnaryRecover\nStreamRequestID → StreamAccessLog → StreamRecover\n```\n\nrecover を観測系より外側に置いてはならない。 外側に置くと panic した RPC は\nアクセスログにも request_id にも残らず、「特定の RPC だけ Internal が返る」という\n症状しか運用側に見えなくなる。HTTP 側で BodyLimit をアクセスログより外に置いて\n413 が観測できなくなったのと同じ失敗である（http-router.md と\nTestNew_MiddlewareOrder を参照）。"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#登録順を守るための二重の検査",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "登録順を守るための二重の検査",
+      "title": "登録順を守るための二重の検査",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 1. インターセプタの登録順 \u003e 登録順を守るための二重の検査",
+      "text": "順序は「引数の並び」なので ruleguard（式単位のマッチ）では表現できず、NewGRPC の\nAST を直接読んで検証する（determ. §3）。一方 AST 検査は ChainUnaryInterceptor の\n引数しか見ないため、単数形の grpc.UnaryInterceptor / grpc.StreamInterceptor を\n併用されると迂回される（単数形と Chain 系を両方渡すと、grpc-go 側で単数形が\n上書きされて片方が黙って無視される）。この入口は scripts/ruleguard/rules.go の\ngrpcSingleInterceptor が塞ぐ。echo.Echo.Pre の禁止と同じ構図。\n\n| # | 検証内容 | 期待結果 | 対応テスト |\n| --- | --- | --- | --- |\n| 1 | unary の登録順 | 先頭2つが UnaryRequestID → UnaryAccessLog | TestNewGRPC_UnaryInterceptorOrder |\n| 2 | stream の登録順 | 先頭2つが StreamRequestID → StreamAccessLog | TestNewGRPC_StreamInterceptorOrder |\n| 3 | unary と stream の並びが一致 | Unary / Stream の接頭辞を除いた並びが同一 | TestNewGRPC_InterceptorOrderMatchesAcrossKinds |\n| 4 | 単数形インターセプタの不使用 | NewGRPC に UnaryInterceptor / StreamInterceptor の呼び出しが 0 件 | TestNewGRPC_UnaryInterceptorOrder / TestNewGRPC_StreamInterceptorOrder |\n\nケース 3 が要るのは、unary だけを直して stream を直し忘れる（あるいはその逆）事故が\n片側の検査では通ってしまうため。並びが「同じであること」自体を固定する。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#2-rpc-1本の処理チェーン",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "2-rpc-1本の処理チェーン",
+      "title": "2. RPC 1本の処理チェーン",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 2. RPC 1本の処理チェーン",
+      "text": "図はインターセプタ3本を通した RPC 1本ぶんの流れ。unary と stream で実装は別関数だが\n分岐は同型なので、1つの図を共有する。\n\n設計上の要点（テストで守る不変条件）:\n\n- panic の変換は最内側。recover が handler のすぐ外にいるので、変換後の\n  codes.Internal はアクセスログから観測できる。この「panic がアクセスログに\n  ERROR として残る」という観測可能性が、登録順を守っていることの振る舞い側の裏付けになる\n- request_id は受信値を尊重する。クライアント（Unity）や API Gateway が採番した\n  ID をサーバが上書きすると、クライアント側のログと突き合わせられなくなる\n- 採番した ID は応答ヘッダにも載せる。障害報告に添える ID をクライアントが\n  取得できるようにするため（HTTP の X-Request-Id レスポンスヘッダに相当）\n- ctx への格納には非公開のキー型を使う。文字列キーは他パッケージと衝突しうる\n- 外部ライブラリ（go-grpc-middleware 等）は入れない。recover は 15 行程度で、\n  そのために本体依存を増やす価値がない"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#テスト仕様表",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 2. RPC 1本の処理チェーン \u003e テスト仕様表",
+      "text": "パスが短い順（本図はすべて同じ長さ）。同じ長さなので エラー → 正常系 の順に並べ、\nunary（1〜4）と stream（5〜8）でブロックを分ける。unary と stream は別の実装で、\n片方だけ壊れる（実際 stream 側は ServerStream のラップを忘れると ctx が伝わらない）ため、\n同一パスでもケースを統合しない（README.md §3 の例外。理由は\nhttp-router.md のケース 1〜4 と同じ）。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | unary: handler が panic | A→B→D→E→F→G→P→I→E1 | codes.Internal | panic ログ（ERROR）とアクセスログ（ERROR / code=Internal）の両方が出る |\n| 2 | unary: handler が status エラー | A→B→D→E→F→G→H→I→E1 | 返した code がそのまま | アクセスログが ERROR、code は handler が返したもの |\n| 3 | unary: x-request-id を受信 | A→B→C→E→F→G→H→I→Z | codes.OK | 受信 ID が応答ヘッダとアクセスログの request_id に一致する |\n| 4 | unary: x-request-id 無し | A→B→D→E→F→G→H→I→Z | codes.OK | 32 桁 hex が採番され、応答ヘッダとアクセスログで一致する |\n| 5 | stream: handler が panic | A→B→D→E→F→G→P→I→E1 | codes.Internal | ケース 1 と同じ |\n| 6 | stream: handler が status エラー | A→B→D→E→F→G→H→I→E1 | 返した code がそのまま | ケース 2 と同じ |\n| 7 | stream: x-request-id を受信 | A→B→C→E→F→G→H→I→Z | codes.OK | 受信 ID がハンドラの ctx・応答ヘッダ・アクセスログで一致する |\n| 8 | stream: x-request-id 無し | A→B→D→E→F→G→H→I→Z | codes.OK | ケース 4 と同じ |"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#テスト仕様表@2",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "テスト仕様表",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 2. RPC 1本の処理チェーン \u003e テスト仕様表",
+      "text": "ケース 1 と 5 は panic の値の型を変えてある（1 は error、5 は文字列）。recover 側は\n値が error かどうかで包み方を変える（%w / %v）ので、同じパスの 2 ケースで\n両方の分岐を通す。ケースを増やさずに済ませるための割り当てで、パス自体は同じ。\n\nいずれも bufconn（google.golang.org/grpc/test/bufconn）で実サーバに通す。\nインターセプタを直接呼ぶ単体テストにしないのは、stream の ctx 伝播（ServerStream の\nラップ）と SetHeader の送信が、grpc-go のランタイムを通さないと検証できないため。\n\n.proto の生成型は使わない。internal/infrastructure のテストから\ninternal/driver（生成物の置き場）を import するのは層の依存規約に反するので、\nテスト内で最小のバイト列コーデックと grpc.ServiceDesc を組み立てる。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#3-graceful-stop-の三段構え",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "3-graceful-stop-の三段構え",
+      "title": "3. graceful stop の三段構え",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 3. graceful stop の三段構え",
+      "text": "grpc.Server.GracefulStop() は進行中のストリームが終わるまでブロックする。\n本サービスには WatchUserRankings（server streaming）があり、クライアントが\n切断するまでストリームは終わらない。echo.go の Run と同型に書くと\nSIGTERM を受けてもシャットダウンが永久に完了しない。\n\n設計上の要点:\n\n- (1) onShutdown を先に呼ぶ。配信側（ランキング配信ハブ）に「もう送るな」と伝えて\n  進行中のストリームを終わらせない限り、(2) の GracefulStop は返らない。\n  onShutdown は Wave 2 で cmd/grpc がハブの ctx キャンセルを渡す\n- onShutdown は nil 可。ストリームを持たない構成でも RunGRPC を使えるようにする\n  ための意図的に省略可能なフックで、logger の nil チェック禁止（AGENTS.md §2）とは別物。\n  logger は「渡し忘れ」を許さないための必須引数、onShutdown は「不要」を表現できる引数\n- (3) 強制切断しても error を返さない。ストリームを掴んだままのクライアントが\n  1つでもいると毎回のデプロイで異常終了扱いになり、本当の異常と区別できなくなる。\n  強制切断した事実は WARN ログで観測する\n- Serve が grpc.ErrServerStopped を返すのは停止要求の結果なので、エラー扱いしない"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#テスト仕様表-1",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "テスト仕様表-1",
+      "title": "テスト仕様表",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 3. graceful stop の三段構え \u003e テスト仕様表",
+      "text": "パスが短い順。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | 使用中のポートを渡す | S→SL→SE1 | failed to listen を含むエラー | Serve に到達しない |\n| 2 | ctx より先に srv.Stop() が呼ばれる | S→SL→SR→SW→SE2 | nil（ErrServerStopped はエラー扱いしない） | — |\n| 3 | ストリーム無し・onShutdown が nil | S→SL→SR→SW→SO→SG→ST→SZ | nil | 強制切断の WARN が出ない |\n| 4 | ストリームあり・onShutdown が配信を止める | S→SL→SR→SW→SO→SH→SG→ST→SZ | nil | onShutdown が 1 回呼ばれ、強制切断の WARN は出ない |\n| 5 | ストリームあり・onShutdown が配信を止めない | S→SL→SR→SW→SO→SH→SG→ST→SF→SZ | nil | 強制切断の WARN が出て、RunGRPC が返る |\n\nケース 5 が本設計の要。ここが落ちる実装（GracefulStop を同期に呼ぶ形）は\nSIGTERM を受けてもプロセスが終わらず、デプロイが止まる。テストは shutdownTimeout の\n経過を待つぶん他のケースより時間がかかるが、代替手段が無いので受け入れる。\n\nケース 5 の判定に経過時間の閾値は使わない（実装の定数をテストへ写すと二重管理になり、\nCI の負荷次第で揺れる）。「強制切断の WARN が出たこと」と「RunGRPC が返ったこと」で見る。\n\n---"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#4-層固有の運用値",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "4-層固有の運用値",
+      "title": "4. 層固有の運用値",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 4. 層固有の運用値",
+      "text": "echo.go と同じく、この層でしか使わない値は server パッケージの const に置く\n（AGENTS.md §2）。環境ごとに変える必要が出たら configs へ移す。\n\n| 値 | 意図 |\n| --- | --- |\n| grpcShutdownTimeout | 三段構えの (2) で GracefulStop を待つ上限。超過で Stop。名前が shutdownTimeout でないのは、同じパッケージの HTTP 側が既に使っているため |\n| maxRecvMsgSize | 受信メッセージの上限。HTTP の bodyLimit（64K）と桁を揃える |\n| keepaliveTime / keepaliveTimeout | サーバから送る PING の間隔と応答待ち。モバイル回線の NAT はアイドル接続を数分で切るため、既定（2 時間）のままだと streaming が黙って死ぬ |\n| keepaliveMinTime | クライアントの PING を許容する最短間隔。PermitWithoutStream: true と組にする。これが無いとクライアント側 keepalive が ENHANCE_YOUR_CALM で切断される |\n\nkeepalive の値そのものはテストで固定しない（値の妥当性は実機・負荷試験の領域で、\n定数をテストへ写すと二重管理になる）。設定の有無が壊れると streaming が\n「しばらく経つと無言で止まる」形で表面化するため、Unity クライアント側の\nkeepalive 設定と対で見直すこと。"
+    },
+    {
+      "id": "docs/testing/grpc-server.md#5-保守トリガ",
+      "file": "docs/testing/grpc-server.md",
+      "anchor": "5-保守トリガ",
+      "title": "5. 保守トリガ",
+      "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 5. 保守トリガ",
+      "text": "- インターセプタを追加・削除したら、§1 の並びと §2 の図・表を併せて更新する。\n  観測系より外側に何かを足す変更は、まず AGENTS.md §2 の規約の見直しから行う\n- onShutdown に渡す対象（配信ハブ）が増えたら、§3 の (1) の説明を更新する。\n  「onShutdown を呼べばストリームが終わる」という前提が崩れると、ケース 4 が\n  ケース 5 の経路へ落ちてシャットダウンが毎回 shutdownTimeout 待ちになる"
+    },
+    {
       "id": "docs/testing/http-gacha.md#ガチャ-http-ハンドラのテスト設計",
       "file": "docs/testing/http-gacha.md",
       "anchor": "ガチャ-http-ハンドラのテスト設計",
@@ -996,7 +1204,7 @@
       "anchor": "0-3-滞留中は通知駆動のドレインを抑止するrun",
       "title": "0-3. 滞留中は通知駆動のドレインを抑止する（Run）",
       "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 0. 全経路にまたがる不変条件 \u003e 0-3. 滞留中は通知駆動のドレインを抑止する（Run）",
-      "text": "打ち切っただけでは足りない。OutboxSubscriber はバッファ1のチャネルへノンブロッキング送信する\n実装で、API の書き込みが続く限り Run の select にはほぼ常に通知が入っている。滞留状態で\n通知を受けるたびに再入すると、結局スリープなしで同じ窓を読み直し続けることになる。\n\nそのため Run は直近のドレインが滞留で終わったかを保持し、滞留中は通知を捨てて ticker まで待つ。\n滞留中は新規イベントも窓の外にあって処理できないため、通知を捨てても失うものはない。\nticker では必ず再試行するので、poison が上限に到達して窓から外れれば pollInterval 以内に復帰する。\n\n\u003e 時間ベースのバックオフを採らない理由: .golangci.yml の forbidigo が time.Now を禁止しており、Clock インターフェースは未実装。\n\u003e バックオフのために Clock を新設すると usecase の interface 追加と infrastructure 実装が\n\u003e 必要になり、変更の範囲が本質から外れる。既存の ticker を再開トリガに使えば\n\u003e 新しい依存を作らずに済む。\n\n本節が止めるのは「滞留しているあいだ DB を叩き続けること」だけで、head-of-line blocking\nそのものを解くのは次節の max retry 上限。両者は役割が違うので、上限を入れた後も本節の抑止は残す。"
+      "text": "打ち切っただけでは足りない。OutboxSubscriber はバッファ1のチャネルへノンブロッキング送信する\n実装で、API の書き込みが続く限り Run の select にはほぼ常に通知が入っている。滞留状態で\n通知を受けるたびに再入すると、結局スリープなしで同じ窓を読み直し続けることになる。\n\nそのため Run は直近のドレインが滞留で終わったかを保持し、滞留中は通知を捨てて ticker まで待つ。\n滞留中は新規イベントも窓の外にあって処理できないため、通知を捨てても失うものはない。\nticker では必ず再試行するので、poison が上限に到達して窓から外れれば pollInterval 以内に復帰する。\n\n\u003e 時間ベースのバックオフを採らない理由: .golangci.yml の forbidigo が driver 層での time.Now を禁止しており、Clock インターフェースは未実装。\n\u003e バックオフのために Clock を新設すると usecase の interface 追加と infrastructure 実装が\n\u003e 必要になり、変更の範囲が本質から外れる。既存の ticker を再開トリガに使えば\n\u003e 新しい依存を作らずに済む。\n\n本節が止めるのは「滞留しているあいだ DB を叩き続けること」だけで、head-of-line blocking\nそのものを解くのは次節の max retry 上限。両者は役割が違うので、上限を入れた後も本節の抑止は残す。"
     },
     {
       "id": "docs/testing/outbox-worker.md#0-4-恒久失敗は-retry_count-上限で窓から外すmax-retry--dlq",
@@ -1052,7 +1260,7 @@
       "anchor": "2-1-バッチ経路applybatch通常時",
       "title": "2-1. バッチ経路（applyBatch・通常時）",
       "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-1. バッチ経路（applyBatch・通常時）",
-      "text": "設計上の要点（テストで守る不変条件）:\n\n- スコアは合算するが履歴は合算しない。加算は可換なのでギルド／ユーザー単位にまとめて\n  DB 往復を減らせるが、履歴は「誰がいつ何点入れたか」を残す必要がある\n- MySQL は tx 内・Redis は COMMIT 後（§0-1）。tx 内のどのステップで失敗しても\n  ApplyScoreDeltas に到達しないことが二重加算を防ぐ要。逆に Redis の失敗では\n  ロールバックもフォールバックもしない（MySQL は確定済みで、再適用は二重加算になる）\n- デコード不能イベントはバッチに混ぜない。未知の event_type / 壊れた payload は\n  決定的な失敗なので、適用対象から外してコミット後に個別で retry 記録する。\n  バッチ tx に混ぜると巻き添えでロールバックされる\n- ListPending の FOR UPDATE SKIP LOCKED がそのまま claim として働くため、\n  この経路では ClaimByID を発行しない"
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- スコアは合算するが履歴は合算しない。加算は可換なのでギルド／ユーザー単位にまとめて\n  DB 往復を減らせるが、履歴は「誰がいつ何点入れたか」を残す必要がある\n- MySQL は tx 内・Redis は COMMIT 後（§0-1）。tx 内のどのステップで失敗しても\n  ApplyScoreDeltas に到達しないことが二重加算を防ぐ要。逆に Redis の失敗では\n  ロールバックもフォールバックもしない（MySQL は確定済みで、再適用は二重加算になる）\n- ranking:updated への publish は ApplyScoreDeltas が成功したときだけ（R→NP）。\n  Redis 反映に失敗した状態で「更新された」と push すると、キャッシュが遅れている事実を\n  push で嘘にすることになる。次のバッチの成功時に追いつく\n  （購読側の設計は ranking-watch.md §0-1）。publish 自体の失敗は\n  WARN ログのみでワーカーを止めない（NP→NPE）。取りこぼしても次の更新で追いつく\n- デコード不能イベントはバッチに混ぜない。未知の event_type / 壊れた payload は\n  決定的な失敗なので、適用対象から外してコミット後に個別で retry 記録する。\n  バッチ tx に混ぜると巻き添えでロールバックされる\n- ListPending の FOR UPDATE SKIP LOCKED がそのまま claim として働くため、\n  この経路では ClaimByID を発行しない\n\n| # | 条件 | 図のパス | 期待結果 | テスト |\n| --- | --- | --- | --- | --- |\n| 1 | ListPending が空 | B2→BZ | 即座に終了。tx は1回だけ | TestWorker_applyBatch_pending無しは即座に終了する |\n| 2 | 全件デコード不能 | B3→BC→R→RT | MySQL も Redis も呼ばれない。applied=0 | TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない |\n| 3 | 除外イベントの IncrementRetry が失敗 | RT | ログのみ。エラーを伝播しない | TestWorker_applyBatch_IncrementRetry失敗はログのみ |"
     },
     {
       "id": "docs/testing/outbox-worker.md#2-1-バッチ経路applybatch通常時@2",
@@ -1060,15 +1268,7 @@
       "anchor": "2-1-バッチ経路applybatch通常時",
       "title": "2-1. バッチ経路（applyBatch・通常時）",
       "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-1. バッチ経路（applyBatch・通常時）",
-      "text": "| # | 条件 | 図のパス | 期待結果 | テスト |\n| --- | --- | --- | --- | --- |\n| 1 | ListPending が空 | B2→BZ | 即座に終了。tx は1回だけ | TestWorker_applyBatch_pending無しは即座に終了する |\n| 2 | 全件デコード不能 | B3→BC→R→RT | MySQL も Redis も呼ばれない。applied=0 | TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない |\n| 3 | 除外イベントの IncrementRetry が失敗 | RT | ログのみ。エラーを伝播しない | TestWorker_applyBatch_IncrementRetry失敗はログのみ |\n| 4 | COMMIT 後の Redis 反映が失敗 | R→RE→RT | ERROR ログのみ。エラーを返さずフォールバックもしない | TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォールバックしない |\n| 5 | M1 / M2 / MK の各失敗 | →BE2 | 全副作用が巻き戻り、Redis に到達せずフォールバック経路へ切り替わる | TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォールバックする（3 サブテスト） |\n| 6 | デコード不能イベントが混在 | B3→…→BC→R→RT | 正常なイベントだけ適用され、壊れたものは個別 retry | TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる |\n| 7 | 正常系の適用順序 | M1→M2→MK→BC→R | MySQL 2本 → マーク → COMMIT → Redis の順（gomock.InOrder） | TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後にRedis |\n| 8 | 同一ギルド／ユーザーの複数イベント | 同上 | スコアは合算、履歴はイベント件数ぶん、MarkProcessedByIDs に全 ID | TestWorker_applyBatch_同一ギルドは合算され履歴はイベント単位で作られる |\n| 9 | ListPending がエラー | B2→BE1 | ティックを中断。MySQL / Redis に到達しない | TestWorker_runOnce_ListPendingエラー |"
-    },
-    {
-      "id": "docs/testing/outbox-worker.md#2-1-バッチ経路applybatch通常時@3",
-      "file": "docs/testing/outbox-worker.md",
-      "anchor": "2-1-バッチ経路applybatch通常時",
-      "title": "2-1. バッチ経路（applyBatch・通常時）",
-      "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-1. バッチ経路（applyBatch・通常時）",
-      "text": "ケース 9 が末尾にある理由: パスは最短だが、検証しているのは §2 のケース 1 と同一の\nテストで、視点（バッチ tx の中から見た ListPending）だけが違う。既存ケースの番号は\nテストコードのコメント（[§2-1 ケース N]）から参照されているため、繰り上げずに追加した。"
+      "text": "| 4 | COMMIT 後の Redis 反映が失敗 | R→RE→RT | ERROR ログのみ。エラーを返さずフォールバックもしない。publish しない | TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォールバックしない |\n| 5 | M1 / M2 / MK の各失敗 | →BE2 | 全副作用が巻き戻り、Redis に到達せずフォールバック経路へ切り替わる | TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォールバックする（3 サブテスト） |\n| 6 | デコード不能イベントが混在 | B3→…→BC→R→NP→RT | 正常なイベントだけ適用され、壊れたものは個別 retry | TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる |\n| 7 | 正常系の適用順序 | M1→M2→MK→BC→R→NP | MySQL 2本 → マーク → COMMIT → Redis → publish の順（gomock.InOrder） | TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後にRedis |\n| 8 | 同一ギルド／ユーザーの複数イベント | 同上 | スコアは合算、履歴はイベント件数ぶん、MarkProcessedByIDs に全 ID | TestWorker_applyBatch_同一ギルドは合算され履歴はイベント単位で作られる |\n| 9 | ListPending がエラー | B2→BE1 | ティックを中断。MySQL / Redis に到達しない | TestWorker_runOnce_ListPendingエラー |\n| 10 | publish が失敗 | NP→NPE | WARN ログのみ。エラーを返さずフォールバックもしない | TestWorker_applyBatch_publish失敗はWARNログのみでワーカーを止めない |\n\nケース 9・10 が末尾にある理由: どちらもパスは短いが、既存ケースの番号は\nテストコードのコメント（[§2-1 ケース N]）から参照されているため、繰り上げずに追加した。\nケース 9 が検証しているのは §2 のケース 1 と同一のテストで、視点（バッチ tx の中から見た\nListPending）だけが違う。ケース 10 は publish ノード（NP）の追加に伴う新設。"
     },
     {
       "id": "docs/testing/outbox-worker.md#2-2-イベント単位経路applypereventバッチ失敗時のフォールバック",
@@ -1084,7 +1284,7 @@
       "anchor": "テスト仕様表",
       "title": "テスト仕様表",
       "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック） \u003e テスト仕様表",
-      "text": "TestWorker_applyPerEvent_フォールバック経路_正常系_異常系 のテーブルと 1 対 1 で対応する。\nlisted / applied は ApplyPerEventForTest の戻り値。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | 候補なし | LC→PZ0 | listed=0, applied=0 | イベント単位 tx を張らない |\n| 2 | ClaimByID が found=false | P2→PS→PZ | listed=1, applied=1（前進扱い） | applyEventInTx / MarkProcessed / IncrementRetry のいずれも呼ばれない |\n| 3 | 未知の event_type | H→RB→RT | listed=1, applied=0 | last_error に ErrUnknownEventType の文言が残る |\n| 4 | payload が不正で Unmarshal 失敗 | H→RB→RT | 同上 | MySQL / Redis の副作用が一切呼ばれない |\n| 5 | IncrementRetry が失敗 | RT→RTE | エラーを伝播させない（ログのみ） | — |\n| 6 | MySQL IncrementGuildScore が失敗 | M1→RB→RT | listed=1, applied=0 | InsertGuildScoreHistory 以降に到達しない |\n| 7 | MySQL InsertGuildScoreHistory が失敗 | M2→RB→RT | 同上 | MarkProcessed / Redis に到達しない |\n| 8 | COMMIT 後の Redis 反映が失敗 | R→RE→PZ | listed=1, applied=1。ログのみ | IncrementRetry が呼ばれない（再適用しない） |\n| 9 | 正常系 | …→M1→M2→MK→CM→R | listed=1, applied=1 | MySQL 2件 → MarkProcessed → Redis の順序（gomock.InOrder） |\n| 10 | 先頭イベントが恒久失敗 | 1件目 →RB→RT、2件目 →MK→CM→R | listed=2, applied=1 | 先頭で IncrementRetry／後続で MarkProcessed |\n\n手続きが異なるため別テスト関数に切り出しているもの:"
+      "text": "TestWorker_applyPerEvent_フォールバック経路_正常系_異常系 のテーブルと 1 対 1 で対応する。\nlisted / applied は ApplyPerEventForTest の戻り値。\n\n| # | 条件 | 図のパス | 期待結果 | 検証すべき呼び出し |\n| --- | --- | --- | --- | --- |\n| 1 | 候補なし | LC→PZ0 | listed=0, applied=0 | イベント単位 tx を張らない |\n| 2 | ClaimByID が found=false | P2→PS→PZ | listed=1, applied=1（前進扱い） | applyEventInTx / MarkProcessed / IncrementRetry のいずれも呼ばれない |\n| 3 | 未知の event_type | H→RB→RT | listed=1, applied=0 | last_error に ErrUnknownEventType の文言が残る |\n| 4 | payload が不正で Unmarshal 失敗 | H→RB→RT | 同上 | MySQL / Redis の副作用が一切呼ばれない |\n| 5 | IncrementRetry が失敗 | RT→RTE | エラーを伝播させない（ログのみ） | — |\n| 6 | MySQL IncrementGuildScore が失敗 | M1→RB→RT | listed=1, applied=0 | InsertGuildScoreHistory 以降に到達しない |\n| 7 | MySQL InsertGuildScoreHistory が失敗 | M2→RB→RT | 同上 | MarkProcessed / Redis に到達しない |\n| 8 | COMMIT 後の Redis 反映が失敗 | R→RE→PZ | listed=1, applied=1。ログのみ | IncrementRetry / NotifyUpdated が呼ばれない（再適用も push もしない） |\n| 9 | 正常系 | …→M1→M2→MK→CM→R→NP | listed=1, applied=1 | MySQL 2件 → MarkProcessed → Redis → publish の順序（gomock.InOrder） |\n| 10 | 先頭イベントが恒久失敗 | 1件目 →RB→RT、2件目 →MK→CM→R | listed=2, applied=1 | 先頭で IncrementRetry／後続で MarkProcessed |\n\n手続きが異なるため別テスト関数に切り出しているもの:"
     },
     {
       "id": "docs/testing/outbox-worker.md#テスト仕様表@2",
@@ -1599,6 +1799,118 @@
       "text": "既存テストは上表のパスをすべて通っていた（パスの欠落は無し）。\n\n一方でテーブル駆動の形に問題があった。\n\n| 種別 | 内容 | 対応 |\n| --- | --- | --- |\n| テーブル駆動の形 | 各ケースが setup func(t, ctrl) *batch.RankingSyncer を持ち、モックの組み立て手順をテーブル側に書いていた | テーブルをデータのみにし、組み立てはランナーへ集約 |\n| 検証の欠落 | エラーケースで require.Error しか見ておらず、どのエラーが返るかを確認していなかった（errors.Is での検証は別テスト関数に1件だけ切り出されていた） | ランナーで全エラーケースに assert.ErrorIs を適用し、切り出されていた関数を統合 |\n| デッドコード | expectDoInTxNotCalled というコメントだけのヘルパー宣言（「現状未使用」と明記されていた）が残っていた | 削除 |"
     },
     {
+      "id": "docs/testing/ranking-watch.md#ランキング更新通知watchのテスト設計",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "ランキング更新通知watchのテスト設計",
+      "title": "ランキング更新通知（Watch）のテスト設計",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計",
+      "text": "対象: internal/usecase/ranking/watcher.go\n（interface 定義は watch.go）\nテスト: internal/usecase/ranking/watcher_test.go\n\n運用ルールは README.md。\n\nランキング ZSet が更新されたことをクライアントへ push するための配管。\n更新の起点は outbox-worker（outbox-worker.md §2-1）で、\nApplyScoreDeltas が成功した直後にだけ ranking:updated へ publish する。\nRankingWatcher はそれをプロセスにつき1本だけ購読し、ランキングを再取得して\n全購読者へ配るハブ（ファンアウト）である。\n\n```\noutbox-worker: バッチ tx で MySQL 適用 → COMMIT → ZSet へ ApplyScoreDeltas\n  → ranking:updated へ publish（ApplyScoreDeltas 成功時のみ）\n        ↓  Redis Pub/Sub（購読は プロセスに1本）\nRankingWatcher.Run: 通知 → uc.GetUserRankings（最大 limit で1回）→ 変化があれば全購読者へ配る\n        ↓  購読者ごとの chan RankingsResult（バッファ1・最新値で上書き）\ngRPC server streaming（Wave 2）\n```\n\n---"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#0-1-outboxevents-を転用せず新しいチャネルを作る",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "0-1-outboxevents-を転用せず新しいチャネルを作る",
+      "title": "0-1. outbox:events を転用せず新しいチャネルを作る",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 0. 設計判断（なぜこの形か / 何を意図的にやらなかったか） \u003e 0-1. outbox:events を転用せず新しいチャネルを作る",
+      "text": "既存の outbox:events（outbox-worker.md §1）は ZSet 反映の「前」に飛ぶ\nworker 起床通知である。これを購読すると「反映前のランキングを読んで古い値を配る」レースが\n常態化する。ranking:updated は ApplyScoreDeltas の成功後にだけ publish するので、\n通知を受けて読めば必ず反映済みの値が読める。\n\nApplyScoreDeltas が失敗したときに publish しないのも同じ理由。MySQL は確定済みでも\nRedis のキャッシュは遅れている（outbox-worker.md §0-1）ので、\nそこで「更新された」と push すると push が嘘になる。次のバッチの成功時に追いつく。"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#0-2-redis-の購読はプロセスに1本だけ張るファンアウトはハブ側",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "0-2-redis-の購読はプロセスに1本だけ張るファンアウトはハブ側",
+      "title": "0-2. Redis の購読はプロセスに1本だけ張る（ファンアウトはハブ側）",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 0. 設計判断（なぜこの形か / 何を意図的にやらなかったか） \u003e 0-2. Redis の購読はプロセスに1本だけ張る（ファンアウトはハブ側）",
+      "text": "接続ごとに SUBSCRIBE を張ると Unity クライアント N 台 = Redis 接続 N 本になり、\nDB_MAX_OPEN_CONNS 等で接続数を有限化した設計と矛盾する。\nRun(ctx) の中で Subscribe を1本だけ張り、通知 1 件につき\n\n1. 購読者の最大 limit で1回だけ uc.GetUserRankings を呼ぶ（購読者ごとに fetch すると\n   Redis 読み取りが N 倍になる。ランキングは全員が同じものを見るので1回で足りる）\n2. 前回配った内容と変化が無ければ何もしない\n3. 変化があれば各購読者の limit で切って配る\n\nUsecase を再利用するのは、名前解決（MySQL）と初期化チェック（IsInitialized）を\n自前で書き直さないため。同一層内の依存なので depguard 上も問題ない。"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#0-3-差分判定は-id-rank-score-の列だけで行う",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "0-3-差分判定は-id-rank-score-の列だけで行う",
+      "title": "0-3. 差分判定は (ID, Rank, Score) の列だけで行う",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 0. 設計判断（なぜこの形か / 何を意図的にやらなかったか） \u003e 0-3. 差分判定は (ID, Rank, Score) の列だけで行う",
+      "text": "Name は MySQL 由来でランキング更新とは無関係に変わりうる（改名）。比較に含めると\n順位が何も動いていないのに全購読者へ配ることになる。逆に改名だけが起きた場合、\n次に順位が動くまで古い名前が残るが、これは許容する（表示名の即時性は要件ではない）。\n\nTotalCount も比較しない。参加者が増えただけで全購読者へ配るのを避けるため。"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#0-4-遅いクライアントは-drop-する切断しない",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "0-4-遅いクライアントは-drop-する切断しない",
+      "title": "0-4. 遅いクライアントは drop する（切断しない）",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 0. 設計判断（なぜこの形か / 何を意図的にやらなかったか） \u003e 0-4. 遅いクライアントは drop する（切断しない）",
+      "text": "購読者ごとに「バッファ1のチャネル + 最新値で上書き」を持たせる。未読の値が残っていたら\n捨てて最新で置き換える。\n\n素朴な「バッファ1に select default で送り、埋まっていたら捨てる」は誤りである。\nそれだと古い値が残って最新が捨てられ、ランキングとしては逆効果になる（最新だけが意味を持つ）。\noutbox の Subscriber が「埋まっていたら捨てる」でよいのは、あれが値を運ばない\nシグナルで新旧の区別が無いため。ここは事情が違う。\n\n切断しない理由: 切ると Unity 側が再接続ループに入り、遅いクライアントほど接続と初回\nfetch の負荷を上げる（自己増幅する）。詰まっているあいだ最新値だけを見せて、追いついたら\nそのまま続ける方が安い。\n\ndrop のログは間引く（§0-6）。"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#0-5-ループ中の-fetch-エラーはログして継続するストリームを切らない",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "0-5-ループ中の-fetch-エラーはログして継続するストリームを切らない",
+      "title": "0-5. ループ中の fetch エラーはログして継続する（ストリームを切らない）",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 0. 設計判断（なぜこの形か / 何を意図的にやらなかったか） \u003e 0-5. ループ中の fetch エラーはログして継続する（ストリームを切らない）",
+      "text": "当初案は「ErrRankingUnavailable（ZSet 揮発）なら Unavailable で切る」だったがやめた。\n揮発は Redis 全体の障害なので、切ると全クライアントが同時に切断 → 同時に再接続して\n雪崩になる。復旧は RankingSyncer の焼き直し（ranking-sync-batch.md）に\n任せ、ストリームは開けたまま次の通知を待つ。§0-4 の「切らない」と同じ理由。\n\n初回だけは例外で、WatchUserRankings の初回 fetch が失敗したらチャネルを返さず\nエラーを返す。まだクライアントに何も見せていない段階なので、ここは 503 を返して\nリトライさせた方が正しい（ストリームを開いてから沈黙するより観測しやすい）。"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#0-6-デバウンスticker-でのまとめ配信は入れない",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "0-6-デバウンスticker-でのまとめ配信は入れない",
+      "title": "0-6. デバウンス（ticker でのまとめ配信）は入れない",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 0. 設計判断（なぜこの形か / 何を意図的にやらなかったか） \u003e 0-6. デバウンス（ticker でのまとめ配信）は入れない",
+      "text": "publish 頻度は worker のバッチ単位で決まる（実測 407 events/sec ÷ batchSize 500 で\n毎秒1回前後）。まとめる必要が無い一方、ticker を入れるとテストが時間依存になり\nFlaky 防止規約（AGENTS.md §3）に抵触する。§0-3 の差分判定と §0-4 の drop で、\n配信量は「実際に変化した回数」と「クライアントが読める速度」の両方で既に抑えられている。\n\n同じ理由でログの間引きも時間ベースにしない。time.Now() を直接呼ばない規約\n（AGENTS.md §2）もあり、件数ベース（1件目とその後 watchLogSampleInterval 件ごと）にする。\n間引き自体は必須で、ErrRankingUnavailable のときに素直に出すと\n「1件の障害が毎秒数千行の同一ログになり他のエラーを埋める」ことになる。"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#0-7-購読者ごとに-goroutine-を常駐させない",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "0-7-購読者ごとに-goroutine-を常駐させない",
+      "title": "0-7. 購読者ごとに goroutine を常駐させない",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 0. 設計判断（なぜこの形か / 何を意図的にやらなかったか） \u003e 0-7. 購読者ごとに goroutine を常駐させない",
+      "text": "ctx キャンセルでの登録解除は context.AfterFunc で行う。購読者ごとに\nselect { case \u003c-ctx.Done() } の goroutine を張ると、接続数ぶんの goroutine が\n純粋な待ちで常駐する。AfterFunc は ctx が終わったときにだけ実行される。\n\nチャネルのクローズは登録解除と同じ経路（remove）に集約し、\nRun の ctx が終わったときは shutdown が全購読者に対して同じことをする。\n返したチャネルは必ず閉じる（クライアント側の受信ループが漏れないため）。\n\n---"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#1-watchuserrankings購読の登録と初回スナップショット",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "1-watchuserrankings購読の登録と初回スナップショット",
+      "title": "1. WatchUserRankings（購読の登録と初回スナップショット）",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 1. WatchUserRankings（購読の登録と初回スナップショット）",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- 登録が先、fetch が後。逆にすると fetch と登録の隙間に来た更新を取りこぼす\n- 初回値で新しい値を上書きしない（H→I）。登録直後にブロードキャストが先着した場合、\n  初回 fetch の結果はそれより古い。素直に送ると「更新されたのに古いランキングが最後に残る」\n- 初回 fetch の失敗ではチャネルを返さない（§0-5）。登録は必ず巻き戻す\n\n| # | 条件 | 図のパス | 期待結果 | テスト |\n| --- | --- | --- | --- | --- |\n| 1 | ハブが停止済み | B→E1 | ErrWatcherStopped。fetch もしない | TestRankingWatcher_WatchUserRankings_停止済みハブ_ErrWatcherStoppedを返す |\n| 2 | 初回 fetch が失敗 | F→G→E2 | チャネルを返さない。登録も残さない | TestRankingWatcher_WatchUserRankings_初回fetch失敗_チャネルを返さない |\n| 3 | 登録直後に更新が先着 | F→H→I→K | 初回値は捨て、ブロードキャストの値だけが届く | TestRankingWatcher_WatchUserRankings_登録直後に更新が先着_古い初回値で上書きしない |\n| 4 | 正常系（limit は正規化される） | F→H→J→K | 現在値が1件だけ届く。fetch は正規化後の limit で1回 | TestRankingWatcher_WatchUserRankings_正常系_初回スナップショットを1件受け取る |"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#2-runハブの常駐ループ",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "2-runハブの常駐ループ",
+      "title": "2. Run（ハブの常駐ループ）",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 2. Run（ハブの常駐ループ）",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- どの終わり方でも全購読者のチャネルを閉じる。閉じ忘れるとクライアント側の受信ループが\n  永久に残る（goroutine リーク）\n- 通知チャネルのクローズはエラーで返す。この経路には outbox worker のような\n  ポーリングのフォールバックが無く、黙って止まると「繋がっているのに永久に更新が来ない\n  ストリーム」になる。呼び出し側が再起動を選べるようにする\n- 停止後の WatchUserRankings は ErrWatcherStopped（§1 ケース1）\n\n| # | 条件 | 図のパス | 期待結果 | テスト |\n| --- | --- | --- | --- | --- |\n| 1 | Subscribe が失敗 | RB→RE1 | エラーを返す。購読者の登録も受け付けない | TestRankingWatcher_Run_Subscribe失敗_エラーを返す |\n| 2 | 通知でティックが起きる | RL→BC→RL | broadcast が走り、次の通知を待つ | TestRankingWatcher_broadcast_変化あり_1回のfetchから購読者ごとのlimitで配る |\n| 3 | ctx がキャンセルされる | RL→RC→RZ | nil を返す。購読者のチャネルが閉じる | TestRankingWatcher_Run_ctxキャンセル_購読者のチャネルを閉じてnilを返す |\n| 4 | 通知チャネルが閉じる | RL→RX→RE2 | ErrWatchSubscriptionClosed。購読者のチャネルも閉じる | TestRankingWatcher_Run_通知チャネルが閉じる_購読者を切ってエラーを返す |"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#3-broadcast通知1件ぶんの配信",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "3-broadcast通知1件ぶんの配信",
+      "title": "3. broadcast（通知1件ぶんの配信）",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 3. broadcast（通知1件ぶんの配信）",
+      "text": "設計上の要点（テストで守る不変条件）:\n\n- fetch は購読者の数によらず1回（§0-2）。GetUserRankings の引数 limit は\n  購読者の最大値で、各購読者へは自分の limit で切ってから配る\n- 購読者が居なければ下位層を触らない。誰も見ていないランキングを読み続けない\n- 変化が無ければ配らない（§0-3）。worker のバッチが空振り気味のときに\n  同じ値を毎秒 push しない\n- fetch エラーでストリームを切らない（§0-5）\n- drop は最新値で上書き（§0-4）。古い値を残す実装に戻すと、詰まったクライアントに\n  永久に古いランキングを見せることになる\n\n| # | 条件 | 図のパス | 期待結果 | テスト |\n| --- | --- | --- | --- | --- |\n| 1 | 購読者が1人も居ない | BB→BZ0 | GetUserRankings を呼ばない | TestRankingWatcher_broadcast_購読者なし_下位層を読まない |\n| 2 | 前回と同じランキング | BD→BZ2 | 誰にも配らない | TestRankingWatcher_broadcast_前回と同じ_配信しない |\n| 3 | fetch が失敗 | BF→BFE→BZ1 | ストリームを切らず、次の通知で復帰する | TestRankingWatcher_broadcast_fetch失敗_ストリームを切らず次の通知で復帰する |\n| 4 | 変化あり・購読者が複数 | BD→BU→BP→BQ→BZ3 | fetch は最大 limit で1回。各購読者は自分の limit ぶん受け取る | TestRankingWatcher_broadcast_変化あり_1回のfetchから購読者ごとのlimitで配る |\n| 5 | 受信が追いつかない購読者 | BQ→BDR→BZ3 | 未読を捨てて最新で置き換える。切断しない | TestRankingWatcher_broadcast_遅い購読者_最新値で上書きしdropを数える |\n\n手続きが異なるため別テスト関数に切り出しているもの:"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#3-broadcast通知1件ぶんの配信@2",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "3-broadcast通知1件ぶんの配信",
+      "title": "3. broadcast（通知1件ぶんの配信）",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 3. broadcast（通知1件ぶんの配信）",
+      "text": "| 条件 | 図のパス | 期待結果 | テスト関数 |\n| --- | --- | --- | --- |\n| 購読者の ctx キャンセル | RC 相当（個別） | チャネルが閉じ、以降のブロードキャストの対象から外れる | TestRankingWatcher_WatchUserRankings_購読者のctxキャンセル_チャネルが閉じ配信対象から外れる |\n| 同時購読・同時キャンセル | BP | 8 購読者が同時に出入りしてもハブは配信を続け、全チャネルが閉じる | TestRankingWatcher_並行購読とキャンセル_配信を続け全チャネルが閉じる |\n| ログの間引き | BFE / BDR | 同一障害が連続しても 1 件目だけ出る（watchLogSampleInterval） | TestRankingWatcher_ログ間引き_連続する同種の失敗は1件目だけ出す |"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#ギルドランキングの-watch",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "ギルドランキングの-watch",
+      "title": "ギルドランキングの Watch",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 4. 未対応（本実装の範囲外） \u003e ギルドランキングの Watch",
+      "text": "WatchGuildRankings は作っていない。gRPC ストリーム（Wave 2）がユーザーランキングだけを\n対象にしているため。追加するときは購読者の管理をランキング種別ごとに分ける必要がある\n（今は「ユーザーランキングの購読者」しか居ない前提で last を1本だけ持っている）。"
+    },
+    {
+      "id": "docs/testing/ranking-watch.md#購読者数の上限",
+      "file": "docs/testing/ranking-watch.md",
+      "anchor": "購読者数の上限",
+      "title": "購読者数の上限",
+      "trail": "docs/testing/ranking-watch.md \u003e ランキング更新通知（Watch）のテスト設計 \u003e 4. 未対応（本実装の範囲外） \u003e 購読者数の上限",
+      "text": "無制限に受け付ける。上限を設けるならハブではなく gRPC サーバ側の同時接続数で\n制御する方が層として自然なため、ここには置かない。"
+    },
+    {
       "id": "docs/testing/ranking.md#ランキング機能のテスト設計",
       "file": "docs/testing/ranking.md",
       "anchor": "ランキング機能のテスト設計",
@@ -1748,7 +2060,7 @@
       "anchor": "前提",
       "title": "前提",
       "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 前提",
-      "text": "- k6 インストール済み（brew install k6）\n- MySQL / Redis 起動済み（docker compose -f deployments/docker-compose.yml up -d）\n- マイグレーション適用済み（make db/migrate/up）\n- API と outbox-worker 起動済み（make run / make run/outbox-worker）"
+      "text": "- k6 インストール済み（brew install k6）\n- MySQL / Redis 起動済み（docker compose -f deployments/docker-compose.yml up -d）\n- マイグレーション適用済み（make db/migrate/up）\n- API と outbox-worker 起動済み（make run / make run/outbox-worker）\n- gRPC シナリオを回す場合は gRPC サーバも起動済み（make run/grpc。既定 :9090、平文 h2c）"
     },
     {
       "id": "loadtest/README.md#手順",
@@ -1756,7 +2068,7 @@
       "anchor": "手順",
       "title": "手順",
       "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 手順",
-      "text": "```bash\n# 1. データ投入（users/guilds/items/初期スコア）。Redis 反映まで込み\nmake load/seed                       # 既定 users=10000 guilds=100\nmake load/seed SEED_USERS=100000 SEED_GUILDS=500\n\n# 2. 初期スコアを Redis に反映（load/seed 後は不要。Redis を飛ばしたときの復旧用）\nmake load/warm\n\n# 3. 疎通確認（必ず最初に）\nmake load/smoke\n\n# 4. 各シナリオ実行\nmake load/gacha        # 書き込み系（トランザクション+行ロック）\nmake load/points       # 書き込み系（スコア加算+ギルド集計+outbox）\nmake load/ranking      # 読み取り系（Redis ZSet 参照）\n```\n\n\u003e ランキング参照が 503 ranking is unavailable を返す場合、Redis にランキングが構築されていない\n\u003e （load/seed / load/warm の未実行、または Redis の揮発）。make load/warm で再構築する。\n\u003e 揮発を空配列や 404 で誤魔化さないための仕様なので、閾値の緩和ではなく再構築で対処すること。\n\u003e 詳細は docs/testing/ranking.md §0。"
+      "text": "```bash\n# 1. データ投入（users/guilds/items/初期スコア）。Redis 反映まで込み\nmake load/seed                       # 既定 users=10000 guilds=100\nmake load/seed SEED_USERS=100000 SEED_GUILDS=500\n\n# 2. 初期スコアを Redis に反映（load/seed 後は不要。Redis を飛ばしたときの復旧用）\nmake load/warm\n\n# 3. 疎通確認（必ず最初に）\nmake load/smoke\n\n# 4. 各シナリオ実行\nmake load/gacha        # 書き込み系（トランザクション+行ロック）\nmake load/points       # 書き込み系（スコア加算+ギルド集計+outbox）\nmake load/ranking      # 読み取り系（Redis ZSet 参照）\nmake load/grpc         # 読み取り系の gRPC 版（load/ranking と同条件）\n```\n\n\u003e ランキング参照が 503 ranking is unavailable を返す場合、Redis にランキングが構築されていない\n\u003e （load/seed / load/warm の未実行、または Redis の揮発）。make load/warm で再構築する。\n\u003e 揮発を空配列や 404 で誤魔化さないための仕様なので、閾値の緩和ではなく再構築で対処すること。\n\u003e 詳細は docs/testing/ranking.md §0。\n\u003e\n\u003e gRPC 側もまったく同じで、同じ状態が codes.Unavailable として現れる（HTTP 503 の対応コード）。\n\u003e grpc-ranking.js では check 失敗として集計されるため checks の閾値割れになる。\n\u003e ここでも対処は make load/warm による再構築で、閾値の緩和ではない。"
     },
     {
       "id": "loadtest/README.md#負荷の調整環境変数",
@@ -1764,7 +2076,7 @@
       "anchor": "負荷の調整環境変数",
       "title": "負荷の調整（環境変数）",
       "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 負荷の調整（環境変数）",
-      "text": "| 変数 | 意味 | 既定 |\n|---|---|---|\n| RATE | 維持する目標RPS | シナリオ毎（gacha/points=500, ranking=1000） |\n| START_RATE | ramp 開始RPS | 50 |\n| RAMP | ramp-up 時間 | 30s |\n| DURATION | 維持時間 | 1m |\n| MAX_VUS | 最大VU数 | 1000 |\n| BASE_URL | 対象API | http://localhost:8080 |\n| SEED_USERS / SEED_GUILDS | seed 規模（k6のID空間と一致させる） | 10000 / 100 |\n\n例（stress: RPSを上げて限界点を探る）:\n\n```bash\nRATE=3000 RAMP=1m DURATION=3m make load/ranking\n```"
+      "text": "| 変数 | 意味 | 既定 |\n|---|---|---|\n| RATE | 維持する目標RPS | シナリオ毎（gacha/points=500, ranking=1000） |\n| START_RATE | ramp 開始RPS | 50 |\n| RAMP | ramp-up 時間 | 30s |\n| DURATION | 維持時間 | 1m |\n| MAX_VUS | 最大VU数 | 1000 |\n| BASE_URL | 対象API（HTTP シナリオ） | http://localhost:8080 |\n| GRPC_ADDR | 対象API（gRPC シナリオ。scheme 無しの host:port） | localhost:9090 |\n| SEED_USERS / SEED_GUILDS | seed 規模（k6のID空間と一致させる） | 10000 / 100 |\n\n例（stress: RPSを上げて限界点を探る）:\n\n```bash\nRATE=3000 RAMP=1m DURATION=3m make load/ranking\n```"
     },
     {
       "id": "loadtest/README.md#シナリオ一覧",
@@ -1772,7 +2084,23 @@
       "anchor": "シナリオ一覧",
       "title": "シナリオ一覧",
       "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e シナリオ一覧",
-      "text": "| ファイル | 種別 | 対象 |\n|---|---|---|\n| smoke.js | 疎通 | 全エンドポイントを低VUで一巡 |\n| gacha.js | 書き込み | POST /users/:id/gacha/multi |\n| points.js | 書き込み | POST /users/:id/points |\n| ranking.js | 読み取り | GET /rankings/*, GET /{users,guilds}/:id/ranking |\n| watch_outbox.sh | 計測 | outbox バックログ推移（負荷シナリオと併走） |\n\n共通ヘルパ・負荷形状は lib/common.js に集約。"
+      "text": "| ファイル | 種別 | 対象 |\n|---|---|---|\n| smoke.js | 疎通 | 全エンドポイントを低VUで一巡 |\n| gacha.js | 書き込み | POST /users/:id/gacha/multi |\n| points.js | 書き込み | POST /users/:id/points |\n| ranking.js | 読み取り | GET /rankings/*, GET /{users,guilds}/:id/ranking |\n| grpc-ranking.js | 読み取り（gRPC） | game.ranking.v1.RankingService/{GetUserRankings,GetGuildRankings,GetUserRank,GetGuildRank} |\n| watch_outbox.sh | 計測 | outbox バックログ推移（負荷シナリオと併走） |\n\n共通ヘルパ・負荷形状は lib/common.js に集約。"
+    },
+    {
+      "id": "loadtest/README.md#grpc-rankingjshttp-版との比較用",
+      "file": "loadtest/README.md",
+      "anchor": "grpc-rankingjshttp-版との比較用",
+      "title": "grpc-ranking.js（HTTP 版との比較用）",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e シナリオ一覧 \u003e grpc-ranking.js（HTTP 版との比較用）",
+      "text": "ranking.js と対になるシナリオ。gRPC を足したことの効果を実測するのが目的なので、\n比較が成立するように次を HTTP 版と一致させてある:\n\n- 負荷形状: 同じ arrivalScenario({ rate: 1000 })（ramp・維持・減衰まで同一）\n- 呼び出しの内訳: 一覧 35% + 35%、個別順位 15% + 15%\n- 対象ユースケース: 同じ usecase を HTTP delivery と gRPC delivery が共有している\n\nしたがって 片方だけ RATE や比率を変えると比較にならない。変えるときは両方揃えること。\nRATE=3000 make load/grpc と RATE=3000 make load/ranking を並べて、grpc_req_duration と\nhttp_req_duration の p95/p99、および実 RPS を突き合わせる。\n\n.proto は proto/ の正本をそのまま読む（client.load(['../proto'], 'game/ranking/v1/ranking.proto')）。\nimport パスは スクリプトファイルからの相対で解決されるため、どの cwd から k6 run しても通る。\nloadtest/ 配下に .proto の写しを置かないこと。\n\n接続は VU ごとに1回だけ張る。 gRPC は1本の接続を多重化して使うため、毎イテレーションで\nclient.connect() すると接続確立（TCP + HTTP/2 ハンドシェイク）のコストを測ってしまい、\nHTTP 版との比較が壊れる。"
+    },
+    {
+      "id": "loadtest/README.md#streamingwatchuserrankingsを含めていない理由",
+      "file": "loadtest/README.md",
+      "anchor": "streamingwatchuserrankingsを含めていない理由",
+      "title": "streaming（WatchUserRankings）を含めていない理由",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e シナリオ一覧 \u003e grpc-ranking.js（HTTP 版との比較用） \u003e streaming（WatchUserRankings）を含めていない理由",
+      "text": "このシナリオは unary の4 RPC だけを対象にしている。WatchUserRankings は\n「秒間 N リクエスト」という負荷形状（ramping-arrival-rate）と噛み合わないためである。\nストリームは1回張って接続を保持し続けるものなので、到達レートで刻む負荷モデルに乗らず、\ngrpc_req_duration にも1本ぶんの値しか出ない。測るべき指標（同時購読数・push 遅延・\nサーバ側のファンアウトコスト）が別物なので、必要になったら\nconstant-vus + 購読保持の専用シナリオとして別ファイルに切る。"
     },
     {
       "id": "loadtest/README.md#outbox-バックログの計測make-loadwatch",
@@ -1812,7 +2140,15 @@
       "anchor": "合否基準thresholds",
       "title": "合否基準（thresholds）",
       "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 合否基準（thresholds）",
-      "text": "- エラー率 http_req_failed \u003c 1%\n- レイテンシ p95 \u003c 200ms / p99 \u003c 500ms\n\n閾値超過で k6 は exit code≠0 を返す（CI 連携時の合否判定に使える）。"
+      "text": "HTTP シナリオ（lib/common.js の defaultThresholds）:\n\n- エラー率 http_req_failed \u003c 1%\n- レイテンシ p95 \u003c 200ms / p99 \u003c 500ms\n\ngRPC シナリオ（同 defaultGrpcThresholds）— 水準は同じで、メトリクス名だけ読み替える:\n\n- エラー率 checks \u003e 99%（grpc_req_failed に相当するメトリクスが無いため、\n  invoke の status を check した成功率で見る）\n- レイテンシ grpc_req_duration の p95 \u003c 200ms / p99 \u003c 500ms\n- 到達性 grpc_calls \u003e 0（下記の「サンプル0件の空パス」対策）\n\ngRPC シナリオに defaultThresholds を流用しないこと。 gRPC 呼び出しは http_req_* を\n一切出さないので、閾値が「対象0件」のまま無条件でパスし、遅延もエラーも検出しないまま緑になる。"
+    },
+    {
+      "id": "loadtest/README.md#grpc_calls-が要る理由サンプル0件の空パス",
+      "file": "loadtest/README.md",
+      "anchor": "grpc_calls-が要る理由サンプル0件の空パス",
+      "title": "grpc_calls が要る理由（サンプル0件の空パス）",
+      "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 合否基準（thresholds） \u003e grpc_calls が要る理由（サンプル0件の空パス）",
+      "text": "k6 はサンプル0件のメトリクスに対する rate / p(95) 閾値を無条件でパスさせる。\ngRPC ではこれが実害になる: サーバが落ちていると client.connect() が毎イテレーション例外を投げ、\ninvoke まで到達しないため checks も grpc_req_duration も0件のままになる。\n結果、全イテレーション失敗なのに exit code 0（緑）で終わる。\n\nそこで invoke の応答を受け取るたびに増やす Counter grpc_calls を置き、\ncount\u003e0 を閾値にしてある。Counter の count はサンプル0件でも正しく判定される。\n\n\u003e grpc_req_duration に count\u003e0 は付けられない。k6 の Trend が対応する集計は\n\u003e avg / min / max / med / p のみで、count を指定すると閾値の設定エラーになる。\n\n新しい gRPC シナリオを足すときは、invoke のたびに grpcCalls.add(1) を呼ぶこと\n（grpc-ranking.js の expectOK が手本）。忘れると常に閾値割れするので、静かに壊れることはない。\n\n閾値超過で k6 は exit code≠0 を返す（CI 連携時の合否判定に使える）。"
     },
     {
       "id": "loadtest/README.md#結果の見方",
@@ -1820,7 +2156,7 @@
       "anchor": "結果の見方",
       "title": "結果の見方",
       "trail": "loadtest/README.md \u003e loadtest — k6 負荷試験 \u003e 結果の見方",
-      "text": "k6 の要約（http_req_duration の p95/p99、http_reqs の実RPS、http_req_failed）と、\n同時刻の CloudWatch メトリクス（ECS CPU / Aurora Deadlocks・CPU / ElastiCache Evictions 等）を\n突き合わせてボトルネックを特定する。詳細は ROADMAP.md フェーズ3参照。"
+      "text": "k6 の要約（http_req_duration の p95/p99、http_reqs の実RPS、http_req_failed。\ngRPC なら grpc_req_duration と checks）と、\n同時刻の CloudWatch メトリクス（ECS CPU / Aurora Deadlocks・CPU / ElastiCache Evictions 等）を\n突き合わせてボトルネックを特定する。詳細は ROADMAP.md フェーズ3参照。"
     },
     {
       "id": "terraform/ARCHITECTURE.md#aws-インフラ構成図phase-2-完了時点",

@@ -85,8 +85,8 @@ max retry 上限（§0-4）を入れた後も本判定は必要。上限は**恒
 滞留中は新規イベントも窓の外にあって処理できないため、通知を捨てても失うものはない。
 ticker では必ず再試行するので、poison が上限に到達して窓から外れれば `pollInterval` 以内に復帰する。
 
-> **時間ベースのバックオフを採らない理由**: `.golangci.yml` の forbidigo が `time.Now` を禁止しており、Clock インターフェースは未実装。
-> <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal cmd configs --include=*.go --exclude=*_test.go -->
+> **時間ベースのバックオフを採らない理由**: `.golangci.yml` の forbidigo が `driver` 層での `time.Now` を禁止しており、Clock インターフェースは未実装。
+> <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal/domain internal/usecase internal/driver cmd configs --include=*.go --exclude=*_test.go -->
 > バックオフのために Clock を新設すると usecase の interface 追加と infrastructure 実装が
 > 必要になり、変更の範囲が本質から外れる。既存の ticker を再開トリガに使えば
 > 新しい依存を作らずに済む。
@@ -274,8 +274,12 @@ flowchart TD
     MK -- ok --> BC[[COMMIT]]
 
     BC --> R[applyRedisAfterCommit<br/>store.ApplyScoreDeltas・**tx の外**]
+    R -- 差分 0 件 --> RT
     R -- err --> RE[ERROR ログのみ<br/>再試行しない]
-    R -- ok --> RT
+    R -- ok --> NP[rankingNotifier.NotifyUpdated<br/>ranking:updated へ publish]
+    NP -- err --> NPE[WARN ログのみ<br/>ワーカーは止めない]
+    NP -- ok --> RT
+    NPE --> RT
     RE --> RT[デコード不能イベントを個別に IncrementRetry]
     RT --> BZ2([listed=取得件数, applied=適用件数])
 ```
@@ -287,6 +291,11 @@ flowchart TD
 - **MySQL は tx 内・Redis は COMMIT 後**（§0-1）。tx 内のどのステップで失敗しても
   `ApplyScoreDeltas` に到達しないことが二重加算を防ぐ要。**逆に Redis の失敗では
   ロールバックもフォールバックもしない**（MySQL は確定済みで、再適用は二重加算になる）
+- **`ranking:updated` への publish は `ApplyScoreDeltas` が成功したときだけ**（`R→NP`）。
+  Redis 反映に失敗した状態で「更新された」と push すると、キャッシュが遅れている事実を
+  push で嘘にすることになる。次のバッチの成功時に追いつく
+  （購読側の設計は [ranking-watch.md](ranking-watch.md) §0-1）。publish 自体の失敗は
+  **WARN ログのみでワーカーを止めない**（`NP→NPE`）。取りこぼしても次の更新で追いつく
 - **デコード不能イベントはバッチに混ぜない**。未知の `event_type` / 壊れた payload は
   決定的な失敗なので、適用対象から外して**コミット後に**個別で retry 記録する。
   バッチ tx に混ぜると巻き添えでロールバックされる
@@ -300,16 +309,18 @@ flowchart TD
 | 1 | `ListPending` が空 | `B2→BZ` | 即座に終了。tx は1回だけ | `TestWorker_applyBatch_pending無しは即座に終了する` |
 | 2 | 全件デコード不能 | `B3→BC→R→RT` | MySQL も Redis も呼ばれない。`applied=0` | `TestWorker_applyBatch_全件デコード不能ならMySQLもRedisも呼ばれない` |
 | 3 | 除外イベントの `IncrementRetry` が失敗 | `RT` | ログのみ。エラーを伝播しない | `TestWorker_applyBatch_IncrementRetry失敗はログのみ` |
-| 4 | **COMMIT 後の Redis 反映が失敗** | `R→RE→RT` | ERROR ログのみ。エラーを返さずフォールバックもしない | `TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォールバックしない` |
+| 4 | **COMMIT 後の Redis 反映が失敗** | `R→RE→RT` | ERROR ログのみ。エラーを返さずフォールバックもしない。**publish しない** | `TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォールバックしない` |
 | 5 | `M1` / `M2` / `MK` の各失敗 | `→BE2` | 全副作用が巻き戻り、**Redis に到達せず**フォールバック経路へ切り替わる | `TestWorker_applyBatch_各ステップの失敗でRedisに到達せずフォールバックする`（3 サブテスト） |
-| 6 | デコード不能イベントが混在 | `B3→…→BC→R→RT` | 正常なイベントだけ適用され、壊れたものは個別 retry | `TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる` |
-| 7 | 正常系の適用順序 | `M1→M2→MK→BC→R` | MySQL 2本 → マーク → COMMIT → Redis の順（`gomock.InOrder`） | `TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後にRedis` |
+| 6 | デコード不能イベントが混在 | `B3→…→BC→R→NP→RT` | 正常なイベントだけ適用され、壊れたものは個別 retry | `TestWorker_applyBatch_デコード不能イベントは除外され個別にIncrementRetryされる` |
+| 7 | 正常系の適用順序 | `M1→M2→MK→BC→R→NP` | MySQL 2本 → マーク → COMMIT → Redis → publish の順（`gomock.InOrder`） | `TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後にRedis` |
 | 8 | 同一ギルド／ユーザーの複数イベント | 同上 | スコアは合算、履歴はイベント件数ぶん、`MarkProcessedByIDs` に全 ID | `TestWorker_applyBatch_同一ギルドは合算され履歴はイベント単位で作られる` |
 | 9 | `ListPending` がエラー | `B2→BE1` | ティックを中断。MySQL / Redis に到達しない | `TestWorker_runOnce_ListPendingエラー` |
+| 10 | **publish が失敗** | `NP→NPE` | WARN ログのみ。エラーを返さずフォールバックもしない | `TestWorker_applyBatch_publish失敗はWARNログのみでワーカーを止めない` |
 
-**ケース 9 が末尾にある理由**: パスは最短だが、検証しているのは §2 のケース 1 と同一の
-テストで、視点（バッチ tx の中から見た `ListPending`）だけが違う。既存ケースの番号は
+**ケース 9・10 が末尾にある理由**: どちらもパスは短いが、既存ケースの番号は
 テストコードのコメント（`[§2-1 ケース N]`）から参照されているため、繰り上げずに追加した。
+ケース 9 が検証しているのは §2 のケース 1 と同一のテストで、視点（バッチ tx の中から見た
+`ListPending`）だけが違う。ケース 10 は publish ノード（`NP`）の追加に伴う新設。
 
 ### 2-2. イベント単位経路（`applyPerEvent`・バッチ失敗時のフォールバック）
 
@@ -341,7 +352,8 @@ flowchart TD
     MK -- ok --> CM[[COMMIT]]
     CM --> R[applyRedisAfterCommit<br/>store.ApplyScoreDeltas・**tx の外**]
     R -- err --> RE[ERROR ログのみ<br/>retry 記録もしない]
-    R -- ok --> PZ
+    R -- ok --> NP[rankingNotifier.NotifyUpdated<br/>ranking:updated へ publish]
+    NP --> PZ
     RE --> PZ
 
     RB[[ROLLBACK<br/>MySQL 副作用を巻き戻す]] --> W[WARN ログ]
@@ -386,8 +398,8 @@ flowchart TD
 | 5 | `IncrementRetry` が失敗 | `RT→RTE` | **エラーを伝播させない**（ログのみ） | — |
 | 6 | MySQL `IncrementGuildScore` が失敗 | `M1→RB→RT` | `listed=1, applied=0` | `InsertGuildScoreHistory` 以降に到達しない |
 | 7 | MySQL `InsertGuildScoreHistory` が失敗 | `M2→RB→RT` | 同上 | `MarkProcessed` / Redis に到達しない |
-| 8 | **COMMIT 後の Redis 反映が失敗** | `R→RE→PZ` | `listed=1, applied=1`。ログのみ | `IncrementRetry` が呼ばれない（再適用しない） |
-| 9 | 正常系 | `…→M1→M2→MK→CM→R` | `listed=1, applied=1` | MySQL 2件 → `MarkProcessed` → Redis の**順序**（`gomock.InOrder`） |
+| 8 | **COMMIT 後の Redis 反映が失敗** | `R→RE→PZ` | `listed=1, applied=1`。ログのみ | `IncrementRetry` / `NotifyUpdated` が呼ばれない（再適用も push もしない） |
+| 9 | 正常系 | `…→M1→M2→MK→CM→R→NP` | `listed=1, applied=1` | MySQL 2件 → `MarkProcessed` → Redis → publish の**順序**（`gomock.InOrder`） |
 | 10 | 先頭イベントが恒久失敗 | 1件目 `→RB→RT`、2件目 `→MK→CM→R` | `listed=2, applied=1` | 先頭で `IncrementRetry`／後続で `MarkProcessed` |
 
 手続きが異なるため別テスト関数に切り出しているもの:

@@ -24,6 +24,17 @@ const (
 	RankingInitializedKey = "ranking:meta:initialized"
 )
 
+// Redis Pub/Sub チャネル。
+const (
+	// RankingUpdatedChannel はランキング ZSet への反映が完了したことを配信するチャネル。
+	// outbox-worker が ApplyScoreDeltas に成功した直後にだけ publish する。
+	//
+	// outbox の起床通知（infrastructure 層の outboxEventsChannel）を転用してはならない。
+	// あれは ZSet 反映の「前」に飛ぶ通知なので、購読して読むと反映前の古い値を配ることになる
+	// （docs/testing/ranking-watch.md §0-1）。
+	RankingUpdatedChannel = "ranking:updated"
+)
+
 // IsValidScore はスコア・ポイントが有効範囲内かを判定する。
 func IsValidScore(score int64) bool {
 	return score >= MinScore && score <= MaxScore

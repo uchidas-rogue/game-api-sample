@@ -192,6 +192,7 @@ type deps struct {
 	outboxRepo  *mockoutbox.MockRepository
 	rankingRepo *mockranking.MockRepository
 	store       *mockranking.MockRankingStore
+	notifier    *mockranking.MockRankingUpdateNotifier
 	tx          *mockshared.MockTransactor
 }
 
@@ -200,8 +201,16 @@ func newDeps(ctrl *gomock.Controller) deps {
 		outboxRepo:  mockoutbox.NewMockRepository(ctrl),
 		rankingRepo: mockranking.NewMockRepository(ctrl),
 		store:       mockranking.NewMockRankingStore(ctrl),
+		notifier:    mockranking.NewMockRankingUpdateNotifier(ctrl),
 		tx:          mockshared.NewMockTransactor(ctrl),
 	}
+}
+
+// expectNotifyUpdated は ZSet 反映成功後の publish を1回だけ期待する。
+// 既定で登録しないのは、「Redis 反映が失敗したときは publish しない」ことを
+// strict モックで担保するため（EXPECT が無ければ呼んだ瞬間に落ちる）。
+func expectNotifyUpdated(d deps) *gomock.Call {
+	return d.notifier.EXPECT().NotifyUpdated(gomock.Any()).Return(nil)
 }
 
 // newWorker は逐次処理（concurrency=1）の Worker を生成する。
@@ -215,11 +224,12 @@ func (d deps) newWorker(t *testing.T, batchSize int) *workeroutbox.Worker {
 func (d deps) newWorkerWithConcurrency(t *testing.T, batchSize, concurrency int) *workeroutbox.Worker {
 	t.Helper()
 	return workeroutbox.New(workeroutbox.Config{
-		Repo:         d.outboxRepo,
-		RankingRepo:  d.rankingRepo,
-		RankingStore: d.store,
-		Tx:           d.tx,
-		Logger:       slogtest.NewLogger(t, nil),
+		Repo:            d.outboxRepo,
+		RankingRepo:     d.rankingRepo,
+		RankingStore:    d.store,
+		RankingNotifier: d.notifier,
+		Tx:              d.tx,
+		Logger:          slogtest.NewLogger(t, nil),
 		// ticker 駆動の追加呼び出しをテスト中に発生させないため十分大きくする。
 		PollInterval: time.Hour,
 		BatchSize:    batchSize,
@@ -234,15 +244,16 @@ func (d deps) newWorkerWithRecorder(t *testing.T, batchSize int) (*workeroutbox.
 	t.Helper()
 	logger, rec := slogtest.NewRecordingLogger(t, nil)
 	return workeroutbox.New(workeroutbox.Config{
-		Repo:         d.outboxRepo,
-		RankingRepo:  d.rankingRepo,
-		RankingStore: d.store,
-		Tx:           d.tx,
-		Logger:       logger,
-		PollInterval: time.Hour,
-		BatchSize:    batchSize,
-		Concurrency:  1,
-		MaxRetry:     testMaxRetry,
+		Repo:            d.outboxRepo,
+		RankingRepo:     d.rankingRepo,
+		RankingStore:    d.store,
+		RankingNotifier: d.notifier,
+		Tx:              d.tx,
+		Logger:          logger,
+		PollInterval:    time.Hour,
+		BatchSize:       batchSize,
+		Concurrency:     1,
+		MaxRetry:        testMaxRetry,
 	}), rec
 }
 
@@ -264,6 +275,7 @@ func expectPerEventApply(d deps, ev outboxdomain.Event, guildID, userID, points 
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(),
 		[]rankingdomain.UserPointDelta{{UserID: userID, Points: points}},
 		[]rankingdomain.GuildScoreDelta{{GuildID: guildID, Points: points}}).Return(nil)
+	expectNotifyUpdated(d)
 }
 
 // ---------------------------------------------------------------------------
@@ -353,7 +365,9 @@ func TestWorker_applyBatch_COMMIT後のRedis失敗はログのみでフォール
 	d.outboxRepo.EXPECT().MarkProcessedByIDs(gomock.Any(), gomock.Any(), []uint64{1}).Return(nil)
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(), gomock.Any(), gomock.Any()).
 		Return(errors.New("redis down"))
-	// ClaimByID / IncrementRetry は EXPECT しない（呼ばれたら失敗する）。
+	// ClaimByID / IncrementRetry / NotifyUpdated は EXPECT しない（呼ばれたら失敗する）。
+	// publish しないのが要点。キャッシュが遅れている状態で「更新された」と push すると
+	// push が嘘になる（docs/testing/ranking-watch.md §0-1）。
 
 	// バッチ tx 1回のみ。Redis は tx の外なので DoInTx を増やさない。
 	runWorkerAndWaitCalls(t, d.newWorker(t, 100), called, 1)
@@ -474,6 +488,7 @@ func TestWorker_applyBatch_デコード不能イベントは除外され個別�
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(),
 		[]rankingdomain.UserPointDelta{{UserID: 10, Points: 100}},
 		[]rankingdomain.GuildScoreDelta{{GuildID: 1, Points: 100}}).Return(nil)
+	expectNotifyUpdated(d)
 
 	var unknownErr, brokenErr string
 	d.outboxRepo.EXPECT().IncrementRetry(gomock.Any(), gomock.Any(), uint64(2), gomock.Any()).
@@ -537,7 +552,7 @@ func TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後�
 	)
 
 	redisApplied := make(chan bool, 1)
-	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(),
+	applyCall := d.store.EXPECT().ApplyScoreDeltas(gomock.Any(),
 		[]rankingdomain.UserPointDelta{{UserID: 10, Points: 100}}, guildDeltas).
 		DoAndReturn(func(_ context.Context, _ []rankingdomain.UserPointDelta,
 			_ []rankingdomain.GuildScoreDelta) error {
@@ -550,6 +565,10 @@ func TestWorker_applyBatch_適用順序_MySQL2本_MarkProcessedByIDs_COMMIT後�
 			}
 			return nil
 		})
+
+	// publish は ZSet 反映の「後」。先に publish すると、購読者が反映前の値を読む
+	// レースが常態化する（docs/testing/ranking-watch.md §0-1）。
+	expectNotifyUpdated(d).After(applyCall)
 
 	runWorkerAndWaitCalls(t, d.newWorker(t, 100), called, 1)
 
@@ -609,6 +628,7 @@ func TestWorker_applyBatch_同一ギルドは合算され履歴はイベント�
 			gotUserDeltas, gotRedisGuildDeps = users, guilds
 			return nil
 		})
+	expectNotifyUpdated(d)
 
 	// バッチ適用の tx 1回のみ（候補 3 件 < batchSize 100 なのでドレイン終了）。
 	runWorkerAndWaitCalls(t, d.newWorker(t, 100), called, 1)
@@ -631,6 +651,40 @@ func TestWorker_applyBatch_同一ギルドは合算され履歴はイベント�
 		{GuildID: 2, UserID: 10, Points: 50},
 	}, gotHistories)
 	assert.Equal(t, []uint64{1, 2, 3}, gotIDs)
+}
+
+// [§2-1 ケース10] TestWorker_applyBatch_publish失敗はWARNログのみでワーカーを止めない は、
+// ランキング更新の publish が失敗してもバッチが成功扱いのまま前進することを確認する。
+//
+// MySQL も Redis も確定済みなので、ここで失敗させても巻き戻せるものは何もない。
+// 購読者は次の更新で追いつくため、WARN ログだけ残してワーカーは動き続ける
+// （outboxNotifier.Notify と同じ扱い。docs/testing/ranking-watch.md §0-1）。
+func TestWorker_applyBatch_publish失敗はWARNログのみでワーカーを止めない(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	d := newDeps(ctrl)
+	called := make(chan struct{}, 16)
+	invokeDoInTxAndSignal(t, d.tx, called)
+
+	ev := newScoreEvent(t, 1, 1, 10, 100)
+	// Times は既定で1回。フォールバックに落ちれば listCandidates が2回目を呼ぶため失敗する。
+	d.outboxRepo.EXPECT().ListPending(gomock.Any(), gomock.Any(), int32(100), uint32(testMaxRetry)).
+		Return([]outboxdomain.Event{ev}, nil)
+
+	d.rankingRepo.EXPECT().BulkIncrementGuildScores(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+	d.rankingRepo.EXPECT().BulkInsertGuildScoreHistories(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+	d.outboxRepo.EXPECT().MarkProcessedByIDs(gomock.Any(), gomock.Any(), []uint64{1}).Return(nil)
+	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+	d.notifier.EXPECT().NotifyUpdated(gomock.Any()).Return(errors.New("redis publish failed"))
+	// ClaimByID / IncrementRetry は EXPECT しない（呼ばれたら失敗する）。
+
+	w, rec := d.newWorkerWithRecorder(t, 100)
+	// バッチ tx 1回のみ。publish は tx の外なので DoInTx を増やさない。
+	runWorkerAndWaitCalls(t, w, called, 1)
+
+	assert.Equal(t, 1, rec.Count("ranking update notify failed"),
+		"publish の失敗は WARN ログに残す")
 }
 
 // ---------------------------------------------------------------------------
@@ -682,7 +736,7 @@ func TestWorker_runOnce_appliesTickTimeout(t *testing.T) {
 
 	w := workeroutbox.New(workeroutbox.Config{
 		MaxRetry: testMaxRetry,
-		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, RankingNotifier: d.notifier, Tx: d.tx,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 		TickTimeout: time.Minute,
 	})
@@ -772,6 +826,7 @@ func TestWorker_runOnce_候補が枯れるまでドレインする(t *testing.T)
 	d.rankingRepo.EXPECT().BulkIncrementGuildScores(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(2)
 	d.rankingRepo.EXPECT().BulkInsertGuildScoreHistories(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(2)
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).Times(2)
+	expectNotifyUpdated(d).Times(2)
 	// 各巡でその巡の候補だけがマークされる。
 	gomock.InOrder(
 		d.outboxRepo.EXPECT().MarkProcessedByIDs(gomock.Any(), gomock.Any(), []uint64{1, 2}).Return(nil),
@@ -825,6 +880,7 @@ func TestWorker_runOnce_バッチ失敗時はフォールバックへ切り替�
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(),
 		[]rankingdomain.UserPointDelta{{UserID: 10, Points: 100}},
 		[]rankingdomain.GuildScoreDelta{{GuildID: 1, Points: 100}}).Return(nil).Times(len(events))
+	expectNotifyUpdated(d).Times(len(events))
 
 	// バッチ適用 tx + listCandidates tx + processOne tx × 2 = 4。
 	runWorkerAndWaitCalls(t, d.newWorker(t, 100), called, 4)
@@ -1036,6 +1092,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 					[]rankingdomain.GuildScoreDelta{{GuildID: 3, Points: 200}}).
 					Return(errors.New("redis down"))
 				// IncrementRetry は呼ばれない（イベントは処理済み）。
+				// NotifyUpdated も呼ばれない（反映できていないので push しない）。
 
 				return d.newWorker(t, 100)
 			},
@@ -1043,7 +1100,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 			wantApplied: 1,
 		},
 		{
-			// #9 …→M1→M2→MK→CM→R
+			// #9 …→M1→M2→MK→CM→R→NP
 			name: "正常系: MySQL(IncrementGuildScore→InsertGuildScoreHistory)→MarkProcessed→COMMIT 後に Redis",
 			setup: func(t *testing.T, ctrl *gomock.Controller) *workeroutbox.Worker {
 				t.Helper()
@@ -1062,6 +1119,7 @@ func TestWorker_applyPerEvent_フォールバック経路_正常系_異常系(t 
 					d.store.EXPECT().ApplyScoreDeltas(gomock.Any(),
 						[]rankingdomain.UserPointDelta{{UserID: 10, Points: 500}},
 						[]rankingdomain.GuildScoreDelta{{GuildID: 1, Points: 500}}).Return(nil),
+					d.notifier.EXPECT().NotifyUpdated(gomock.Any()).Return(nil),
 				)
 
 				return d.newWorker(t, 100)
@@ -1320,6 +1378,7 @@ func TestWorker_applyPerEvent_フォールバック経路_並列処理(t *testin
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(),
 		[]rankingdomain.UserPointDelta{{UserID: 1, Points: 10}},
 		[]rankingdomain.GuildScoreDelta{{GuildID: 1, Points: 10}}).Return(nil).Times(batchSize)
+	expectNotifyUpdated(d).Times(batchSize)
 
 	w := d.newWorkerWithConcurrency(t, batchSize, concurrency)
 	listed, applied, err := w.ApplyPerEventForTest(context.Background())
@@ -1383,7 +1442,7 @@ func TestWorker_Run_Subscribe_failure(t *testing.T) {
 
 	w := workeroutbox.New(workeroutbox.Config{
 		MaxRetry: testMaxRetry,
-		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, RankingNotifier: d.notifier, Tx: d.tx, Subscriber: sub,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 	})
 
@@ -1409,7 +1468,7 @@ func TestWorker_Run_notify_channel_closed(t *testing.T) {
 
 	w := workeroutbox.New(workeroutbox.Config{
 		MaxRetry: testMaxRetry,
-		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, RankingNotifier: d.notifier, Tx: d.tx, Subscriber: sub,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 	})
 
@@ -1437,7 +1496,7 @@ func TestWorker_Run_notify_triggered(t *testing.T) {
 
 	w := workeroutbox.New(workeroutbox.Config{
 		MaxRetry: testMaxRetry,
-		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, RankingNotifier: d.notifier, Tx: d.tx, Subscriber: sub,
 		Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 100,
 	})
 
@@ -1459,7 +1518,7 @@ func TestWorker_Run_ticker_driven(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	w := workeroutbox.New(workeroutbox.Config{
 		MaxRetry: testMaxRetry,
-		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
+		Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, RankingNotifier: d.notifier, Tx: d.tx,
 		// 短い間隔にしても wall-clock 依存ではなくシグナル待ちで同期するため flaky にならない。
 		Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
 	})
@@ -1512,6 +1571,7 @@ func TestWorker_Run_ティック処理の失敗はループを止めない(t *te
 			ctrl := gomock.NewController(t)
 			repo := mockoutbox.NewMockRepository(ctrl)
 			store := mockranking.NewMockRankingStore(ctrl)
+			notifier := mockranking.NewMockRankingUpdateNotifier(ctrl)
 			tx := mockshared.NewMockTransactor(ctrl)
 
 			called := make(chan struct{}, 16)
@@ -1523,7 +1583,7 @@ func TestWorker_Run_ティック処理の失敗はループを止めない(t *te
 
 			cfg := workeroutbox.Config{
 				MaxRetry: testMaxRetry,
-				Repo:     repo, RankingStore: store, Tx: tx,
+				Repo:     repo, RankingStore: store, RankingNotifier: notifier, Tx: tx,
 				Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond, BatchSize: 100,
 			}
 
@@ -1614,7 +1674,7 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 
 		w := workeroutbox.New(workeroutbox.Config{
 			MaxRetry: testMaxRetry,
-			Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx, Subscriber: sub,
+			Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, RankingNotifier: d.notifier, Tx: d.tx, Subscriber: sub,
 			// ticker では再開してしまうので、この部分テストでは発火させない。
 			Logger: slogtest.NewLogger(t, nil), PollInterval: time.Hour, BatchSize: 1, Concurrency: 1,
 		})
@@ -1651,7 +1711,7 @@ func TestWorker_Run_滞留中は通知を捨てtickerで再開する(t *testing.
 
 		w := workeroutbox.New(workeroutbox.Config{
 			MaxRetry: testMaxRetry,
-			Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, Tx: d.tx,
+			Repo:     d.outboxRepo, RankingRepo: d.rankingRepo, RankingStore: d.store, RankingNotifier: d.notifier, Tx: d.tx,
 			Logger: slogtest.NewLogger(t, nil), PollInterval: 10 * time.Millisecond,
 			BatchSize: 1, Concurrency: 1,
 		})
@@ -1739,14 +1799,16 @@ func TestWorker_drainNow_ティック期限切れ後も自走する(t *testing.T
 	d.rankingRepo.EXPECT().BulkInsertGuildScoreHistories(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
 	d.outboxRepo.EXPECT().MarkProcessedByIDs(gomock.Any(), gomock.Any(), []uint64{1}).Return(nil).AnyTimes()
 	d.store.EXPECT().ApplyScoreDeltas(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+	d.notifier.EXPECT().NotifyUpdated(gomock.Any()).Return(nil).AnyTimes()
 
 	w := workeroutbox.New(workeroutbox.Config{
-		MaxRetry:     testMaxRetry,
-		Repo:         d.outboxRepo,
-		RankingRepo:  d.rankingRepo,
-		RankingStore: d.store,
-		Tx:           d.tx,
-		Logger:       slogtest.NewLogger(t, nil),
+		MaxRetry:        testMaxRetry,
+		Repo:            d.outboxRepo,
+		RankingRepo:     d.rankingRepo,
+		RankingStore:    d.store,
+		RankingNotifier: d.notifier,
+		Tx:              d.tx,
+		Logger:          slogtest.NewLogger(t, nil),
 		// ポーリングでの再開に頼っていないことを示すため十分大きくする。
 		// 自走していなければ最初のティック期限切れで止まり、待機がタイムアウトする。
 		PollInterval: time.Hour,

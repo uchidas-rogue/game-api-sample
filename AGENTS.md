@@ -42,9 +42,10 @@
 - HTTP ミドルウェアの登録順: 観測系（`RequestID` → アクセスログ）を**先頭**に登録し、リクエストを短絡しうるミドルウェア（ボディ上限・認証・レート制限等）は必ずその**後ろ**に置く。前に置くと、弾いたリクエストがアクセスログにも request_id にも残らず、拒否されている事実を運用側から観測できなくなる
   - `echo.Echo.Pre` は使わない。`Pre` はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う
   - 判定: 登録順は `TestNew_MiddlewareOrder`（`New` の AST を検査）、`Pre` の不使用は `.golangci.yml` の ruleguard が強制する
-- 時刻: `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
-  - 現時点で Clock インターフェースの実装は存在しない（`time.Now()` を使う機能がまだ無いため）。時刻依存の機能を追加する際に、`usecase` 層へ interface を定義し `infrastructure` 層に実装を置いて DI する
-    <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal cmd configs --include=*.go --exclude=*_test.go -->
+- 時刻: **業務ロジックでは** `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
+  - 例外は**観測用の経過時間計測**（アクセスログの latency 等）で、`infrastructure` 層に限り直接呼んでよい。計測値そのものをテストで固定する必要が無く、Clock を通しても検証内容が変わらないため。`.golangci.yml` の forbidigo も同じ範囲（`^internal/infrastructure/`）を除外しており、下の照合はその範囲を除いた層を見ている
+  - 現時点で Clock インターフェースの実装は存在しない（時刻に依存する**業務ロジック**がまだ無いため）。時刻依存の機能を追加する際に、`usecase` 層へ interface を定義し `infrastructure` 層に実装を置いて DI する
+    <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal/domain internal/usecase internal/driver cmd configs --include=*.go --exclude=*_test.go -->
 - 設定管理: 環境変数のパースは `configs/config.go` の `Config` に集約する。環境変数のキー名と既定値は同パッケージで `const` 定義し、各層には `*Config` を DI して渡す。新規の設定値追加時は `Config` 構造体・既定値・`Load()` の3箇所を更新する
 
 # 3. Testing Rules (規約)

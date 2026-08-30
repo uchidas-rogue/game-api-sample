@@ -8,6 +8,7 @@ ROADMAP フェーズ3の負荷試験シナリオ一式。ローカルで API に
 - MySQL / Redis 起動済み（`docker compose -f deployments/docker-compose.yml up -d`）
 - マイグレーション適用済み（`make db/migrate/up`）
 - API と outbox-worker 起動済み（`make run` / `make run/outbox-worker`）
+- gRPC シナリオを回す場合は gRPC サーバも起動済み（`make run/grpc`。既定 :9090、平文 h2c）
 
 ## 手順
 
@@ -26,12 +27,17 @@ make load/smoke
 make load/gacha        # 書き込み系（トランザクション+行ロック）
 make load/points       # 書き込み系（スコア加算+ギルド集計+outbox）
 make load/ranking      # 読み取り系（Redis ZSet 参照）
+make load/grpc         # 読み取り系の gRPC 版（load/ranking と同条件）
 ```
 
 > ランキング参照が `503 ranking is unavailable` を返す場合、Redis にランキングが構築されていない
 > （`load/seed` / `load/warm` の未実行、または Redis の揮発）。`make load/warm` で再構築する。
 > 揮発を空配列や 404 で誤魔化さないための仕様なので、閾値の緩和ではなく再構築で対処すること。
 > 詳細は [docs/testing/ranking.md](../docs/testing/ranking.md) §0。
+>
+> **gRPC 側もまったく同じ**で、同じ状態が `codes.Unavailable` として現れる（HTTP 503 の対応コード）。
+> `grpc-ranking.js` では check 失敗として集計されるため `checks` の閾値割れになる。
+> ここでも対処は `make load/warm` による再構築で、閾値の緩和ではない。
 
 ## 負荷の調整（環境変数）
 
@@ -42,7 +48,8 @@ make load/ranking      # 読み取り系（Redis ZSet 参照）
 | `RAMP` | ramp-up 時間 | 30s |
 | `DURATION` | 維持時間 | 1m |
 | `MAX_VUS` | 最大VU数 | 1000 |
-| `BASE_URL` | 対象API | http://localhost:8080 |
+| `BASE_URL` | 対象API（HTTP シナリオ） | http://localhost:8080 |
+| `GRPC_ADDR` | 対象API（gRPC シナリオ。scheme 無しの host:port） | localhost:9090 |
 | `SEED_USERS` / `SEED_GUILDS` | seed 規模（k6のID空間と一致させる） | 10000 / 100 |
 
 例（stress: RPSを上げて限界点を探る）:
@@ -59,9 +66,40 @@ RATE=3000 RAMP=1m DURATION=3m make load/ranking
 | `gacha.js` | 書き込み | `POST /users/:id/gacha/multi` |
 | `points.js` | 書き込み | `POST /users/:id/points` |
 | `ranking.js` | 読み取り | `GET /rankings/*`, `GET /{users,guilds}/:id/ranking` |
+| `grpc-ranking.js` | 読み取り（gRPC） | `game.ranking.v1.RankingService/{GetUserRankings,GetGuildRankings,GetUserRank,GetGuildRank}` |
 | `watch_outbox.sh` | 計測 | outbox バックログ推移（負荷シナリオと併走） |
 
 共通ヘルパ・負荷形状は `lib/common.js` に集約。
+
+### `grpc-ranking.js`（HTTP 版との比較用）
+
+`ranking.js` と**対**になるシナリオ。gRPC を足したことの効果を実測するのが目的なので、
+比較が成立するように次を HTTP 版と一致させてある:
+
+- 負荷形状: 同じ `arrivalScenario({ rate: 1000 })`（ramp・維持・減衰まで同一）
+- 呼び出しの内訳: 一覧 35% + 35%、個別順位 15% + 15%
+- 対象ユースケース: 同じ usecase を HTTP delivery と gRPC delivery が共有している
+
+したがって **片方だけ `RATE` や比率を変えると比較にならない**。変えるときは両方揃えること。
+`RATE=3000 make load/grpc` と `RATE=3000 make load/ranking` を並べて、`grpc_req_duration` と
+`http_req_duration` の p95/p99、および実 RPS を突き合わせる。
+
+`.proto` は `proto/` の正本をそのまま読む（`client.load(['../proto'], 'game/ranking/v1/ranking.proto')`）。
+import パスは **スクリプトファイルからの相対**で解決されるため、どの cwd から `k6 run` しても通る。
+`loadtest/` 配下に `.proto` の写しを置かないこと。
+
+**接続は VU ごとに1回だけ張る。** gRPC は1本の接続を多重化して使うため、毎イテレーションで
+`client.connect()` すると接続確立（TCP + HTTP/2 ハンドシェイク）のコストを測ってしまい、
+HTTP 版との比較が壊れる。
+
+#### streaming（`WatchUserRankings`）を含めていない理由
+
+このシナリオは unary の4 RPC だけを対象にしている。`WatchUserRankings` は
+**「秒間 N リクエスト」という負荷形状（`ramping-arrival-rate`）と噛み合わない**ためである。
+ストリームは1回張って接続を保持し続けるものなので、到達レートで刻む負荷モデルに乗らず、
+`grpc_req_duration` にも1本ぶんの値しか出ない。測るべき指標（同時購読数・push 遅延・
+サーバ側のファンアウトコスト）が別物なので、必要になったら
+`constant-vus` + 購読保持の専用シナリオとして別ファイルに切る。
 
 ## outbox バックログの計測（`make load/watch`）
 
@@ -129,13 +167,42 @@ SELECT
 
 ## 合否基準（thresholds）
 
+HTTP シナリオ（`lib/common.js` の `defaultThresholds`）:
+
 - エラー率 `http_req_failed < 1%`
 - レイテンシ `p95 < 200ms` / `p99 < 500ms`
+
+gRPC シナリオ（同 `defaultGrpcThresholds`）— 水準は同じで、メトリクス名だけ読み替える:
+
+- エラー率 `checks > 99%`（`grpc_req_failed` に相当するメトリクスが無いため、
+  `invoke` の status を `check` した成功率で見る）
+- レイテンシ `grpc_req_duration` の `p95 < 200ms` / `p99 < 500ms`
+- 到達性 `grpc_calls > 0`（下記の「サンプル0件の空パス」対策）
+
+**gRPC シナリオに `defaultThresholds` を流用しないこと。** gRPC 呼び出しは `http_req_*` を
+一切出さないので、閾値が「対象0件」のまま無条件でパスし、遅延もエラーも検出しないまま緑になる。
+
+### `grpc_calls` が要る理由（サンプル0件の空パス）
+
+k6 は**サンプル0件のメトリクスに対する `rate` / `p(95)` 閾値を無条件でパスさせる**。
+gRPC ではこれが実害になる: サーバが落ちていると `client.connect()` が毎イテレーション例外を投げ、
+`invoke` まで到達しないため `checks` も `grpc_req_duration` も0件のままになる。
+結果、**全イテレーション失敗なのに exit code 0（緑）**で終わる。
+
+そこで `invoke` の応答を受け取るたびに増やす Counter `grpc_calls` を置き、
+`count>0` を閾値にしてある。Counter の `count` はサンプル0件でも正しく判定される。
+
+> `grpc_req_duration` に `count>0` は付けられない。k6 の Trend が対応する集計は
+> `avg` / `min` / `max` / `med` / `p` のみで、`count` を指定すると閾値の設定エラーになる。
+
+新しい gRPC シナリオを足すときは、**`invoke` のたびに `grpcCalls.add(1)` を呼ぶこと**
+（`grpc-ranking.js` の `expectOK` が手本）。忘れると常に閾値割れするので、静かに壊れることはない。
 
 閾値超過で k6 は exit code≠0 を返す（CI 連携時の合否判定に使える）。
 
 ## 結果の見方
 
-k6 の要約（`http_req_duration` の p95/p99、`http_reqs` の実RPS、`http_req_failed`）と、
+k6 の要約（`http_req_duration` の p95/p99、`http_reqs` の実RPS、`http_req_failed`。
+gRPC なら `grpc_req_duration` と `checks`）と、
 同時刻の CloudWatch メトリクス（ECS CPU / Aurora Deadlocks・CPU / ElastiCache Evictions 等）を
 突き合わせてボトルネックを特定する。詳細は `ROADMAP.md` フェーズ3参照。
