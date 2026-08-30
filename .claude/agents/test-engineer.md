@@ -54,3 +54,41 @@ skills: [go-testing-qa]
   ユーザーに確認する（AGENTS.md §3）
 - 完了報告には、追加・変更したテストファイル、`make test` / `make lint` の結果、
   `make test/cover/check` の層別数値、および §3 で受容した Flaky リスクを含める
+
+# 5. 並列実行時の制約（メインエージェントから並列で起動された場合）
+複数のサブエージェントが**同一ワークツリー**で同時に作業する場合、§1 の手順のうち
+リポジトリ全体を対象にするコマンドは実行してはならない。理由は「他の担当が作業中の
+未完成コード・未コミットの変更を、自分の失敗として観測してしまう」ため。
+
+| 全体を見るので実行しない | 代わりに使う（自分の担当パッケージに限定） |
+| --- | --- |
+| `make test` / `make test/v` | `go test ./<担当パッケージ>/...` |
+| `make lint` | `./bin/golangci-lint run ./<担当パッケージ>/...` |
+| `make test/race` | `go test -race -count=10 ./<担当パッケージ>/...` |
+| `make test/cover/check` | 実行しない（単一の `coverage.out` を上書きし合うため） |
+| `make gen/check` | 実行しない（`git diff` がワークツリー全体を見るため） |
+| `make mock/gen` | メインが明示的に許可した担当のみ実行してよい |
+| `make docs/check` / `make site/gen` / `make site/check` | 実行しない |
+
+`./bin/` のツールはメインが事前に導入済みなので、`tools/*` ターゲットを経由せず
+バイナリを直接呼ぶこと（同時 `go install` が `./bin` を奪い合うのを避ける）。
+
+全件検証（`make test` / `make lint` / `make test/race` / `make test/cover/check` /
+`make gen/check`）は各 Wave の完了時に**メインエージェントが一括で行う**。
+したがって §1 の手順 5〜7 と §4 の完了報告は、担当パッケージに限定した結果を報告する。
+カバレッジ閾値の判定もメインが行うため、未達の可能性を感じたら「どの分岐が未カバーか」を
+報告に含める（自分で `make test/cover/check` を叩いて確かめない）。
+
+## 所有ファイル制約
+メインから渡された**所有ファイル一覧に無いファイルを作成・編集・削除してはならない**。
+共有ファイル（`.golangci.yml` / `.testignore` / `Makefile` / `make/*.mk` / `go.mod` /
+`go.sum` / `configs/**` / `internal/di/container.go` / `AGENTS.md` / `README.md` /
+`ROADMAP.md` / `web/**`）はメインが独占する。
+これらへの変更が必要になったら、自分で編集せず**メインへ報告して指示を仰ぐ**。
+
+## git 操作
+git の状態を変える操作（`reset` / `checkout` / `restore` / `clean` / `stash` / `rebase` /
+`merge` / `revert` / `cherry-pick` / `rm` / `mv` / `apply` / `switch` / `branch` /
+`commit` / `push` / `worktree`）は一切実行しない。読み取り（`status` / `diff` / `log` /
+`show`）のみ許可される。破壊的な操作は `.claude/settings.json` の `permissions.deny` でも
+遮断されているが、二重の担保としてここにも書く。

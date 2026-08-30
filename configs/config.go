@@ -11,11 +11,19 @@ import (
 
 // 環境変数のキー名と既定値を定数として定義する（マジックナンバー禁止対応）。
 const (
-	envPort      = "PORT"
-	defaultPort  = 8080
-	envLogLevel  = "LOG_LEVEL"
-	defaultLevel = slog.LevelInfo
-	envMySQLDSN  = "MYSQL_DSN"
+	envPort     = "PORT"
+	defaultPort = 8080
+	// envGRPCPort / defaultGRPCPort は gRPC サーバ（cmd/grpc）の待ち受けポート。
+	// HTTP（cmd/api）とは別プロセスなので、既定値のまま同時に起動できる。
+	//
+	// PORT と同じく値域の検証はしない（Atoi が通れば採用する）。ポート番号という
+	// 同型の設定値で片方だけ検証があると非対称になるため。検証を足すなら PORT にも
+	// 同時に入れること。
+	envGRPCPort     = "GRPC_PORT"
+	defaultGRPCPort = 9090
+	envLogLevel     = "LOG_LEVEL"
+	defaultLevel    = slog.LevelInfo
+	envMySQLDSN     = "MYSQL_DSN"
 	// defaultMySQLDSN は docker-compose 既定値に揃えた接続文字列。
 	defaultMySQLDSN = "game:game@tcp(127.0.0.1:3306)/game_db?parseTime=true&loc=Local"
 	envRedisAddr    = "REDIS_ADDR"
@@ -91,6 +99,7 @@ const (
 // Config はアプリケーション全体の設定値を保持する。
 type Config struct {
 	Port               int
+	GRPCPort           int
 	LogLevel           slog.Level
 	MySQLDSN           string
 	RedisAddr          string
@@ -108,7 +117,7 @@ type Config struct {
 }
 
 // Load は環境変数から設定値を読み込む。
-// PORT未設定時は8080、LOG_LEVEL未設定時はinfoを使用する。
+// PORT未設定時は8080、GRPC_PORT未設定時は9090、LOG_LEVEL未設定時はinfoを使用する。
 // LOG_LEVELに指定できる値: debug / info / warn / error（大文字小文字不問）
 // OUTBOX_POLL_INTERVAL は time.ParseDuration 形式（例: 2s, 500ms）を受け付ける。
 func Load() (*Config, error) {
@@ -119,6 +128,15 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("invalid %s: %w", envPort, err)
 		}
 		port = parsed
+	}
+
+	grpcPort := defaultGRPCPort
+	if v := os.Getenv(envGRPCPort); v != "" {
+		parsed, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("invalid %s: %w", envGRPCPort, err)
+		}
+		grpcPort = parsed
 	}
 
 	level := defaultLevel
@@ -283,6 +301,7 @@ func Load() (*Config, error) {
 
 	return &Config{
 		Port:               port,
+		GRPCPort:           grpcPort,
 		LogLevel:           level,
 		MySQLDSN:           dsn,
 		RedisAddr:          redisAddr,

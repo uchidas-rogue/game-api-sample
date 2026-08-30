@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package game.ranking.v1;
+
+option csharp_namespace = "Game.Ranking.V1";
+option go_package = "github.com/uchidas-rogue/game-api-sample/internal/driver/grpc/gen/rankingv1;rankingv1";
+
+// RankingService はランキングの参照とスコア加算を提供する。
+//
+// HTTP delivery（internal/driver/http/ranking）と同じ usecase を共有しており、
+// 応答の意味づけは HTTP 版と一致する。エラーは gRPC status code で返す
+// （対応表は docs/testing/grpc-ranking.md）。
+service RankingService {
+  // GetUserRankings はユーザー累計ポイントのランキングをページングで返す。
+  rpc GetUserRankings(GetUserRankingsRequest) returns (GetUserRankingsResponse);
+
+  // GetGuildRankings はギルド総合スコアのランキングをページングで返す。
+  rpc GetGuildRankings(GetGuildRankingsRequest) returns (GetGuildRankingsResponse);
+
+  // GetUserRank は単一ユーザーの順位を返す。
+  rpc GetUserRank(GetUserRankRequest) returns (GetUserRankResponse);
+
+  // GetGuildRank は単一ギルドの順位を返す。
+  rpc GetGuildRank(GetGuildRankRequest) returns (GetGuildRankResponse);
+
+  // AddUserPoints はユーザーにポイントを加算する。
+  // ギルドスコアへの反映は outbox 経由で非同期に行われるため、応答には含まれない。
+  rpc AddUserPoints(AddUserPointsRequest) returns (AddUserPointsResponse);
+
+  // WatchUserRankings はユーザーランキングの更新を push する。
+  //
+  // 購読直後に現在のスナップショットを 1 件返し、以降はランキングが変化したときだけ送る。
+  // 送信が追いつかないクライアントには最新のスナップショットだけが届く（中間状態は捨てられる）。
+  // offset は持たない: 購読者ごとに別の範囲を取りに行くとサーバ側の再取得を集約できなくなるため。
+  rpc WatchUserRankings(WatchUserRankingsRequest) returns (stream WatchUserRankingsResponse);
+}
+
+// RankEntry はランキング 1 行分。internal/domain/ranking.RankEntry と 1 対 1 で対応する。
+message RankEntry {
+  // rank は 1 始まりの順位。
+  int64 rank = 1;
+  // id はユーザー ID またはギルド ID。
+  int64 id = 2;
+  // name は表示名。解決できなかった場合は空文字（行は落とさない）。
+  string name = 3;
+  // score は累計ポイントまたはギルド総合スコア。
+  int64 score = 4;
+}
+
+message GetUserRankingsRequest {
+  // limit は取得件数。0 なら既定値、上限を超える値は上限に丸められる（サーバ側で正規化）。
+  int32 limit = 1;
+  // offset は取得開始位置。負値は 0 に丸められる。
+  int32 offset = 2;
+}
+
+message GetUserRankingsResponse {
+  repeated RankEntry rankings = 1;
+  // total_count はランキング全体の件数（ページングの総数）。
+  int64 total_count = 2;
+}
+
+message GetGuildRankingsRequest {
+  int32 limit = 1;
+  int32 offset = 2;
+}
+
+message GetGuildRankingsResponse {
+  repeated RankEntry rankings = 1;
+  int64 total_count = 2;
+}
+
+message GetUserRankRequest {
+  int64 user_id = 1;
+}
+
+message GetUserRankResponse {
+  int64 user_id = 1;
+  string user_name = 2;
+  int64 points = 3;
+  int64 rank = 4;
+  int64 total_users = 5;
+}
+
+message GetGuildRankRequest {
+  int64 guild_id = 1;
+}
+
+message GetGuildRankResponse {
+  int64 guild_id = 1;
+  string guild_name = 2;
+  int64 score = 3;
+  int64 rank = 4;
+  int64 total_guilds = 5;
+}
+
+message AddUserPointsRequest {
+  int64 user_id = 1;
+  // points は加算するポイント。値域外はサーバが InvalidArgument で拒否する。
+  int64 points = 2;
+  // reason は加算理由。空文字は許容しない。
+  string reason = 3;
+}
+
+message AddUserPointsResponse {
+  int64 user_id = 1;
+  // points は今回加算した値。
+  int64 points = 2;
+  int64 previous_total = 3;
+  int64 new_total = 4;
+  // guild_id は加算したユーザーの所属ギルド。ギルドスコアへの反映は非同期。
+  int64 guild_id = 5;
+}
+
+message WatchUserRankingsRequest {
+  // limit は購読するランキングの件数。offset は持たない（service のコメントを参照）。
+  int32 limit = 1;
+}
+
+message WatchUserRankingsResponse {
+  repeated RankEntry rankings = 1;
+  int64 total_count = 2;
+}

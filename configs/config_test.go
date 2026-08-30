@@ -25,6 +25,7 @@ func clearConfigEnv(t *testing.T) {
 
 	for _, key := range []string{
 		"PORT",
+		"GRPC_PORT",
 		"LOG_LEVEL",
 		"MYSQL_DSN",
 		"REDIS_ADDR",
@@ -52,6 +53,7 @@ func TestLoad_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, 8080, cfg.Port)
+	assert.Equal(t, 9090, cfg.GRPCPort)
 	assert.Equal(t, slog.LevelInfo, cfg.LogLevel)
 	assert.Equal(t, "game:game@tcp(127.0.0.1:3306)/game_db?parseTime=true&loc=Local", cfg.MySQLDSN)
 	assert.Equal(t, "127.0.0.1:6379", cfg.RedisAddr)
@@ -91,6 +93,36 @@ func TestLoad_PORT(t *testing.T) {
 			}
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, cfg.Port)
+		})
+	}
+}
+
+// TestLoad_GRPC_PORT は TestLoad_PORT と同じケース構成を持つ。
+// どちらも値域を検証しない同型の設定値なので、片方にだけケースがある状態を作らない
+// （AGENTS.md §3 の対称性チェック）。
+func TestLoad_GRPC_PORT(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+		want    int
+	}{
+		{name: "有効: 数値", value: "50051", want: 50051},
+		{name: "無効: 数値でない", value: "abc", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clearConfigEnv(t)
+			t.Setenv("GRPC_PORT", tt.value)
+
+			cfg, err := configs.Load()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, cfg.GRPCPort)
 		})
 	}
 }

@@ -1,0 +1,15 @@
+# Go 生成物のテンプレート。ローカルプラグインだけを使い、ネットワークに依存しない
+# （CI で drift 検知を回すため）。C# は buf.gen.csharp.yaml 側で remote plugin を使う。
+#
+# out は buf を実行した cwd からの相対パス。make/proto.mk がリポジトリルートで実行するため "." を指す。
+# module=... は go_package からこの prefix を取り除いた位置へ出力させる指定で、
+# 結果として internal/driver/grpc/gen/rankingv1/ に生成される。
+version: v2
+
+plugins:
+  - local: protoc-gen-go
+    out: .
+    opt: module=github.com/uchidas-rogue/game-api-sample
+  - local: protoc-gen-go-grpc
+    out: .
+    opt: module=github.com/uchidas-rogue/game-api-sample
