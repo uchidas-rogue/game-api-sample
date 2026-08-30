@@ -42,3 +42,4 @@ include make/terraform.mk
 include make/loadtest.mk
 include make/site.mk
 include make/proto.mk
+include make/review.mk

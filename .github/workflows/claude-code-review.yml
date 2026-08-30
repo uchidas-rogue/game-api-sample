@@ -29,7 +29,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          # make review/diff が base ブランチとの差分を取るため、既定の shallow clone
+          # （fetch-depth: 1）だと base を解決できない。ci.yml も buf breaking のため同じ設定。
+          fetch-depth: 0
 
       - name: Run Claude Code Review
         id: claude-review
@@ -41,13 +43,26 @@ jobs:
           # 狭い allowedTools に不一致→全拒否）、レビュー結果が投稿されなかった。
           # そのため公式サンプル(examples/pr-review-comprehensive.yml)に倣い、
           # 単一エージェント＋カスタムプロンプト方式に切り替える。
+          #
+          # 【その後さらに壊れた】単一エージェント方式は「diff が1回の標準出力に収まる」
+          # ことを前提にしていたが、PR #26（780KB / 51.4% が生成物）でその前提が崩れた。
+          # Bash の読み取り窓が生成 C# で埋まり、最初の .go（210,000 バイト目）に到達しないまま
+          # 19 ターン消費して未投稿で終了。gh pr diff はパス絞り込みができないため、
+          # 生成物を除外できる make review/diff に切り替える（実体は make/review.mk）。
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
 
             上記プルリクエストのコードレビューを日本語で行ってください。手順:
-            1. `gh pr view` と `gh pr diff` で PR のタイトル・説明・変更差分を把握する
-               （出力はファイルにリダイレクトせず標準出力のまま扱うこと。リダイレクトは許可されていない）
+            1. PR の内容を次の順で把握する。**`gh pr diff` は使わないこと**
+               （生成物で読み取り窓が埋まり、実装コードに1行も到達しないまま終わる）:
+               a. `gh pr view` でタイトルと説明を読む
+               b. `make review/diff/stat` で変更の全体像（ファイル一覧と増減行数）を掴む
+               c. `make review/diff REVIEW_PATHS='<範囲>'` で範囲ごとに差分を読む。
+                  実装（internal/ cmd/ configs/）を先に、資料（docs/ 等）を後に読む。
+                  出力が途中で切れたら、その範囲をさらに下の階層へ分けて引き直す
+               （いずれも出力はファイルにリダイレクトせず標準出力のまま扱うこと。
+                 リダイレクトは許可されていない）
             2. リポジトリの CLAUDE.md / AGENTS.md のガイドラインを踏まえ、変更されたコードに絞ってレビューする
                （PR で導入されていない既存の問題は指摘しない）
             3. 重大な問題（バグ・ロジック誤り・明確な規約違反）に絞って指摘し、些末な指摘は避ける
@@ -67,9 +82,19 @@ jobs:
             5. 全体的な所感は `gh pr comment` でトップレベルに投稿する。
                指摘が無い場合も `gh pr comment` で「重大な問題は見つかりませんでした」と必ず一言残す
           # 単一エージェントは gh を標準出力で使うためリダイレクト拒否が起きない。
-          # 許可ツールは公式サンプル pr-review-comprehensive.yml に準拠。
+          # 許可ツールは公式サンプル pr-review-comprehensive.yml に準拠し、
+          # そこへ make review/* を足す。--allowedTools は既定を**置き換える**ので、
+          # 必要なものは全部ここに書く必要がある。ただし grep / head 等の読み取り専用コマンドは
+          # 組み込みで許可されているため書かない。
+          # gh pr diff は残してあるが、プロンプトで使用を禁じている（生成物で窓が埋まるため）。
           claude_args: |
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(make review/diff:*),Bash(make review/diff/stat:*),Bash(make review/files:*)"
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
+        env:
+          # Bash ツールの読み取り窓。既定 30,000 文字ではレビュー1範囲すら収まらない。
+          # 150,000 がハード上限で、これを超える設定は効かない。
+          BASH_MAX_OUTPUT_LENGTH: "150000"
+          # make review/diff の比較元。base が main 以外の PR でも正しく効くようにする。
+          REVIEW_BASE: origin/${{ github.event.pull_request.base.ref }}
 

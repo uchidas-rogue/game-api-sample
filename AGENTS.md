@@ -127,6 +127,10 @@
   - サイトのトップページ（`web/index.html`）が `README.md` の実測値を引用している箇所は、`ssot-assert: present-grep` ディレクティブで正本と照合している（`make docs/check` が html も走査する）。数値を引用するときは同じ形でディレクティブを添える。付け忘れは検知できないので、これが唯一の担保になる。カード本文の散文は手書きで機械判定の対象外——線引きの正本は [web/README.md](web/README.md)
   - ブラウザとプロキシが共有する上限値（参照チャンク数・質問文の長さ）は `scripts/sitegen` の const が正本で、索引に載せて両方に読ませる。2つのランタイムのどちらかに数字を直接書かない
   - チャットの中継（`web/worker/`）は Cloudflare Workers へ**手動デプロイ**する。索引は Worker にもバンドルされるため、文書を変えたら「`make site/gen` → 再デプロイ」までやらないとサイトと Worker で ID がずれる。手順は [web/worker/README.md](web/worker/README.md)
+- コードレビュー用の差分取得は `make review/diff`（生成物を除外。範囲は `REVIEW_PATHS='internal/driver'` のように絞る）。全体像は `make review/diff/stat`、対象ファイル一覧は `make review/files`。比較元は `REVIEW_BASE`（既定 `origin/main`）
+  - **`gh pr diff` を直接使わない。** `gh pr diff` はパス絞り込みができず、生成物が差分の過半を占めると Bash の読み取り窓（既定 30,000 文字・上限 150,000）が生成物で埋まり、実装コードに1行も到達しないままレビューが終わる。実際 PR #26 でこれが起き、レビューが 0 件のコメントで終了した
+  - 生成物の判定はパス列挙ではなく生成マーカー（`DO NOT EDIT`）で行う。パスで持つと本節と §1・§3 に散る除外リストへ整合を機械判定できないまま1つ足すことになるため。同じ理由でマーカー判定を選んだ前例が `scripts/archcheck` にある。マーカーを持てない `web/data/index.json`（JSON にコメント構文が無い）だけ `make/review.mk` で名指しする
+  - `.github/workflows/claude-code-review.yml` はこの3ターゲットを許可ツールに列挙し、`fetch-depth: 0` で base を解決できるようにしている。ターゲット名を変えたら同ファイルも直す
 - 利用可能なコマンドは `make help` で確認する（Makefile の `##` コメントが説明として表示される）
 - マイグレーションの DSN は `MIGRATE_DSN` 環境変数で上書き可能。ローカル以外の環境では明示的に指定する
 - `make test` / `make test/race` は `.testignore` に列挙されたパッケージを除外対象とする。除外理由はファイル内のコメントを参照すること。新規にテスト対象外としたいパッケージが出た場合は、**除外理由をコメントで明記したうえで** `.testignore` にパターンを追加する。逆に interface 定義のみのパッケージへ実装を足す等で除外を解除する場合は、`.testignore` から該当行を削除し §3 のカバレッジ目標に従ってテストを整備する
