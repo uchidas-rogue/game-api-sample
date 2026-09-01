@@ -39,3 +39,4 @@ include make/docs.mk
 include make/terraform.mk
 include make/loadtest.mk
 include make/site.mk
+include make/review.mk
