@@ -1,0 +1,24 @@
+# 生成物を GitHub の diff で既定折りたたみにし、言語統計からも外す。
+#
+# 捕捉した実例: PR #26（gRPC delivery 追加）は 71 ファイル / 780KB のうち 51.4% が
+# 生成物で、PR 画面が生成 C#（3,494 行）と索引 JSON で埋まっていた。
+#
+# ここはパス列挙になる。生成物の判定は原則として生成マーカー（DO NOT EDIT）で行い
+# パス列挙を増やさない方針で（AGENTS.md §5、実体は make/review.mk）、この方針から外れるのは
+# linguist-generated が GitHub 側の仕様でマーカー判定にできないため。
+# 列挙が古くなっても影響は「折りたたまれない」だけで、誤った正しさの信号は出ない。
+#
+# 注意: これは GitHub の表示にしか効かない。`gh pr diff`（API の patch）は
+# .gitattributes を見ないので、レビューの読み取り側は make review/diff を使うこと。
+
+# protoc-gen-go / protoc-gen-go-grpc（make proto/gen）
+internal/driver/grpc/gen/**               linguist-generated=true
+# mockgen（make mock/gen）
+internal/**/mock/*.go                     linguist-generated=true
+# sqlc（make db/sqlc/gen）
+internal/infrastructure/mysql/sqlc/*.go   linguist-generated=true
+deployments/mysql/schema.sql              linguist-generated=true
+# buf remote plugin（make proto/gen/csharp）
+clients/unity/Runtime/Generated/**        linguist-generated=true
+# scripts/sitegen（make site/gen）
+web/data/index.json                       linguist-generated=true
