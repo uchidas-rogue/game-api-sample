@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"time"
 
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
@@ -13,11 +12,6 @@ import (
 
 	rankingdomain "github.com/uchidas-rogue/game-api-sample/internal/domain/ranking"
 )
-
-// retryAfter はランキング未構築時にクライアントへ提示する再試行までの待ち時間。
-// 復旧は再構築バッチの手動実行を伴うため、即時の再試行が実る値にはしない。
-// HTTP delivery の Retry-After ヘッダ（internal/driver/http/ranking）と同じ値にする。
-const retryAfter = 30 * time.Second
 
 // handleError は usecase のエラーを gRPC の status へ変換する。
 // 分岐と対応表は docs/testing/grpc-ranking.md §4 が正本。
@@ -65,7 +59,7 @@ func (h *Handler) handleError(ctx context.Context, err error) error {
 func unavailableError() error {
 	st := status.New(codes.Unavailable, "ranking is unavailable")
 
-	detailed, err := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(retryAfter)})
+	detailed, err := st.WithDetails(&errdetails.RetryInfo{RetryDelay: durationpb.New(rankingdomain.RankingUnavailableRetryAfter)})
 	if err != nil {
 		return st.Err()
 	}

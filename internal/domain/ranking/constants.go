@@ -1,5 +1,7 @@
 package ranking
 
+import "time"
+
 // ランキング取得の制限値。
 const (
 	DefaultRankingLimit = 10
@@ -33,6 +35,15 @@ const (
 	// あれは ZSet 反映の「前」に飛ぶ通知なので、購読して読むと反映前の古い値を配ることになる
 	// （docs/testing/ranking-watch.md §0-1）。
 	RankingUpdatedChannel = "ranking:updated"
+)
+
+// エラー応答に使う再試行間隔。
+const (
+	// RankingUnavailableRetryAfter はランキング未構築（Redis揮発を含む）時にクライアントへ
+	// 提示する再試行までの待ち時間。復旧は再構築バッチの手動実行を伴うため、即時の再試行が
+	// 実る値にはしない。HTTP の Retry-After ヘッダと gRPC の RetryInfo で同じ値を使うため
+	// ここに一本化する。
+	RankingUnavailableRetryAfter = 30 * time.Second
 )
 
 // IsValidScore はスコア・ポイントが有効範囲内かを判定する。

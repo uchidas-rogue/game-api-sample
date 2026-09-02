@@ -178,5 +178,5 @@ func assertRetryDelay(t *testing.T, st *status.Status, want bool) {
 	}
 	require.True(t, found, "RetryInfo が必要")
 	assert.Positive(t, seconds, "RetryDelay は正の秒数")
-	assert.Equal(t, int64(retryAfter.Seconds()), seconds, "RetryDelay は retryAfter と一致する")
+	assert.Equal(t, int64(rankingdomain.RankingUnavailableRetryAfter.Seconds()), seconds, "RetryDelay は RankingUnavailableRetryAfter と一致する")
 }

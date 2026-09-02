@@ -377,6 +377,12 @@ flowchart TD
   retry 記録も巻き戻る
 - `IncrementRetry` 自体の失敗は**ログのみ**（次ティックで再処理される）。一方
   `ClaimByID` / `MarkProcessed` の失敗は**ティックを中断する**（DB が壊れている）
+- この経路は `applyRedisAfterCommit` を**1イベントごとに**呼ぶため、バッチ経路（1バッチ1回）
+  に比べて Redis PUBLISH 往復の回数が増える。ループバック Redis の PUBLISH は概ね1ms未満と
+  見積もられ、本経路の実測スループット（並列化のみの段階で約200 events/sec、
+  concurrency=8 ≒ 1イベントあたり約40ms。冒頭の実測値を参照）の大半は MySQL 側の
+  COMMIT(fsync) が占めるため、publish 往復の追加はこの経路の律速要因にはなりにくい
+  （実測ではなく見積もり。2026-09-02時点でローカルに実 Redis を用意できず実測はできていない）
 - **`applied` に数えるのは「`MarkProcessed` が成功した」か「`found=false`」のときだけ**。
   `applyEventInTx` が失敗したイベントは前進していないので数えない（§0-2 の判定に使う）
 - **dead-letter のログは `IncrementRetry` が成功した後にだけ出す**（§0-4）。記録に失敗した

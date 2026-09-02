@@ -343,6 +343,14 @@ type batchWork struct {
 // 反映に成功したときだけ、ランキング更新を購読者へ publish する。失敗パスで publish
 // しないのは、キャッシュが遅れている事実を push で嘘にしないため。取りこぼしても
 // 次のバッチの成功時に追いつく（購読側の設計は docs/testing/ranking-watch.md §0-1）。
+//
+// フォールバック経路（applyPerEvent）ではこの関数が1イベントごとに呼ばれ、
+// バッチ経路（1バッチ1回）に比べて publish 往復の回数が増える。ループバック Redis の
+// PUBLISH は概ね1ms未満で完了する見積もりであり、フォールバック経路の実測スループット
+// （約200 events/sec、concurrency=8 ≒ 1イベントあたり約40ms、docs/testing/outbox-worker.md
+// 参照）の大半は MySQL 側の COMMIT(fsync) が占めるため、publish 往復の追加はこの経路の
+// 律速要因にはなりにくい（実測ではなく見積もり。2026-09-02時点でローカルに実 Redis を
+// 用意できず実測はできていない）。
 func (w *Worker) applyRedisAfterCommit(ctx context.Context, work redisWork, eventCount int) {
 	if len(work.users) == 0 && len(work.guilds) == 0 {
 		return

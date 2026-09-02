@@ -88,8 +88,8 @@ func TestRegister_AllServices(t *testing.T) {
 	}
 
 	// proto の rpc 定義（proto/game/ranking/v1/ranking.proto）と対応する。
-	// WatchUserRankings は本ハンドラでは未実装だが、UnimplementedRankingServiceServer の
-	// 埋め込みにより登録はされる（呼ぶと codes.Unimplemented）。
+	// WatchUserRankings は internal/driver/grpc/ranking/watch.go で実装済み。本テストは
+	// 全 RPC がサーバーに登録されていることのみを検証する（実処理の検証は watch_test.go）。
 	expected := []string{
 		"GetUserRankings",
 		"GetGuildRankings",

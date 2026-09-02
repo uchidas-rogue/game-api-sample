@@ -5,8 +5,11 @@
 テスト: [internal/infrastructure/server/grpc_test.go](../../internal/infrastructure/server/grpc_test.go)
 
 運用ルールは [README.md](README.md)。HTTP 側の対になる設計は
-[internal/infrastructure/server/echo.go](../../internal/infrastructure/server/echo.go) と
-[http-router.md](http-router.md)。
+[internal/infrastructure/server/echo.go](../../internal/infrastructure/server/echo.go) の
+`TestNew_MiddlewareOrder` 等（ミドルウェア登録順を主対象として文書化した md は現時点で無く、
+<!-- ssot-assert: manual '「登録順を主対象として文書化した md が無い」は特定ファイルの不在ではなく他mdの主題を人が判定する必要があるため機械照合できない。docs/testing/ 配下に該当ドキュメントを新設したらこの記述と参照を直す' -->
+テストのみで担保している）。ルーティングの nil チェックについては [http-router.md](http-router.md)
+を参照。
 
 この文書が守る対象は3つ。
 
@@ -29,8 +32,8 @@ StreamRequestID → StreamAccessLog → StreamRecover
 **recover を観測系より外側に置いてはならない。** 外側に置くと panic した RPC は
 アクセスログにも request_id にも残らず、「特定の RPC だけ Internal が返る」という
 症状しか運用側に見えなくなる。HTTP 側で BodyLimit をアクセスログより外に置いて
-413 が観測できなくなったのと同じ失敗である（[http-router.md](http-router.md) と
-`TestNew_MiddlewareOrder` を参照）。
+413 が観測できなくなったのと同じ失敗である（`internal/infrastructure/server/echo.go` の
+`TestNew_MiddlewareOrder` を参照。文書化した md は無い）。
 
 ### 登録順を守るための二重の検査
 
