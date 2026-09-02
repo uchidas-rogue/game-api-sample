@@ -892,7 +892,7 @@
       "anchor": "grpc-サーバ起動とインターセプタのテスト設計",
       "title": "gRPC サーバ起動とインターセプタのテスト設計",
       "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計",
-      "text": "対象: internal/infrastructure/server/grpc.go /\ninternal/infrastructure/server/interceptor.go\nテスト: internal/infrastructure/server/grpc_test.go\n\n運用ルールは README.md。HTTP 側の対になる設計は\ninternal/infrastructure/server/echo.go と\nhttp-router.md。\n\nこの文書が守る対象は3つ。\n\n1. インターセプタの登録順 — 観測系（RequestID → アクセスログ）を最外側に固定する（AGENTS.md §2）\n2. RPC 1本の処理チェーン — request_id の採番・アクセスログ・panic の変換\n3. graceful stop の三段構え — SIGTERM でシャットダウンが完了しなくなる事故の回帰テスト\n\n---"
+      "text": "対象: internal/infrastructure/server/grpc.go /\ninternal/infrastructure/server/interceptor.go\nテスト: internal/infrastructure/server/grpc_test.go\n\n運用ルールは README.md。HTTP 側の対になる設計は\ninternal/infrastructure/server/echo.go の\nTestNew_MiddlewareOrder 等（ミドルウェア登録順を主対象として文書化した md は現時点で無く、\nテストのみで担保している）。ルーティングの nil チェックについては http-router.md\nを参照。\n\nこの文書が守る対象は3つ。\n\n1. インターセプタの登録順 — 観測系（RequestID → アクセスログ）を最外側に固定する（AGENTS.md §2）\n2. RPC 1本の処理チェーン — request_id の採番・アクセスログ・panic の変換\n3. graceful stop の三段構え — SIGTERM でシャットダウンが完了しなくなる事故の回帰テスト\n\n---"
     },
     {
       "id": "docs/testing/grpc-server.md#1-インターセプタの登録順",
@@ -900,7 +900,7 @@
       "anchor": "1-インターセプタの登録順",
       "title": "1. インターセプタの登録順",
       "trail": "docs/testing/grpc-server.md \u003e gRPC サーバ起動とインターセプタのテスト設計 \u003e 1. インターセプタの登録順",
-      "text": "grpc.ChainUnaryInterceptor(a, b, c) は a が最外側で、echo.Echo.Use と同じ\n「先に登録したものが外側」の並びになる。したがって HTTP と同じ規約をそのまま写せる。\n\n```\nUnaryRequestID  → UnaryAccessLog  → UnaryRecover\nStreamRequestID → StreamAccessLog → StreamRecover\n```\n\nrecover を観測系より外側に置いてはならない。 外側に置くと panic した RPC は\nアクセスログにも request_id にも残らず、「特定の RPC だけ Internal が返る」という\n症状しか運用側に見えなくなる。HTTP 側で BodyLimit をアクセスログより外に置いて\n413 が観測できなくなったのと同じ失敗である（http-router.md と\nTestNew_MiddlewareOrder を参照）。"
+      "text": "grpc.ChainUnaryInterceptor(a, b, c) は a が最外側で、echo.Echo.Use と同じ\n「先に登録したものが外側」の並びになる。したがって HTTP と同じ規約をそのまま写せる。\n\n```\nUnaryRequestID  → UnaryAccessLog  → UnaryRecover\nStreamRequestID → StreamAccessLog → StreamRecover\n```\n\nrecover を観測系より外側に置いてはならない。 外側に置くと panic した RPC は\nアクセスログにも request_id にも残らず、「特定の RPC だけ Internal が返る」という\n症状しか運用側に見えなくなる。HTTP 側で BodyLimit をアクセスログより外に置いて\n413 が観測できなくなったのと同じ失敗である（internal/infrastructure/server/echo.go の\nTestNew_MiddlewareOrder を参照。文書化した md は無い）。"
     },
     {
       "id": "docs/testing/grpc-server.md#登録順を守るための二重の検査",
@@ -1364,7 +1364,7 @@
       "anchor": "2-2-イベント単位経路applypereventバッチ失敗時のフォールバック",
       "title": "2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック）",
       "trail": "docs/testing/outbox-worker.md \u003e outbox worker のテスト設計 \u003e 2. runOnce（1ティックぶんの処理） \u003e 2-2. イベント単位経路（applyPerEvent・バッチ失敗時のフォールバック）",
-      "text": "listCandidates で候補を取り、concurrency 本の goroutine で1件ずつ独立した tx に流す。\n\n設計上の要点（テストで守る不変条件）:\n\n- この経路の存在意義は head-of-line blocking の回避。バッチは1件でも失敗すると全体が\n  ロールバックされるため、恒久失敗イベントが混ざるとそのバッチが永久に前進しない。\n  1件ずつ独立した tx にすれば失敗イベントを隔離して残りを前進させられる\n- MySQL は tx 内・Redis は COMMIT 後（§0-1）。バッチ経路と同じ理由で、Redis 反映は\n  MarkProcessed の COMMIT が確定してから1回だけ行い、失敗しても retry 記録に回さない\n- applyEventInTx の失敗は別 tx で IncrementRetry する。同一 tx だと ROLLBACK で\n  retry 記録も巻き戻る\n- IncrementRetry 自体の失敗はログのみ（次ティックで再処理される）。一方\n  ClaimByID / MarkProcessed の失敗はティックを中断する（DB が壊れている）\n- applied に数えるのは「MarkProcessed が成功した」か「found=false」のときだけ。\n  applyEventInTx が失敗したイベントは前進していないので数えない（§0-2 の判定に使う）\n- dead-letter のログは IncrementRetry が成功した後にだけ出す（§0-4）。記録に失敗した\n  イベントは retry_count が据え置きのまま次ティックで再処理されるので、まだ打ち切られていない"
+      "text": "listCandidates で候補を取り、concurrency 本の goroutine で1件ずつ独立した tx に流す。\n\n設計上の要点（テストで守る不変条件）:\n\n- この経路の存在意義は head-of-line blocking の回避。バッチは1件でも失敗すると全体が\n  ロールバックされるため、恒久失敗イベントが混ざるとそのバッチが永久に前進しない。\n  1件ずつ独立した tx にすれば失敗イベントを隔離して残りを前進させられる\n- MySQL は tx 内・Redis は COMMIT 後（§0-1）。バッチ経路と同じ理由で、Redis 反映は\n  MarkProcessed の COMMIT が確定してから1回だけ行い、失敗しても retry 記録に回さない\n- applyEventInTx の失敗は別 tx で IncrementRetry する。同一 tx だと ROLLBACK で\n  retry 記録も巻き戻る\n- IncrementRetry 自体の失敗はログのみ（次ティックで再処理される）。一方\n  ClaimByID / MarkProcessed の失敗はティックを中断する（DB が壊れている）\n- この経路は applyRedisAfterCommit を1イベントごとに呼ぶため、バッチ経路（1バッチ1回）\n  に比べて Redis PUBLISH 往復の回数が増える。ループバック Redis の PUBLISH は概ね1ms未満と\n  見積もられ、本経路の実測スループット（並列化のみの段階で約200 events/sec、\n  concurrency=8 ≒ 1イベントあたり約40ms。冒頭の実測値を参照）の大半は MySQL 側の\n  COMMIT(fsync) が占めるため、publish 往復の追加はこの経路の律速要因にはなりにくい\n  （実測ではなく見積もり。2026-09-02時点でローカルに実 Redis を用意できず実測はできていない）\n- applied に数えるのは「MarkProcessed が成功した」か「found=false」のときだけ。\n  applyEventInTx が失敗したイベントは前進していないので数えない（§0-2 の判定に使う）\n- dead-letter のログは IncrementRetry が成功した後にだけ出す（§0-4）。記録に失敗した\n  イベントは retry_count が据え置きのまま次ティックで再処理されるので、まだ打ち切られていない"
     },
     {
       "id": "docs/testing/outbox-worker.md#テスト仕様表",
