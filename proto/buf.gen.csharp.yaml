@@ -1,0 +1,14 @@
+# C# 生成物のテンプレート。Unity クライアント（clients/unity/）向け。
+#
+# remote plugin は buf.build（BSR）への到達性に依存するためローカル完結ではない。
+# したがって CI の drift 検知（make proto/gen/check）は Go 生成物と
+# FileDescriptorSet のダイジェストだけを見る。詳細は make/proto.mk のコメント。
+#
+# Unity は NuGet を標準サポートしないため、生成済み C# はリポジトリにコミットする。
+version: v2
+
+plugins:
+  - remote: buf.build/protocolbuffers/csharp
+    out: clients/unity/Runtime/Generated
+  - remote: buf.build/grpc/csharp
+    out: clients/unity/Runtime/Generated

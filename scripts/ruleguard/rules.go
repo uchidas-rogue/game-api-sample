@@ -46,6 +46,33 @@ func echoPreMiddleware(m dsl.Matcher) {
 		Report(`echo.Echo.Pre は使わない（AGENTS.md §2）。Pre はアクセスログより外側で走るため、そこで短絡したリクエストはアクセスログにも request_id にも残らない。e.Use でアクセスログの後ろに登録すること`)
 }
 
+// grpcSingleInterceptor は AGENTS.md §2「HTTP ミドルウェアの登録順」を gRPC へ写した
+// 規約（観測系を最外側に固定する）のうち、単数形インターセプタの禁止を強制する。
+//
+// 【この規則が守るもの / 既知の実例】
+// echo 側で BodyLimit をアクセスログより外側に登録した結果、413 で弾いたリクエストが
+// アクセスログにも request_id にも残らなくなった事例と同じものを gRPC で防ぐ。
+// gRPC の登録順は grpc.ChainUnaryInterceptor / ChainStreamInterceptor の引数の並びで
+// 決まり、TestNewGRPC_UnaryInterceptorOrder / TestNewGRPC_StreamInterceptorOrder が
+// NewGRPC の AST を読んでその並びを検証している。
+// ところが単数形の grpc.UnaryInterceptor / grpc.StreamInterceptor を併用すると、
+// grpc-go 側では単数形が別枠で保持され Chain 系と合成されるため、AST 検査が
+// 見ていない場所にインターセプタを1本足せてしまう。recover をそこへ足せば、
+// 検査を通ったまま「panic した RPC がアクセスログに残らない」状態を作れる。
+// echo.Echo.Pre を禁止して TestNew_MiddlewareOrder の迂回を塞いだのと同じ構図。
+//
+// 【なぜ順序そのものは ruleguard で書けないか】
+// ruleguard は式単位のマッチで、引数の並びが規約どおりかを条件にできない。
+// 並びは AST を直接読むテスト側の担当（determ. §3）。ここは「呼び出しの有無」だけを見る。
+//
+// 【違反が出たときの直し方】
+// //nolint で抜けない（determ. §2）。grpc.ChainUnaryInterceptor /
+// grpc.ChainStreamInterceptor の引数へ、観測系より後ろの位置で追加すること。
+func grpcSingleInterceptor(m dsl.Matcher) {
+	m.Match(`grpc.UnaryInterceptor($*_)`, `grpc.StreamInterceptor($*_)`).
+		Report(`単数形の grpc.UnaryInterceptor / grpc.StreamInterceptor は使わない（AGENTS.md §2）。Chain 系と併用すると登録順の AST 検査（TestNewGRPC_*InterceptorOrder）が見ない場所にインターセプタが増え、観測系より外側で短絡させられる。grpc.ChainUnaryInterceptor / grpc.ChainStreamInterceptor の引数として、観測系の後ろに登録すること`)
+}
+
 // testGlobalWrite は AGENTS.md §3 Flaky 防止「テストコードでパッケージスコープの変数を
 // 書き換えない」を強制する。
 //

@@ -22,7 +22,9 @@
 # 1. Architecture & Design Rules (Clean Architecture)
 - 本節と §2 の規約のうち機械判定できるものは `.golangci.yml` で強制している（`make lint`）。規約を追加・変更したら、同ファイルの判定も併せて更新する。新しい外部ライブラリを使う場合は `depguard` の該当層の `allow` に理由付きで追加する（`//nolint` で個別に抜け道を作らない）
 - 層構成: `driver`(interface adapters; HTTP handler / batch / worker 等の delivery) → `usecase` → `domain` の順に内側へ依存し、逆方向の import は禁止
-- `driver` 配下は配信形式ごとにサブディレクトリを切る（`internal/driver/http`, `internal/driver/batch`, `internal/driver/worker`）。新規 driver（gRPC, SQS consumer 等）を追加する際もこの配下に配置する
+- `driver` 配下は配信形式ごとにサブディレクトリを切る（`internal/driver/http`, `internal/driver/grpc`, `internal/driver/batch`, `internal/driver/worker`）。新規 driver（SQS consumer 等）を追加する際もこの配下に配置する
+  - 配信形式のディレクトリ直下には `.go` を置かず、必ずさらにサブディレクトリを切る（`internal/driver/grpc/ranking` 等）。`internal/driver/grpc` 直下に置くとパッケージ名 `grpc` が `google.golang.org/grpc` と衝突する
+  - protoc の生成物は `internal/driver/grpc/gen/` に置く。生成物は lint 対象外（`.golangci.yml` の `exclusions.paths`）かつテスト対象外（`.testignore`）で、この2つと `make/proto.mk` の `PROTO_ARTIFACT_PATHS` は**3点セットで更新する**（片方だけ直すと、カバレッジ分母に生成物が混ざるか drift 検知が効かなくなる）
 - `infrastructure` 層は `usecase` が定義する interface を実装する。`usecase`/`domain` から `infrastructure` を直接 import してはならない（DI は `internal/di` で行う）
 - `domain` 層: ビジネスルールとエンティティのみ。Echo・sqlc・MySQL 等の外部技術および sqlc 生成型に依存しない
 - `usecase` 層: ユースケース実装とトランザクション境界制御。リポジトリ等の interface もこの層で定義する
@@ -42,9 +44,14 @@
 - HTTP ミドルウェアの登録順: 観測系（`RequestID` → アクセスログ）を**先頭**に登録し、リクエストを短絡しうるミドルウェア（ボディ上限・認証・レート制限等）は必ずその**後ろ**に置く。前に置くと、弾いたリクエストがアクセスログにも request_id にも残らず、拒否されている事実を運用側から観測できなくなる
   - `echo.Echo.Pre` は使わない。`Pre` はアクセスログより外側で完結するため、上の順序を迂回してしまう。ルーティング前の書き換えが必要になったら、まず本規約の見直しから行う
   - 判定: 登録順は `TestNew_MiddlewareOrder`（`New` の AST を検査）、`Pre` の不使用は `.golangci.yml` の ruleguard が強制する
-- 時刻: `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
-  - 現時点で Clock インターフェースの実装は存在しない（`time.Now()` を使う機能がまだ無いため）。時刻依存の機能を追加する際に、`usecase` 層へ interface を定義し `infrastructure` 層に実装を置いて DI する
-    <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal cmd configs --include=*.go --exclude=*_test.go -->
+- gRPC インターセプタの登録順: 上の HTTP ミドルウェアと**同じ規約**が適用される。`grpc.ChainUnaryInterceptor` / `ChainStreamInterceptor` は先に渡したものが最外側になるため、観測系（RequestID → アクセスログ）を先頭に置き、recover 等は後ろに置く。unary と stream で同じ並びにする
+  - 単数形の `grpc.UnaryInterceptor` / `grpc.StreamInterceptor` は使わない。Chain と併用すると片方が黙って無視されるうえ、AST 検査は Chain しか見ないため順序規約に穴が空く（`echo.Echo.Pre` を禁じているのと同じ理由）
+  - 判定: 登録順は `TestNewGRPC_UnaryInterceptorOrder` / `TestNewGRPC_StreamInterceptorOrder`（`NewGRPC` の AST を検査）、単数形の不使用は `.golangci.yml` の ruleguard が強制する
+- gRPC の graceful shutdown: `grpc.Server.GracefulStop()` は**進行中のストリームが終わるまでブロックする**。server streaming を持つ以上、これを単純に呼ぶと SIGTERM でシャットダウンが完了しない。「配信側へ停止を伝える → `GracefulStop` をタイムアウト付きで待つ → 超過したら `Stop`」の三段構えにする（実装は `internal/infrastructure/server/grpc.go`）
+- 時刻: **業務ロジックでは** `time.Now()` を直接呼ばず、Clock インターフェースを DI してテスト可能にする
+  - 例外は**観測用の経過時間計測**（アクセスログの latency 等）で、`infrastructure` 層に限り直接呼んでよい。計測値そのものをテストで固定する必要が無く、Clock を通しても検証内容が変わらないため。`.golangci.yml` の forbidigo も同じ範囲（`^internal/infrastructure/`）を除外しており、下の照合はその範囲を除いた層を見ている
+  - 現時点で Clock インターフェースの実装は存在しない（時刻に依存する**業務ロジック**がまだ無いため）。時刻依存の機能を追加する際に、`usecase` 層へ interface を定義し `infrastructure` 層に実装を置いて DI する
+    <!-- ssot-assert: absent-grep 'time\.Now\(\)' internal/domain internal/usecase internal/driver cmd configs --include=*.go --exclude=*_test.go -->
 - 設定管理: 環境変数のパースは `configs/config.go` の `Config` に集約する。環境変数のキー名と既定値は同パッケージで `const` 定義し、各層には `*Config` を DI して渡す。新規の設定値追加時は `Config` 構造体・既定値・`Load()` の3箇所を更新する
 
 # 3. Testing Rules (規約)
@@ -63,6 +70,7 @@
 - テスト設計文書: `usecase` / `driver` の新規実装・分岐変更は、**実装より先に** `docs/testing/<機能>.md` にフローチャートとテスト仕様表を作る（順序は 図 → 失敗するテスト → 実装）。`domain` の純粋関数・値オブジェクトは図を作らない。作成対象の判定・仕様表の形・図の保守トリガ・レビューチェックリストは [docs/testing/README.md](docs/testing/README.md) が正本
   - 仕様表とテストコードの対応づけ（表の直前の `<!-- testcases: ... -->` と、テスト側の `// #<番号> <図のパス>` マーカー）は**必須**。`scripts/doccheck` が行数・ケース順・図の終端ノードの網羅を突合し、`make test` で落とす。書き方の正本は [docs/testing/README.md](docs/testing/README.md) §3
 - API レスポンス契約: `driver/http` のレスポンス構造は `internal/driver/http/testdata/contracts/*.json` を正本とし、`internal/testutil/apicontract` で**構造のみ**を検証する（値の妥当性はハンドラのテストの責務）。json タグの追加・削除・リネームをしたら同じ PR で契約ファイルも更新する。これはレスポンスを解釈する側（k6 シナリオ等）の変更が必要になるサイン
+- gRPC の契約: `driver/grpc` のレスポンス構造は `.proto` **自体が正本**なので、HTTP のような契約 JSON の写しは作らない。代わりに3点で担保する——命名は `make proto/lint`、wire 互換は `make proto/breaking`（フィールド番号の再利用・型変更・削除を検出）、pb と domain のフィールド集合の対応は `internal/driver/grpc/ranking/contract_test.go`（`protoreflect` で突合し、domain に足したフィールドを proto へ写し忘れると落ちる）
 - アサーション: `testify/assert`/`require`（致命的失敗は `require`）
 - モック: `uber-go/mock` を使用。配置は対象 interface と同じ層の `mock/` サブディレクトリ（例: `internal/usecase/gacha/mock/`）。`//go:generate` ディレクティブは interface 定義ファイルに記述する
   - 生成物は手動編集しない。更新は `make mock/gen` の再実行のみ。**再生成が必要かを事前に判断しなくてよい**（判断を誤っても `make gen/check` が再生成 + 差分検知で捕まえる。CI 必須）。interface を触ったら迷わず `make mock/gen` を実行する
@@ -70,6 +78,7 @@
   - `//go:generate` の `-destination` / `-package` を変更した場合のみ、`make/app.mk` の `GEN_ARTIFACT_PATHS` と `.golangci.yml` の除外パス、`.testignore` も併せて更新する（この連動は `gen/check` では検知できない）
 - 層別カバレッジ・テスト方針:
   - 指標は **文（statement）カバレッジ**。閾値は `make test/cover/check` が判定し、CI で必須（未達なら失敗）。閾値の実体は `scripts/coverage-check.sh` にあり、本節がその正本。**片方だけ変えない**
+    - 閾値を設定した層が**1文も計測されていない場合も失敗**にする（`計測なし` → NG）。層のディレクトリを改名した・`.testignore` を広げすぎた・その層のテストが1本も走っていない、のいずれでも閾値がまるごと無効化されるため。以前は SKIP として通しており、`internal/domain` の計測行を消しても CI が緑になった
   - Go には分岐カバレッジを出す標準手段が無い。分岐の網羅は `docs/testing/` の設計図に対する**パスカバレッジ**で代替する（[docs/testing/README.md](docs/testing/README.md) §4）
   - `driver` 層: 変換とエラー経路の網羅。カバレッジ **90% 以上**
   - `domain` 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ **100%**（外部依存が無く達成可能なため。スラックが無いので、未カバーが出たらテストを足すか、テスト対象外である理由を明記して `.testignore` で除外する）
@@ -111,6 +120,8 @@
   - 検査を追加するときは、必ず「その検査が捕捉する既知の実例」をスクリプトのコメントに書く。実例を伴わない検査は誤検出源になり、いずれ無効化されるため
   - 「現時点では〜が無い」のような時点依存の記述には、実態を照合する `ssot-assert` ディレクティブを同じ行か直後の行に添える（記法の正本は `scripts/docs-ssot-check.sh` 冒頭のコメント）。機械照合が原理的に不可能な場合は `manual '<理由>'` で理由を残す。添えないと `make docs/check` が WARN を出す
   - ERROR は実態と矛盾している記述（必ず直す）。WARN は将来腐る形をしている記述（放置するなら、なぜ機械照合できないかを該当箇所に残す）
+- Protocol Buffers の生成は `make proto/gen`（Go）と `make proto/gen/csharp`（Unity 向け C#）。`buf` を直接叩かない。buf のバージョンは `.buf-version`、protoc プラグインは `go.mod`（protoc-gen-go）と `.protoc-gen-go-grpc-version` で固定し、`make proto/gen` が同じ版を `./bin` へ導入する
+  - C# 生成は buf の remote plugin を使うためネットワークが要る。CI の必須ゲートに外部サービスへの到達性を持ち込まないよう Go 生成と分離してあり、drift 検知（`make proto/gen/check`）は Go 生成物の差分と、`.proto` の FileDescriptorSet ダイジェストの突合で行う。既知の検出漏れは `make/proto.mk` のコメントを参照
 - 静的解析は `make lint`（golangci-lint、全件）。`make lint/diff` は `origin/main` からの差分のみ、`make lint/fix` は自動修正可能な指摘の修正。golangci-lint のバージョンは `.golangci-version` の1箇所で管理し、`make lint` が同じ版を `./bin` へ導入する（ローカルと CI で同一の判定になるようにするため。この2つを別々に指定しない）
 - AWS インフラの初回構築は `make tf/bootstrap`（state 保管先の S3/DynamoDB 作成）→ `make tf/init` → `terraform plan`/`apply` の順。詳細は [terraform/ARCHITECTURE.md](terraform/ARCHITECTURE.md)
 - ポートフォリオサイト（`web/`）の知識源は `make site/gen` で文書から生成する。取り込み対象の正本は `scripts/sitegen` の `rootDocs()` と `docs/**` で、ここに一覧を写さない（写すと片方だけ古くなる。実際 `CLAUDE.md` が取り込み対象なのに一覧から漏れていた）。対象の文書を変更したら再生成が要る（サイト専用の写しを作らないための仕組み）。再生成漏れは `make site/check` が検知し、CI と `.github/workflows/pages.yml` が公開前に実行する

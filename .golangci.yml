@@ -232,6 +232,8 @@ linters:
             - github.com/uchidas-rogue/game-api-sample/internal/driver
             - github.com/uchidas-rogue/game-api-sample/internal/testutil
             - github.com/labstack/echo/v4
+            - google.golang.org/grpc # status/codes の検証、bufconn（test/bufconn は同 prefix）
+            - google.golang.org/protobuf # 生成メッセージ型・protoreflect（pb ⇄ domain の契約テスト）
             - github.com/stretchr/testify
             - go.uber.org/mock
         internal-driver:
@@ -244,6 +246,11 @@ linters:
             - github.com/uchidas-rogue/game-api-sample/internal/usecase
             - github.com/uchidas-rogue/game-api-sample/internal/driver
             - github.com/labstack/echo/v4 # HTTP delivery
+            - google.golang.org/grpc # gRPC delivery（status/codes/metadata）
+            - google.golang.org/protobuf # 生成メッセージ型
+            # ErrRankingUnavailable に RetryInfo を載せるために使う（HTTP の Retry-After ヘッダに相当）。
+            # grpc-go の推移依存に既に含まれるため go.sum は増えない。
+            - google.golang.org/genproto/googleapis/rpc/errdetails
 
         # ---- infrastructure: usecase の interface を実装する。driver は禁止 ----
         internal-infrastructure-test:
@@ -256,6 +263,7 @@ linters:
             - github.com/uchidas-rogue/game-api-sample/internal/infrastructure
             - github.com/uchidas-rogue/game-api-sample/internal/testutil
             - github.com/labstack/echo/v4
+            - google.golang.org/grpc # gRPC サーバ実体 + test/bufconn（インターセプタの振る舞い検証）
             - github.com/redis/go-redis/v9
             - github.com/go-sql-driver/mysql
             - github.com/stretchr/testify
@@ -284,6 +292,7 @@ linters:
             - github.com/uchidas-rogue/game-api-sample/internal/usecase
             - github.com/uchidas-rogue/game-api-sample/internal/infrastructure
             - github.com/labstack/echo/v4 # HTTP サーバ実体
+            - google.golang.org/grpc # gRPC サーバ実体（サーバ生成・インターセプタ）
             - github.com/redis/go-redis/v9 # Redis クライアント
             - github.com/go-sql-driver/mysql # MySQL ドライバ
 
@@ -297,6 +306,13 @@ linters:
     paths:
       - internal/.*/mock/
       - internal/infrastructure/mysql/sqlc/
+      # protoc-gen-go / protoc-gen-go-grpc の生成物。
+      # pb.go は File_..._proto / file_..._rawDesc といったパッケージ変数を持つため
+      # gochecknoglobals に当たる。golangci-lint v2 の exclusions.generated が
+      # 生成ファイルを既定で除外するが、sqlc の前例に倣って暗黙に頼らず明記する。
+      # buf.gen.yaml の out / module を変えたらここも更新すること
+      # （.testignore・make/proto.mk の PROTO_ARTIFACT_PATHS と 3 点セット）。
+      - internal/driver/grpc/gen/
 
     rules:
       # テストコードでは、後始末や表明のための戻り値無視を許容する。
@@ -340,6 +356,12 @@ linters:
         linters: [forbidigo]
         text: context\.(Background|TODO)
       - path: ^internal/infrastructure/server/echo\.go$
+        linters: [forbidigo]
+        text: context\.(Background|TODO)
+      # gRPC も同様。加えて GracefulStop はストリームが閉じるまでブロックするため、
+      # 「配信停止 → GracefulStop をタイムアウト付きで待つ → 超過したら Stop」の
+      # 三段構えが要る。その待ち時間の計測に呼び出し元とは独立した context を使う。
+      - path: ^internal/infrastructure/server/grpc\.go$
         linters: [forbidigo]
         text: context\.(Background|TODO)
       # slog.Default(): main / 初期化のみ許可（cmd/ は上で除外済み）。

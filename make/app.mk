@@ -1,6 +1,6 @@
 # Go アプリ開発系（起動 / テスト / ビルド / 静的解析 / モック生成）
 
-.PHONY: run run/debug run/outbox-worker test test/v test/race test/cover test/cover/check build build/batch build/outbox-worker build/all lint lint/diff lint/fix tools/golangci-lint tools/mockgen mock/gen gen/check
+.PHONY: run run/debug run/grpc run/outbox-worker test test/v test/race test/cover test/cover/check build build/batch build/grpc build/outbox-worker build/all lint lint/diff lint/fix tools/golangci-lint tools/mockgen mock/gen gen/check
 
 # golangci-lint のバージョンは .golangci-version 単一箇所で管理する（ローカルと CI の等価性のため）。
 # go.mod の tool ディレクティブは採用しない: golangci-lint の依存がアプリ本体の
@@ -27,6 +27,10 @@ run:
 run/debug:
 	@mkdir -p logs
 	PORT=$(PORT) LOG_LEVEL=debug go run ./cmd/api 2>&1 | tee logs/$$(date +%F).log
+
+## gRPC サーバ起動（Unity クライアント向け。HTTP とは別プロセス・別ポート）
+run/grpc:
+	GRPC_PORT=$(GRPC_PORT) LOG_LEVEL=$(LOG_LEVEL) go run ./cmd/grpc
 
 ## outbox-worker 起動（MySQL → Redis へ Outbox イベントを配信）
 run/outbox-worker:
@@ -67,13 +71,18 @@ build/batch:
 	mkdir -p bin
 	go build -o bin/batch ./cmd/batch
 
+## grpc ビルド（./bin/grpc に出力）
+build/grpc:
+	mkdir -p bin
+	go build -o bin/grpc ./cmd/grpc
+
 ## outbox-worker ビルド（./bin/outbox-worker に出力）
 build/outbox-worker:
 	mkdir -p bin
 	go build -o bin/outbox-worker ./cmd/outbox-worker
 
-## 全バイナリをビルド（api / batch / outbox-worker）
-build/all: build build/batch build/outbox-worker
+## 全バイナリをビルド（api / batch / grpc / outbox-worker）
+build/all: build build/batch build/grpc build/outbox-worker
 
 ## golangci-lint を .golangci-version のバージョンで ./bin へ導入（既に同一版なら何もしない）
 tools/golangci-lint:

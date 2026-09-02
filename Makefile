@@ -3,6 +3,8 @@
 # このファイルは「変数定義 + help + include」に集約する。
 
 PORT      ?= 8080
+# gRPC サーバ（cmd/grpc）の待ち受けポート。HTTP とは別プロセスなので同時に起動できる。
+GRPC_PORT ?= 9090
 LOG_LEVEL ?= info
 
 MIGRATE_DSN ?= mysql://game:game@tcp(127.0.0.1:3306)/game_db?multiStatements=true
@@ -39,4 +41,5 @@ include make/docs.mk
 include make/terraform.mk
 include make/loadtest.mk
 include make/site.mk
+include make/proto.mk
 include make/review.mk

@@ -27,6 +27,8 @@
   <!-- ssot-assert: present-grep 'func CheckIfaceAssert' scripts/archcheck/ifaceassert.go -->
 * **Phase 8（完了）:** [docs/testing/README.md](docs/testing/README.md) §6 のレビューゲートのうち、ケース順・件数・図の終端ノードの網羅を `scripts/doccheck` で機械判定へ移した（`make test` に同梱）。Go では計測できない分岐カバレッジをパスカバレッジで代替する仕組み（同 §4）の土台でありながら、人手のチェックリストにしか置かれていなかった箇所。対応づけは仕様表の直前に置く `<!-- testcases: <テストファイル>#<関数名> -->` と、テストコード側に既にあった `// #<番号> <図のパス>` マーカーで表現する。導入時に実在のドリフトを2件検出した（`internal/usecase/gacha/usecase_test.go` のケース順とパスが「ListItems をトランザクション外へ出す」変更に追随しておらず6件ずれていた／`docs/testing/outbox-worker.md` のテスト関数名に余分な半角スペースが入り文書から辿れなかった）。突合できない `t.Run` 名と「条件」列の一致は**意図的に検査しない**（コード側が情報量を足す設計を壊すため）
   <!-- ssot-assert: present-grep 'func CheckSpecTables' scripts/doccheck/doccheck.go -->
+* **Phase 9（完了）:** gRPC の契約検証を CI 判定へ。`.proto` 自体がレスポンス契約の正本なので、HTTP 側の `internal/driver/http/testdata/contracts/*.json` に相当する写しは作らず、`make proto/lint`（命名規約）・`make proto/breaking`（フィールド番号の再利用・型変更・削除を wire 互換の観点で検出）・`make proto/gen/check`（生成物の drift）の3点で担保する。加えて pb メッセージと domain / usecase の構造体の**フィールド集合**を `protoreflect` で突合するテストを置き、「domain に足したフィールドを proto へ写し忘れた」（およびその逆）を検出する——これは HTTP 側に無い保証で、JSON の契約ファイルが「構造だけ」を見るのに対し proto 側は互換性まで見る。C# 生成物だけは remote plugin（要ネットワーク）のため CI で再生成せず、`.proto` の FileDescriptorSet ダイジェストの突合に留めた。必須ゲートに外部サービスへの到達性を持ち込まないため
+  <!-- ssot-assert: present-grep 'make proto/breaking' .github/workflows/ci.yml -->
 * **次の候補:** 指示書側に残る「機械判定できるのに文章で書いている規約」を継続的に `.golangci.yml` / `scripts/` へ移す（[docs/testing/principles/deterministic-verification.md](docs/testing/principles/deterministic-verification.md) §1）。現在の候補は §6 の残り——「ケースがパスが短い順に並んでいる」で、表の省略記号（`…→G→E6`）を図から復元できれば判定できる（復元を誤ると誤検出になるため Phase 8 では見送った）。AGENTS.md §2「DI 対象のコンストラクタは logger を必須引数とし、nil チェック・`slog.Default()` フォールバックを実装しない」は**見送る**: `slog.Default()` の呼び出し自体は forbidigo が禁止済みで、残る「必須引数になっているか」「nil チェックを書いていないか」は現行コードに違反実例がゼロ。実例を伴わない検査は誤検出源になりいずれ無効化される（AGENTS.md §5）ため、違反が1件でも現れてから入れる
   <!-- ssot-assert: absent-grep 'logger == nil' internal cmd configs --include=*.go --exclude=*_test.go -->
 
@@ -137,3 +139,24 @@
   - パッカー: Aurora → gob/SQLite 生成のバッチコマンド（`internal/driver/batch` 配下）
   - ローダー: S3 から gob を取得しインメモリキャッシュする infrastructure 層 repository + DI 配線
 * **想定コスト:** S3 ~$1/月、CloudFront 実トラフィック比例（ポートフォリオ規模なら実質無料枠内）、パッキングタスク < $1/月、Gateway Endpoint $0
+
+---
+
+## フェーズ6：gRPC delivery と Unity クライアント連携（実装済み / インフラは未対応）
+**目標:** ゲームクライアント（Unity / C#）から扱いやすい API を用意し、あわせて「Clean Architecture が実際に効いているか」を 2 つ目の delivery で検証する。
+
+* **狙い（なぜ 2 つ目の delivery を足したか）:** `internal/driver/` は配信形式ごとにディレクトリを切る構造にしてあったが、「同じ usecase を複数の delivery が共有する」ことは実証されていなかった。層分離が機能しているなら、`usecase` を 1 行も変えずに gRPC を足せるはずで、実際にそうなった（`cmd/api` と `cmd/grpc` は同じ usecase インスタンスを共有する）
+* **実装:**
+  - `proto/game/ranking/v1/ranking.proto` を契約の正本に、unary 5 本（ランキング一覧 ×2 / 順位取得 ×2 / スコア加算）と server streaming 1 本（`WatchUserRankings`）
+  - **リアルタイム配信は既存の outbox 基盤に接続した。** outbox-worker が Redis ZSet への反映に成功した直後だけ `ranking:updated` へ publish し、gRPC 側がそれを購読してクライアントへ push する。既存の `outbox:events` は ZSet 反映**前**の worker 起床通知なので転用できない
+  - Redis の購読は接続ごとに張らず、プロセス内のハブで 1 本にまとめて配る（クライアント N 台 = Redis 接続 N 本になると、コネクション数を有限化した設計と矛盾する）
+  - `GracefulStop()` が進行中のストリームを待ってブロックする問題に対し、「配信停止 → タイムアウト付きで待つ → 超過したら強制切断」の三段構えでシャットダウンを実装
+  - Unity 側は生成済み C# と疎通サンプル、`link.xml`、導入手順を `clients/unity/` に置いた。`Grpc.Core` の非推奨・Unity のランタイムが HTTP/2 を喋れない制約・IL2CPP の code stripping という 3 つの詰まりどころを README に残してある
+  - k6 の gRPC シナリオを HTTP 版と同じ負荷形状・同じ呼び出し比率で用意し、プロトコル差を同条件で比較できるようにした
+* **対象外（意図的に実装しない / 未対応）:**
+  - **ECS へのデプロイ（Terraform）**: 本フェーズはローカルと Docker まで。ALB で gRPC を通すには TLS + HTTP/2 が要り、証明書・リスナー・ターゲットグループ（`protocol_version = GRPC`）・`deploy.yml`・`ARCHITECTURE.md` まで一括で触ることになる（AGENTS.md の Infrastructure Change Rules）。負荷試験の実測と併せて別タスクにする
+  - **TLS**: 上と同じ理由で未対応。ローカルは平文 h2c
+  - **認証・認可**: 未実装。メタデータでのトークン付与も未整備
+  - **サーバリフレクション**: 有効にしていない。有効にすると本番で API 構造を公開してよいかの判断と環境ごとの分岐が要るため。`grpcurl` は `.proto` を渡して叩く
+* **次のアクション:** ECS デプロイと TLS 対応、`make load/grpc` による HTTP との実測比較（ここまで来ると README の「見どころ」に数値を足せる）
+  <!-- ssot-assert: path-exists proto/game/ranking/v1/ranking.proto cmd/grpc/main.go clients/unity/README.md -->

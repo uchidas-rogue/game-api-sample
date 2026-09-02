@@ -123,6 +123,22 @@
       </article>
 
       <article class="card">
+        <h3>同じユースケースを HTTP と gRPC の 2 経路で配る</h3>
+        <p>
+          Unity クライアント向けに gRPC を足しました。<code>usecase</code> 層を 1 行も変えずに済み、
+          <code>cmd/api</code> と <code>cmd/grpc</code> は同じインスタンスを共有しています。
+          この境界は申し合わせではなく depguard が保証していて、driver から infrastructure を
+          import した時点で lint が落ちます。
+        </p>
+        <p>
+          リアルタイム配信は既存の outbox 基盤に接続しました。worker が Redis へ反映を終えた直後に
+          publish し、server streaming がそれを購読して push します。既存の worker 起床通知は
+          反映<em>前</em>に飛ぶので転用できない、という判別がいちばん間違えやすい箇所でした。
+        </p>
+        <p class="cite">根拠: docs/testing/grpc-ranking.md / ranking-watch.md</p>
+      </article>
+
+      <article class="card">
         <h3>意図的にやらないことを書き残す</h3>
         <p>
           WAF は導入しません（エンドユーザーが k6 なので、レートベースルールが負荷試験結果を歪めるため）。

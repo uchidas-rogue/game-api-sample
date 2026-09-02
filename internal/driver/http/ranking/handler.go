@@ -21,10 +21,6 @@ const (
 	queryOffset  = "offset"
 )
 
-// retryAfterSeconds はランキング未構築時に返す Retry-After（秒）。
-// 復旧は再構築バッチの手動実行を伴うため、即時の再試行が実る値にはしない。
-const retryAfterSeconds = "30"
-
 // Handler はランキング機能の HTTP ハンドラ。
 type Handler struct {
 	usecase rankingusecase.Usecase
@@ -265,7 +261,8 @@ func (h *Handler) handleError(c echo.Context, err error) error {
 		// 500 と違い、ここではログを出さない。この状態は再構築するまで継続するため、
 		// リクエストごとに記録すると 1 件の障害が毎秒数千行の同一ログになり、
 		// 他のエラーを埋めてしまう。503 を返した事実はアクセスログに残る。
-		c.Response().Header().Set(echo.HeaderRetryAfter, retryAfterSeconds)
+		// domain.RankingUnavailableRetryAfter から導出する（gRPC の RetryInfo と値を一本化するため）。
+		c.Response().Header().Set(echo.HeaderRetryAfter, strconv.Itoa(int(rankingdomain.RankingUnavailableRetryAfter.Seconds())))
 		return c.JSON(http.StatusServiceUnavailable, errorResponse{Message: "ranking is unavailable"})
 	default:
 		h.logger.ErrorContext(ctx, "ranking operation failed", slog.Any("error", err))

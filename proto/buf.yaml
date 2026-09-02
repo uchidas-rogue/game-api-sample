@@ -1,0 +1,23 @@
+# buf のモジュール定義。lint と breaking の判定範囲をここで固定する。
+#
+# バージョンは .buf-version の 1 箇所で管理し、make/proto.mk が同じ版を ./bin へ導入する
+# （golangci-lint / sqlc と同じ流儀。ローカルと CI で同一の判定にするため）。
+version: v2
+
+modules:
+  - path: .
+
+lint:
+  # STANDARD には PACKAGE_DIRECTORY_MATCH（ディレクトリと package 名の一致）と
+  # RPC_REQUEST_STANDARD_NAME / RPC_RESPONSE_STANDARD_NAME（<RpcName>Request / Response）が含まれる。
+  # 命名を機械判定へ寄せるのが目的なので、個別 except を作らずカテゴリのまま使う。
+  # （旧称 DEFAULT は非推奨。STANDARD が現行名）
+  use:
+    - STANDARD
+
+breaking:
+  # FILE は「フィールド番号の再利用・型変更・削除・RPC 削除」を wire 互換の観点で検出する。
+  # HTTP 側の testdata/contracts/*.json が「構造だけ」を見るのに対し、こちらは互換性まで見る。
+  # gRPC ではこの .proto 自体がレスポンス契約の正本なので、契約 JSON に相当するものは作らない。
+  use:
+    - FILE

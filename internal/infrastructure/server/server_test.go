@@ -260,9 +260,14 @@ func TestNew_MiddlewareOrder(t *testing.T) {
 		"e.Pre はアクセスログの外側で完結するため使わない（AGENTS.md §2）")
 }
 
-// middlewareCallsIn は srcFile 内の関数 funcName にある `<recv>.<method>(f(...))` 形式の
+// middlewareCallsIn は srcFile 内の関数 funcName にある `<recv>.<method>(f(...), ...)` 形式の
 // 呼び出しを登録順に走査し、引数として渡されたミドルウェア生成関数の名前を返す。
 // 例: `e.Use(middleware.RequestID())` → "RequestID"
+//
+// 1 回の呼び出しに渡された引数は**すべて**順に拾う。`e.Use` は引数 1 個だが、
+// gRPC 側の `grpc.ChainUnaryInterceptor(a, b, c)` は 1 回の呼び出しに登録順の
+// インターセプタを並べるため（TestNewGRPC_UnaryInterceptorOrder）。
+// 引数が 0 個の呼び出しは登録ではないので読み飛ばす。
 //
 // go test の作業ディレクトリはパッケージディレクトリなので、srcFile は相対パスで届く。
 func middlewareCallsIn(t *testing.T, srcFile, funcName, method string) []string {
@@ -292,7 +297,9 @@ func middlewareCallsIn(t *testing.T, srcFile, funcName, method string) []string 
 		if !ok || sel.Sel.Name != method || len(call.Args) == 0 {
 			return true
 		}
-		names = append(names, calleeName(call.Args[0]))
+		for _, arg := range call.Args {
+			names = append(names, calleeName(arg))
+		}
 		return true
 	})
 	return names

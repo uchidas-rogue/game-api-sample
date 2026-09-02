@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  IL2CPP の managed code stripping から protobuf / gRPC を保護するための宣言。
+
+  ■ なぜ必要か
+  protobuf と grpc-dotnet は、生成コードの静的な参照だけでは追えない経路で型に触る:
+    - Google.Protobuf は FileDescriptor（生成コードに埋め込まれた descriptor のバイト列）を
+      起動時にパースし、そこに書かれた型名から実際の C# 型をリフレクションで解決する
+    - Grpc.Core の Marshaller / ClientBase も、呼び出し経路の一部をリフレクションで組む
+  IL2CPP のリンカは「どこからも静的に参照されていない」と判断してこれらを削るため、
+  何も宣言しないと descriptor の解決に失敗する。
+
+  ■ これを置かないとどうなるか
+  **エディタ（Mono、stripping 無し）では正常に動くのに、実機ビルド（IL2CPP）でだけ落ちる。**
+  症状は TypeInitializationException / TypeLoadException / MissingMethodException で、
+  スタックトレースが Google.Protobuf.Reflection の内部を指すため原因にたどり着きにくい。
+  「エディタで動いたから大丈夫」が通用しない類のバグなので、動作確認より前に置いておく。
+
+  ■ 保守
+  アセンブリを増やしたら（別の生成物を足す、asmdef を切る等）ここにも足すこと。
+  漏れても Player Build が通ってしまい、実機で初めて分かる。CI では検知できない。
+-->
+<linker>
+  <!-- protobuf 本体。descriptor パースとリフレクションによる型解決を行う。 -->
+  <assembly fullname="Google.Protobuf" preserve="all" />
+
+  <!-- gRPC の共通 API（Marshaller / ClientBase / RpcException / CallOptions 等）。
+       生成コード RankingGrpc.cs が直接依存する。 -->
+  <assembly fullname="Grpc.Core.Api" preserve="all" />
+
+  <!-- grpc-dotnet のクライアント実装（GrpcChannel など）。 -->
+  <assembly fullname="Grpc.Net.Client" preserve="all" />
+  <assembly fullname="Grpc.Net.Common" preserve="all" />
+
+  <!-- Unity で HTTP/2 を喋る HttpMessageHandler（Cysharp/YetAnotherHttpHandler）。
+       ネイティブ側との相互運用があるため保持する。 -->
+  <assembly fullname="YetAnotherHttpHandler" preserve="all" />
+
+  <!--
+    buf が生成した C#（Runtime/Generated/Ranking.cs, RankingGrpc.cs）を含むアセンブリ。
+
+    clients/unity/ を Assets/ 配下へそのままコピーした場合、asmdef が無いので
+    生成コードは既定の Assembly-CSharp に入る。
+    **Runtime/ に .asmdef を切ったら、その asmdef 名の行をここへ追加すること**
+    （Assembly-CSharp の行だけ残しても生成コードは保護されない）。
+  -->
+  <assembly fullname="Assembly-CSharp" preserve="all" />
+</linker>

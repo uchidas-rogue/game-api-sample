@@ -62,19 +62,23 @@ func main() {
 	rankingRepo := repository.NewRankingRepository(db)
 	rankingStore := infraRedis.NewRankingStore(redisClient.Raw())
 	outboxSubscriber := infraRedis.NewOutboxSubscriber(redisClient.Raw())
+	// ZSet 反映の完了をランキング購読者（gRPC ストリーム）へ知らせる publisher。
+	// outbox の起床通知とはチャネルを分ける（反映「前」の通知を購読すると古い値を配るため）。
+	rankingUpdateNotifier := infraRedis.NewRankingUpdateNotifier(redisClient.Raw())
 
 	w := workeroutbox.New(workeroutbox.Config{
-		Repo:         outboxRepo,
-		RankingRepo:  rankingRepo,
-		RankingStore: rankingStore,
-		Tx:           tx,
-		Subscriber:   outboxSubscriber,
-		Logger:       log,
-		PollInterval: cfg.OutboxPollInterval,
-		BatchSize:    cfg.OutboxBatchSize,
-		Concurrency:  cfg.OutboxConcurrency,
-		TickTimeout:  cfg.OutboxTickTimeout,
-		MaxRetry:     cfg.OutboxMaxRetry,
+		Repo:            outboxRepo,
+		RankingRepo:     rankingRepo,
+		RankingStore:    rankingStore,
+		RankingNotifier: rankingUpdateNotifier,
+		Tx:              tx,
+		Subscriber:      outboxSubscriber,
+		Logger:          log,
+		PollInterval:    cfg.OutboxPollInterval,
+		BatchSize:       cfg.OutboxBatchSize,
+		Concurrency:     cfg.OutboxConcurrency,
+		TickTimeout:     cfg.OutboxTickTimeout,
+		MaxRetry:        cfg.OutboxMaxRetry,
 	})
 
 	if err := w.Run(ctx); err != nil {

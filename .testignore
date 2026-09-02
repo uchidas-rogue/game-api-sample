@@ -29,3 +29,9 @@
 # 挙動は seed 投入後の k6 負荷試験（loadtest/）で結合的に担保する方針のため単体テスト対象外。
 # 業務ロジックが混入した場合は §4 のカバレッジ目標に従い除外解除すること
 /internal/infrastructure/seed$
+
+# protoc-gen-go / protoc-gen-go-grpc の生成物。手書きテスト不要
+# 【解除してはならない】ここを外すと pb.go の数千文が internal/driver の
+# カバレッジ分母に入り、閾値 90%（AGENTS.md §3）が事実上達成不能になる。
+# 生成物の整合は make proto/gen/check（再生成 + 差分検知）が担当する。
+/internal/driver/grpc/gen(/|$)
