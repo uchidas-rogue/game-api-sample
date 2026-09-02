@@ -20,8 +20,10 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          # buf breaking は `.git#branch=main` を比較対象にするため、既定の shallow clone
-          # （fetch-depth: 1）だと main を解決できず失敗する。
+          # buf breaking は origin/main を比較対象にするため、既定の shallow clone
+          # （fetch-depth: 1）だと origin/main が fetch されず解決できない。
+          # なお actions/checkout はローカルブランチ refs/heads/main を作らないので、
+          # 比較元は必ず origin/ 付きで書くこと（make/proto.mk の proto/breaking を参照）。
           fetch-depth: 0
 
       - name: Set up Go

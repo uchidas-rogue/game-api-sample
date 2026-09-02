@@ -78,6 +78,7 @@
   - `//go:generate` の `-destination` / `-package` を変更した場合のみ、`make/app.mk` の `GEN_ARTIFACT_PATHS` と `.golangci.yml` の除外パス、`.testignore` も併せて更新する（この連動は `gen/check` では検知できない）
 - 層別カバレッジ・テスト方針:
   - 指標は **文（statement）カバレッジ**。閾値は `make test/cover/check` が判定し、CI で必須（未達なら失敗）。閾値の実体は `scripts/coverage-check.sh` にあり、本節がその正本。**片方だけ変えない**
+    - 閾値を設定した層が**1文も計測されていない場合も失敗**にする（`計測なし` → NG）。層のディレクトリを改名した・`.testignore` を広げすぎた・その層のテストが1本も走っていない、のいずれでも閾値がまるごと無効化されるため。以前は SKIP として通しており、`internal/domain` の計測行を消しても CI が緑になった
   - Go には分岐カバレッジを出す標準手段が無い。分岐の網羅は `docs/testing/` の設計図に対する**パスカバレッジ**で代替する（[docs/testing/README.md](docs/testing/README.md) §4）
   - `driver` 層: 変換とエラー経路の網羅。カバレッジ **90% 以上**
   - `domain` 層: 純粋関数・ビジネスルール（確率計算、エンティティ不変条件、sentinel error 判定 等）の単体テストを必須化。外部依存（DB/Redis/HTTP）禁止、モック不要。カバレッジ **100%**（外部依存が無く達成可能なため。スラックが無いので、未カバーが出たらテストを足すか、テスト対象外である理由を明記して `.testignore` で除外する）

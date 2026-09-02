@@ -109,13 +109,25 @@ proto/lint:
 	@$(MAKE) --no-print-directory tools/buf
 	$(BUF_BIN) lint $(PROTO_DIR)
 
-# main に proto/ が無い初回はスキップする（比較対象が存在しないため）。
-# CI では actions/checkout に fetch-depth: 0 が必要（既定の shallow clone だと main を解決できない）。
+# 比較元は必ず origin/ 付きで書く。actions/checkout は対象 ref のローカルブランチしか作らず、
+# 裸の `main`（refs/heads/main）は CI に存在しない。git の revision 解決は
+# refs/heads/ → refs/remotes/<名前> の順で、refs/remotes/origin/main は `main` では引けない。
+# fetch-depth: 0 が要るのは「main を解決するため」ではなく origin/main を fetch させるため。
+#
+# 捕捉した実例: 以前ここが裸の `main` だったため、CI では条件が常に false になり
+# buf breaking が一度も実行されないまま「初回導入時」の分岐に落ちて緑になっていた
+# （PR #26 の CI ログで確認）。ローカルには refs/heads/main が実在するので手元では露見しない。
+# determ. §7「ローカルとCIの等価性」に反する形だったため、解決できない場合は落とす。
 ## proto の後方互換チェック（origin/main との比較）
 proto/breaking:
 	@$(MAKE) --no-print-directory tools/buf
-	@if git rev-parse --verify --quiet main >/dev/null && git ls-tree -r --name-only main -- $(PROTO_DIR) | grep -q .; then \
-		$(BUF_BIN) breaking $(PROTO_DIR) --against '.git#branch=main,subdir=$(PROTO_DIR)'; \
+	@git rev-parse --verify --quiet origin/main >/dev/null || { \
+		echo "比較元 origin/main を解決できません。"; \
+		echo "CI では actions/checkout に fetch-depth: 0 が必要です（既定の shallow clone では fetch されない）。"; \
+		exit 1; \
+	}
+	@if git ls-tree -r --name-only origin/main -- $(PROTO_DIR) | grep -q .; then \
+		$(BUF_BIN) breaking $(PROTO_DIR) --against '.git#branch=origin/main,subdir=$(PROTO_DIR)'; \
 	else \
-		echo "main に $(PROTO_DIR)/ が無いためスキップします（初回導入時）。"; \
+		echo "origin/main に $(PROTO_DIR)/ が無いためスキップします（初回導入時）。"; \
 	fi

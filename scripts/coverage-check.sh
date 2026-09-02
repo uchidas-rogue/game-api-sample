@@ -121,8 +121,14 @@ END {
   # 閾値のある層を定義順に表示する
   for (i = 1; i <= order_len; i++) {
     l = order[i]
+    # 閾値を設定した層が1文も計測されていない = 閾値が無効化された状態。
+    # 「検査対象が無い」ではないので失敗にする。SKIP のまま通していたときは、
+    # 層のディレクトリを改名しただけで閾値がまるごと効かなくなり CI が緑になった
+    # （coverage.out から internal/domain の行を消す変異テストで実証）。
     if (!(l in total)) {
-      printf "  %-26s %8s %8.0f%%  %s\n", l, "計測なし", thr[l], "SKIP"
+      printf "  %-26s %8s %8.0f%%  %s\n", l, "計測なし", thr[l], "NG"
+      failed = 1
+      unmeasured[l] = 1
       continue
     }
     pct = covered[l] * 100 / total[l]
@@ -150,6 +156,23 @@ END {
     printf "\n全ての層が閾値を満たしています。\n"
     exit 0
   }
+
+  # 計測ゼロは未カバー箇所の列挙ができない（そもそも1行も出ていない）ので、
+  # 閾値未達とは別に、原因の見当が付く形で先に出す。
+  first_unmeasured = 1
+  for (l in unmeasured) {
+    if (first_unmeasured) {
+      printf "\n閾値を設定した層が1文も計測されていません。閾値が無効化された状態です。\n"
+      printf "  よくある原因: 層のディレクトリを改名した / .testignore を広げすぎた /\n"
+      printf "                その層のテストが1本も走っていない。\n"
+      printf "  閾値の正本は AGENTS.md §3。層を移動・改名したなら、本スクリプトの\n"
+      printf "  THRESHOLDS と AGENTS.md §3 を併せて直すこと（片方だけ変えない）。\n"
+      first_unmeasured = 0
+    }
+    printf "    - %s\n", l
+  }
+
+  if (length(fail_layers) == 0) exit 1
 
   printf "\n閾値を下回った層があります。未カバー箇所は以下のとおりです。\n"
   for (l in fail_layers) {
